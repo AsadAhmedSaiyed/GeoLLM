@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+runs/
+outputs/
+data/*
+!data/.gitkeep
+*.tif
+*.tiff
+*.tar
+.env
+.vscode/
