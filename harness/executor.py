@@ -18,7 +18,7 @@ def _tail(text, n=MAX_LOG):
     return text if len(text) <= n else "...[truncated]...\n" + text[-n:]
 
 
-def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0):
+def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None):
     client = docker.from_env()
     work = Path(tempfile.mkdtemp(prefix="geollm_"))
     in_dir, code_dir, out_dir = work / "input", work / "code", work / "output"
@@ -44,7 +44,7 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0):
             IMAGE,
             command=["python", "/workspace/code/script.py"],
             working_dir="/workspace/output",
-            environment={"MPLCONFIGDIR": "/tmp/mpl", "PYTHONDONTWRITEBYTECODE": "1"},
+            environment={"MPLCONFIGDIR": "/tmp/mpl", "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
             # --- limits and protection ---
             network_mode="none",                 # no network at all
             mem_limit=memory, memswap_limit=memory,  # RAM cap, no swap

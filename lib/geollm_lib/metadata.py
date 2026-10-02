@@ -1,70 +1,110 @@
-"""Inspect a GeoTIFF and return structured, JSON-safe metadata."""
-import json
+"""Facts about the input files (what the LLM sees instead of pixels)."""
 import math
-import sys
 from pathlib import Path
 
 import rasterio
 from rasterio.errors import RasterioIOError
+
+from .bands import detect_sensor, infer_roles, label_role
+
+RASTER_EXT = {".tif", ".tiff"}
+VECTOR_EXT = {".geojson", ".json", ".gpkg"}
 
 
 class GeoTiffError(Exception):
     """Raised when a file is not a usable GeoTIFF."""
 
 
-def _json_safe(value):
-    """JSON has no NaN. Convert NaN nodata to the string 'nan'."""
-    if isinstance(value, float) and math.isnan(value):
-        return "nan"
-    return value
+def _safe(v):
+    return "nan" if isinstance(v, float) and math.isnan(v) else v
 
 
-def inspect_geotiff(path) -> dict:
+def _band_sample(src, i):
+    h, w = src.height, src.width
+    step = max(1, max(h, w) // 256)
+    arr = src.read(i, out_shape=(max(1, h // step), max(1, w // step)), masked=True)
+    if arr.count() == 0:
+        return {}
+    return {"sample_min": float(arr.min()), "sample_max": float(arr.max()),
+            "sample_mean": round(float(arr.mean()), 4)}
+
+
+def inspect_geotiff(path):
     path = Path(path)
-
     if not path.is_file():
         raise GeoTiffError(f"File not found: {path}")
-    if path.suffix.lower() not in {".tif", ".tiff"}:
-        raise GeoTiffError(f"Unsupported extension '{path.suffix}'. Expected .tif/.tiff")
-
+    if path.suffix.lower() not in RASTER_EXT:
+        raise GeoTiffError(f"Unsupported extension '{path.suffix}'")
     try:
         src = rasterio.open(path)
     except RasterioIOError as e:
         raise GeoTiffError(f"Cannot open as raster: {e}") from e
-
     with src:
         if src.crs is None:
             raise GeoTiffError("File has no CRS; it is not georeferenced.")
-
+        tags = src.tags()
+        sensor = detect_sensor(tags)
+        labels = list(src.descriptions)
         bands = []
-        for i in range(1, src.count + 1):          # rasterio bands are 1-indexed
-            bands.append({
-                "index": i,
-                "description": src.descriptions[i - 1],   # often None
-                "dtype": src.dtypes[i - 1],
-                "nodata": _json_safe(src.nodatavals[i - 1]),
-            })
-
-        res_x, res_y = src.res
+        for i in range(1, src.count + 1):
+            entry = {"index": i, "label": labels[i - 1], "role": label_role(labels[i - 1], sensor),
+                     "dtype": src.dtypes[i - 1], "nodata": _safe(src.nodatavals[i - 1])}
+            entry.update(_band_sample(src, i))
+            bands.append(entry)
+        metric = src.crs.is_projected and str(src.crs.linear_units).lower() in ("metre", "meter", "m")
+        rx, ry = src.res
         return {
-            "format": "GeoTIFF",
-            "path": str(path),
-            "width": src.width,
-            "height": src.height,
-            "band_count": src.count,
-            "bands": bands,
-            "crs": src.crs.to_string(),
-            "epsg": src.crs.to_epsg(),
-            "crs_is_projected": src.crs.is_projected,
-            "resolution": [res_x, res_y],
-            "resolution_units": src.crs.linear_units if src.crs.is_projected else "degrees",
-            "bounds": list(src.bounds),                # left, bottom, right, top
-            "transform": list(tuple(src.transform)[:6]),
-            "nodata": _json_safe(src.nodata),
-            "dtype": src.dtypes[0],
-            "tags": src.tags(),
+            "kind": "raster", "format": "GeoTIFF", "width": src.width, "height": src.height,
+            "band_count": src.count, "bands": bands, "band_roles": infer_roles(labels, tags),
+            "sensor": sensor, "date": tags.get("ACQUISITION_DATETIME"),
+            "crs": src.crs.to_string(), "crs_is_projected": src.crs.is_projected,
+            "resolution": [rx, ry], "resolution_units": src.crs.linear_units if src.crs.is_projected else "degrees",
+            "extent_km2": round(src.width * src.height * abs(rx * ry) / 1e6, 3) if metric else None,
+            "bounds": list(src.bounds), "nodata": _safe(src.nodata), "tags": tags,
         }
 
 
-if __name__ == "__main__":
-    print(json.dumps(inspect_geotiff(sys.argv[1]), indent=2))
+def inspect_vector(path):
+    import geopandas as gpd
+    gdf = gpd.read_file(str(path))
+    return {"kind": "vector", "features": int(len(gdf)),
+            "geometry_types": {k: int(v) for k, v in gdf.geom_type.value_counts().items()},
+            "crs": gdf.crs.to_string() if gdf.crs else None,
+            "columns": [c for c in gdf.columns if c != "geometry"],
+            "bounds": [float(x) for x in gdf.total_bounds]}
+
+
+def _alignment(files):
+    rasters = {n: f for n, f in files.items() if f.get("kind") == "raster"}
+    dates = {n: f.get("date") for n, f in rasters.items()}
+    if len(rasters) < 2:
+        return {"rasters": len(rasters), "aligned": None, "differences": [], "dates": dates}
+    names = list(rasters)
+    ref, diffs = rasters[names[0]], []
+    for n in names[1:]:
+        f = rasters[n]
+        if f["crs"] != ref["crs"]:
+            diffs.append(f"{n}: CRS {f['crs']} vs {ref['crs']}")
+        if f["resolution"] != ref["resolution"]:
+            diffs.append(f"{n}: resolution {f['resolution']} vs {ref['resolution']}")
+        if (f["width"], f["height"]) != (ref["width"], ref["height"]):
+            diffs.append(f"{n}: size {f['width']}x{f['height']} vs {ref['width']}x{ref['height']}")
+        if any(abs(a - b) > 1e-6 for a, b in zip(f["bounds"], ref["bounds"])):
+            diffs.append(f"{n}: different bounds")
+    return {"rasters": len(rasters), "aligned": not diffs, "differences": diffs, "dates": dates}
+
+
+def inspect_dataset(paths):
+    files = {}
+    for p in map(Path, paths):
+        ext = p.suffix.lower()
+        try:
+            if ext in RASTER_EXT:
+                files[p.name] = inspect_geotiff(p)
+            elif ext in VECTOR_EXT:
+                files[p.name] = inspect_vector(p)
+            else:
+                files[p.name] = {"error": f"Unsupported file type '{ext}'"}
+        except Exception as e:
+            files[p.name] = {"error": str(e)}
+    return {"files": files, "alignment": _alignment(files)}
