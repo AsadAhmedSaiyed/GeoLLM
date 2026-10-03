@@ -45,7 +45,7 @@ def combine(masks, op="and"):
 
 
 def area_stats(mask, src, valid=None):
-    """Pixel count, percent of valid pixels, and hectares (only when the CRS is in metres)."""
+    """Selected pixel count, percent of valid pixels and hectares for a boolean mask. Returns a dict with keys: selected_pixels, valid_pixels, percent_of_valid, pixel_area_m2 and area_hectares (area_hectares is None, with 'area_note', when the CRS is not in metres)."""
     mask = np.asarray(mask, bool)
     if valid is not None:
         mask = mask & valid
@@ -90,3 +90,13 @@ def quadrant_summary(mask):
     r, c = h // 2, w // 2
     parts = {"north_west": m[:r, :c], "north_east": m[:r, c:], "south_west": m[r:, :c], "south_east": m[r:, c:]}
     return {k: (round(100 * int(v.sum()) / total, 2) if total else 0.0) for k, v in parts.items()}
+
+def distance_to_mask(mask, src):
+    """Distance in CRS units (metres if projected) from every pixel to the nearest True pixel of `mask`."""
+    return ndimage.distance_transform_edt(~np.asarray(mask, bool),
+                                          sampling=(abs(src.res[1]), abs(src.res[0]))).astype("float32")
+
+
+def label_regions(mask):
+    """Connected regions of a mask. Returns (label_array, number_of_regions)."""
+    return ndimage.label(np.asarray(mask, bool))

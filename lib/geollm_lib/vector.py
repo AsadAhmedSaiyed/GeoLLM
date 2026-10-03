@@ -60,3 +60,54 @@ def zonal_stats(arr, zones, src, max_zones=500):
                     "min": float(vals.min()) if vals.size else None,
                     "max": float(vals.max()) if vals.size else None})
     return out
+
+def _metric_gdf(gdf):
+    return gdf.crs is not None and gdf.crs.is_projected and str(gdf.crs.axis_info[0].unit_name).lower() in ("metre", "meter")
+
+
+def write_geojson(gdf, path):
+    """Save a GeoDataFrame as GeoJSON (WGS84)."""
+    gdf.to_crs(4326).to_file(str(path), driver="GeoJSON")
+
+
+def buffer_vector(gdf, distance_m):
+    """Buffer geometries by distance_m metres. The vector must be in a metric CRS (reproject first)."""
+    if not _metric_gdf(gdf):
+        raise ValueError("buffer_vector needs a metric CRS. Use gdf.to_crs(<projected CRS>) first.")
+    out = gdf.copy()
+    out["geometry"] = gdf.geometry.buffer(distance_m)
+    return out
+
+
+def intersect_vectors(a, b):
+    """Geometric intersection of two GeoDataFrames (b is reprojected to a's CRS)."""
+    return gpd.overlay(a, b.to_crs(a.crs), how="intersection")
+
+
+def union_vectors(a, b):
+    """Geometric union of two GeoDataFrames."""
+    return gpd.overlay(a, b.to_crs(a.crs), how="union")
+
+
+def clip_vector(gdf, clip_gdf):
+    """Clip gdf to the extent of clip_gdf."""
+    return gpd.clip(gdf, clip_gdf.to_crs(gdf.crs))
+
+
+def spatial_join(left, right, how="inner", predicate="intersects"):
+    """Attach attributes of `right` to `left` by spatial relation."""
+    return gpd.sjoin(left, right.to_crs(left.crs), how=how, predicate=predicate)
+
+
+def filter_features(gdf, column, values):
+    """Keep rows where `column` is in `values`."""
+    if column not in gdf.columns:
+        raise ValueError(f"No column '{column}'. Columns: {list(gdf.columns)}")
+    return gdf[gdf[column].isin(values)]
+
+
+def area_hectares(gdf):
+    """Total area of the geometries in hectares. Needs a metric CRS."""
+    if not _metric_gdf(gdf):
+        raise ValueError("area_hectares needs a metric CRS. Reproject first.")
+    return float(gdf.geometry.area.sum() / 10000)

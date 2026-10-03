@@ -1,16 +1,19 @@
 """Infer semantic band roles from a raster's own labels. Never guesses."""
 import re
 
-ROLES = ("blue", "green", "red", "nir", "swir1", "swir2")
+OPTICAL_ROLES = ("blue", "green", "red", "nir", "swir1", "swir2")
+SAR_ROLES = ("vv", "vh", "hh", "hv")
+ROLES = OPTICAL_ROLES + SAR_ROLES
 NAME_TO_ROLE = {
     "blue": "blue", "green": "green", "red": "red", "nir": "nir", "nir08": "nir",
     "swir1": "swir1", "swir16": "swir1", "swir2": "swir2", "swir22": "swir2",
+    "vv": "vv", "vh": "vh", "hh": "hh", "hv": "hv",
 }
-# Band codes (B04, B8...) only mean something once the sensor is known.
 SENSOR_CODES = {
     "sentinel2": {"B2": "blue", "B3": "green", "B4": "red", "B8": "nir", "B11": "swir1", "B12": "swir2"},
     "landsat": {"B2": "blue", "B3": "green", "B4": "red", "B5": "nir", "B6": "swir1", "B7": "swir2"},
 }
+_POL = re.compile(r"(?:^|[^a-z])(vv|vh|hh|hv)(?:$|[^a-z])")
 
 
 class BandError(Exception):
@@ -18,8 +21,10 @@ class BandError(Exception):
 
 
 def detect_sensor(tags):
-    text = " ".join(str(v) for v in (tags or {}).values()).lower()
-    if "sentinel" in text:
+    text = " ".join(str(v) for v in (tags or {}).values()).lower().replace("_", "-")
+    if re.search(r"sentinel-?1|\bs1[ab]\b", text):
+        return "sentinel1"
+    if re.search(r"sentinel-?2|\bs2[ab]\b|msil2a|msil1c", text):
         return "sentinel2"
     if "landsat" in text:
         return "landsat"
@@ -38,8 +43,11 @@ def label_role(label, sensor=None):
     text = str(label).strip().lower()
     if text in NAME_TO_ROLE:
         return NAME_TO_ROLE[text]
+    m = _POL.search(text)
+    if m:
+        return m.group(1)
     code = _code(text)
-    if code and sensor:
+    if code and sensor in SENSOR_CODES:
         return SENSOR_CODES[sensor].get(code)
     return None
 
