@@ -45,9 +45,35 @@ def image_stats(path):
     return {"width": int(w), "height": int(h), "dominant_color_fraction": round(float(np.bincount(codes.ravel()).max() / codes.size), 4)}
 
 
-def _read_small(src, max_px=2048):
+def _small_shape(src, max_px=2048):
     f = max(1, max(src.height, src.width) // max_px)
-    return src.read(1, out_shape=(max(1, src.height // f), max(1, src.width // f)), masked=True)
+    return (max(1, src.height // f), max(1, src.width // f))
+
+
+def _read_small(src, max_px=2048):
+    return src.read(1, out_shape=_small_shape(src, max_px), masked=True)
+
+
+def _read_raw_small(src, max_px=2048):
+    """Same sample as _read_small, but without applying the file's nodata mask."""
+    return src.read(1, out_shape=_small_shape(src, max_px), masked=False)
+
+
+def _is_nan_value(v):
+    return isinstance(v, float) and np.isnan(v)
+
+
+def _mask_evidence(raw, nodata, valid, sel, max_unique=8):
+    """Fact-only description of a mask raster (sampled pixels)."""
+    r = np.asarray(raw)
+    finite = r[np.isfinite(r)] if r.dtype.kind == "f" else r.ravel()
+    vals, counts = np.unique(finite, return_counts=True)
+    uniq = {float(v): int(c) for v, c in list(zip(vals, counts))[:max_unique]}
+    return (
+        f"sampled pixels: total={r.size}, valid={valid}, selected={sel}; "
+        f"file_nodata={nodata}; unique_values_in_file={uniq}; "
+        f"'valid' means: not equal to the file's nodata value"
+    )
 
 
 def check_outputs(output_dir, artifacts, result, facts):
@@ -62,6 +88,8 @@ def check_outputs(output_dir, artifacts, result, facts):
             if name.endswith((".tif", ".tiff")):
                 with rasterio.open(p) as src:
                     arr = _read_small(src)
+                    raw = _read_raw_small(src)
+                    nodata = src.nodata
                     if src.crs is None:
                         out.append(_issue("warning", "no_crs", rel, f"'{rel}' has no CRS"))
                     elif primary and src.crs.to_string() != primary["crs"]:
@@ -72,14 +100,31 @@ def check_outputs(output_dir, artifacts, result, facts):
                 is_mask = arr.dtype.kind in "uib" and (set(np.unique(vals).tolist()) <= {0, 1, 255} or "mask" in name)
                 if is_mask:
                     valid, sel = int((vals != 255).sum()), int((vals == 1).sum())
+                    evidence = _mask_evidence(raw, nodata, valid, sel)
+
+                    # A nodata value equal to a class value of the mask makes that
+                    # class invalid for every reader, which distorts all counts.
+                    collides = (
+                        nodata is not None
+                        and not _is_nan_value(nodata)
+                        and float(nodata) in (0.0, 1.0)
+                    )
+                    if collides:
+                        out.append(_issue("error", "mask_nodata_collision", rel,
+                                          f"mask '{rel}' declares nodata={nodata}, which is also a class value in the mask, "
+                                          f"so pixels with that value are treated as invalid by readers and checks. "
+                                          f"Evidence: {evidence}"))
+                        masks.append((rel, sel))
+                        continue
+
                     if valid == 0:
-                        out.append(_issue("error", "mask_no_valid", rel, f"mask '{rel}' has no valid pixels"))
+                        out.append(_issue("error", "mask_no_valid", rel, f"mask '{rel}' has no valid pixels. Evidence: {evidence}"))
                     elif sel == 0:
                         out.append(_issue("warning" if _confirmed(result, "empty_result_confirmed") else "error", "mask_empty", rel,
-                                          f"mask '{rel}' selects zero pixels. If that is the genuine answer, set 'empty_result_confirmed': true in the result and explain why; otherwise check the thresholds/logic."))
+                                          f"mask '{rel}' selects zero pixels. Evidence: {evidence}"))
                     elif sel == valid:
                         out.append(_issue("warning" if _confirmed(result, "full_coverage_confirmed") else "error", "mask_full", rel,
-                                          f"mask '{rel}' selects every valid pixel. If genuine, set 'full_coverage_confirmed': true and explain; otherwise check the thresholds/logic."))
+                                          f"mask '{rel}' selects every valid pixel. Evidence: {evidence}"))
                     masks.append((rel, sel))
                 else:
                     a = np.ma.filled(arr.astype("float32"), np.nan)

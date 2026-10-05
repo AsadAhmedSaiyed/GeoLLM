@@ -23,42 +23,119 @@ def _params(args):
             "vararg": bool(args.vararg), "varkw": bool(args.kwarg)}
 
 
+def _annotations(args, returns):
+    """Return ({param_name: annotation_or_None}, return_annotation_or_None)."""
+    result = {}
+
+    for arg in args.posonlyargs + args.args + args.kwonlyargs:
+        result[arg.arg] = ast.unparse(arg.annotation) if arg.annotation else None
+
+    return_annotation = ast.unparse(returns) if returns else None
+
+    return result, return_annotation
+
+
 @lru_cache(maxsize=1)
 def signatures():
-    """{module: {"doc", "names", "functions": {name: {sig, doc, pos, kwonly, required, vararg, varkw, tuple_n, tuple_expr}}}}"""
+    """Return dynamically extracted API information for every library module."""
     out = {}
+
     for mod in MODULES:
         path = LIB / f"{mod}.py"
+
         if not path.exists():
             continue
+
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        funcs, names = {}, set()
+
+        funcs = {}
+        names = set()
+
         for node in tree.body:
+            # Keep track of public functions/classes/constants.
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
                 names.add(node.name)
+
             elif isinstance(node, ast.Assign):
-                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                names.update(
+                    target.id
+                    for target in node.targets
+                    if isinstance(target, ast.Name)
+                )
+
+            # Extract public function documentation.
             if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
                 n, expr = _returns(node)
-                ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
-                funcs[node.name] = {**_params(node.args), "sig": f"{node.name}({ast.unparse(node.args)}){ret}",
-                                    "doc": (ast.get_docstring(node) or "").strip(), "tuple_n": n, "tuple_expr": expr}
-        out[mod] = {"doc": (ast.get_docstring(tree) or "").split("\n")[0], "names": names, "functions": funcs}
+
+                annotations, return_annotation = _annotations(
+                    node.args,
+                    node.returns,
+                )
+
+                ret = f" -> {return_annotation}" if return_annotation else ""
+
+                funcs[node.name] = {
+                    **_params(node.args),
+                    "sig": f"{node.name}({ast.unparse(node.args)}){ret}",
+                    "doc": (ast.get_docstring(node) or "").strip(),
+                    "annotations": annotations,
+                    "return_annotation": return_annotation,
+                    "tuple_n": n,
+                    "tuple_expr": expr,
+                }
+
+        out[mod] = {
+            "doc": (ast.get_docstring(tree) or "").split("\n")[0],
+            "names": names,
+            "functions": funcs,
+        }
+
     return out
 
 
 def module_overview():
-    return "\n".join(f"- geollm_lib.{m}: {i['doc']} [{', '.join(i['functions'])}]" for m, i in signatures().items())
+    return "\n".join(
+        f"- geollm_lib.{m}: {i['doc']} [{', '.join(i['functions'])}]"
+        for m, i in signatures().items()
+    )
 
 
 def docs_for(modules):
     """Full signatures and docs for the given modules (io and result are always included)."""
     sig = signatures()
-    wanted = list(dict.fromkeys(["io", "result", *[m for m in modules if m in sig]]))
+    names = [m.removeprefix("geollm_lib.") for m in modules]
+    wanted = list(dict.fromkeys(["io", "result", *[m for m in names if m in sig]]))
     blocks = []
+
     for mod in wanted:
         blocks.append(f"# geollm_lib.{mod} - {sig[mod]['doc']}")
+
         for f in sig[mod]["functions"].values():
-            ret = f"\n    RETURNS a tuple of {f['tuple_n']}: {f['tuple_expr']}" if f["tuple_n"] else ""
-            blocks.append(f"  from geollm_lib.{mod} import {f['sig']}\n    {f['doc'].replace(chr(10), ' ')[:450]}{ret}")
+            ret = (
+                f"\n    RETURNS a tuple of {f['tuple_n']}: {f['tuple_expr']}"
+                if f["tuple_n"]
+                else ""
+            )
+
+            annotations = f.get("annotations", {})
+
+            param_types = [
+                f"{name}: {annotation}"
+                for name, annotation in annotations.items()
+                if annotation
+            ]
+
+            type_info = ""
+            if param_types:
+                type_info = "\n    Parameter types: " + ", ".join(param_types)
+
+            if f.get("return_annotation"):
+                type_info += f"\n    Return type: {f['return_annotation']}"
+
+            blocks.append(
+                f"  from geollm_lib.{mod} import {f['sig']}\n"
+                f"    {f['doc'].replace(chr(10), ' ')[:700]}"
+                f"{type_info}{ret}"
+            )
+
     return "\n".join(blocks)

@@ -277,19 +277,48 @@ The script runs inside a restricted sandbox.
 
 GENERAL PRINCIPLE
 
-The helper modules are optional shortcuts.
+The helper modules are optional capabilities and accelerators.
 
 They are NOT the complete set of operations GeoLLM can perform.
 
-If a helper directly fits the task, you may use it.
+The task requirements are the authority. Available helpers are only tools
+that may help implement those requirements.
 
-If no helper fits, implement the required computation yourself using the
-allowed NumPy, SciPy, Rasterio, GeoPandas, Shapely and standard-library tools.
+IMPLEMENTATION FREEDOM
+
+For every task, choose the implementation that best satisfies the task.
+
+You may use:
+
+1. HELPER-ONLY
+   Use documented geollm_lib helpers when they directly solve the required
+   operation.
+
+2. HYBRID
+   Combine geollm_lib helpers with custom Python logic.
+
+3. FULLY CUSTOM
+   Ignore the helpers and implement the required computation directly using
+   the allowed libraries.
+
+Do NOT force a task into an existing helper.
+
+Do NOT use a helper merely because one exists.
+
+Do NOT replace a scientifically appropriate custom computation with a simpler
+predefined index or helper.
+
+If no helper fits the task, write the required computation yourself.
+
+If a helper is useful for only part of the task, combine it with custom code.
+
+If the available helper is inappropriate for the task or data, do not use it.
 
 Do not simplify or replace the requested computation merely because a helper
 does not exist.
 
-Do not invent helper functions or helper parameters.
+Do not invent helper functions, modules, signatures, parameters, band roles,
+or return values.
 
 ENVIRONMENT
 
@@ -359,7 +388,8 @@ Use ONLY documented geollm_lib signatures.
 Check function return values carefully. Functions that return tuples must
 be unpacked.
 
-If no helper fits, write the required logic yourself.
+Helpers are optional. The absence of a suitable helper is NOT a reason to
+reject the task.
 
 BANDS
 
@@ -369,8 +399,7 @@ from geollm_lib.io import read_role
 
 or use the documented index helpers.
 
-A BandError means the data cannot support that particular band-dependent
-operation. Never silently substitute another band.
+Never silently substitute an unrelated band.
 
 If the requested analysis genuinely cannot be performed because required data
 is missing, produce a truthful error result using save_result().
@@ -411,6 +440,23 @@ available data.
 
 Do not invent observations that are not present in the input data.
 
+TASK CONTRACT
+
+The generated code must actually implement the task described by:
+
+- task description
+- inputs
+- expected outputs
+- parameters
+- constraints
+- must_report
+
+A script that merely runs successfully is NOT sufficient.
+
+For example, if the task requires SAR alignment, the script must actually
+perform the required alignment and report its result. Merely inspecting the
+dataset or calling an unrelated helper does not satisfy the task.
+
 RESULT
 
 Call save_result({...}) exactly once at the end.
@@ -442,32 +488,115 @@ Reply with exactly one ```python block and nothing else.
 """
 
 DEBUG = """
-You fix a failing GeoLLM-generated script with the SMALLEST possible change.
+You are the repair and debugging component of GeoLLM.
 
-Preserve working code.
+Your objective is to make the current implementation correctly satisfy the
+ORIGINAL TASK.
 
-Modify only what is necessary to fix the reported failure.
+Correctness and task satisfaction are more important than minimizing the diff.
 
-Do NOT rewrite the script unless more than half of it must genuinely change.
-
-Do not assume the error belongs to a predefined error catalogue.
+FIRST, DIAGNOSE THE FAILURE
 
 Reason from the actual evidence provided:
 
+- original task
 - task description
 - expected outputs
+- current script
 - failure message
 - traceback
 - failing line
-- current script
+- dataset facts
+- available capabilities
+- previous attempts
 - previous feedback
-- previous patches
 - validation results
 - visual feedback when provided
 
+Do not assume the error belongs to a predefined error catalogue.
+
 Unknown errors must be diagnosed from their actual message and context.
 
-Reply with one or more patch blocks and no other text:
+CHECK WHETHER YOUR PREVIOUS FIX WORKED
+
+Read PREVIOUS ATTEMPTS. If an earlier repair left the failure unchanged,
+that hypothesis was wrong. Do not adjust the same logic again.
+
+State a different hypothesis. Check how outputs are written (dtype,
+nodata, CRS, shape), how inputs are read, and whether the evidence in the
+failure message contradicts your assumption.
+
+DECIDE WHETHER THE CURRENT APPROACH IS SOUND
+
+If the current approach is fundamentally correct and only a localized issue
+causes the failure, make a focused patch.
+
+If the approach itself is wrong, you may change the algorithm.
+
+You may:
+
+- modify existing logic
+- remove incorrect logic
+- change the algorithm
+- use a different helper
+- stop using a helper
+- combine helpers with custom Python
+- implement the operation directly with allowed libraries
+- replace a helper-based implementation with custom code
+- completely rewrite the script when necessary
+
+Do NOT preserve incorrect code merely because it already exists.
+
+Do NOT force the solution to use an existing helper.
+
+Do NOT assume that a helper is required simply because it is available.
+
+Do NOT simplify the original task into an easier unrelated operation.
+
+TASK CORRECTNESS
+
+The repaired script must satisfy the ORIGINAL TASK, not merely execute
+without raising an exception.
+
+A script that runs successfully but does not perform the requested analysis
+is still incorrect.
+
+The repaired implementation must respect:
+
+- task description
+- inputs
+- expected outputs
+- parameters
+- constraints
+- must_report
+- dataset limitations
+
+HELPERS
+
+Helpers are optional capabilities.
+
+Use only documented geollm_lib signatures.
+
+If a helper is causing the problem or does not fit the task, replace it with
+another approach when appropriate.
+
+Custom NumPy, SciPy, Rasterio, GeoPandas, Shapely, or standard-library code
+may be used when allowed by the execution environment.
+
+DATA LIMITATIONS
+
+If the evidence shows that the available data genuinely cannot support the
+requested operation, return a truthful result using save_result().
+
+Do not silently substitute unrelated data, bands, measurements, or methods.
+
+Do not invent missing observations.
+
+OUTPUT FORMAT
+
+Prefer a SEARCH/REPLACE patch when the current implementation is sound.
+
+Use:
 
 <<<<<<< SEARCH
 exact lines copied from the current script
@@ -475,24 +604,20 @@ exact lines copied from the current script
 replacement lines
 >>>>>>> REPLACE
 
-Rules:
+Rules for SEARCH/REPLACE:
 
 - Include enough context for SEARCH to be unique.
+- Copy SEARCH text exactly from the current script.
 - Keep indentation exact.
-- Use only documented geollm_lib signatures.
-- Never add imports that are not allowed.
-- Preserve all working logic.
-- Do not replace a correct custom implementation with a helper merely because
-  a helper exists.
-- If a helper is causing the problem, custom code may be used instead.
-- If the failure is a genuine data limitation such as BandError or missing
-  required data, patch the script to return a truthful error using
-  save_result({"error": "..."}).
-- If visual feedback identifies a problem, modify only the computation or
-  plotting logic responsible for that visual problem.
-- If more than half of the script must change, return the complete corrected
-  script in one ```python block instead.
+- Do not include line numbers.
+- Make the replacement directly address the diagnosed problem.
+
+If the current implementation requires substantial changes or a different
+algorithm, return the complete corrected script in one ```python block.
+
+Do not provide explanations outside the patch or code block.
 """
+
 
 VISION = """
 You review a map or image produced by a geospatial analysis.

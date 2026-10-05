@@ -34,28 +34,111 @@ def _ollama(messages, fmt, show):
         print()
     return "".join(parts)
 
-
 def _openrouter(messages, show, model=None):
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
-        raise RuntimeError("Set OPENROUTER_API_KEY in your environment (never commit it).")
-    r = None
-    for attempt in range(4):
-        r = requests.post(OPENROUTER_URL, headers={"Authorization": f"Bearer {key}"},
-                          json={"model": model or MODEL, "messages": messages, "temperature": 0.1}, timeout=300)
-        if r.status_code == 429:
-            time.sleep(5 * (attempt + 1))
-            continue
-        break
+        raise RuntimeError(
+            "Set OPENROUTER_API_KEY in your environment (never commit it)."
+        )
+
+    payload = {
+        "model": model or MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "stream": True,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    print(
+        f"[GeoLLM] OpenRouter → model={model or MODEL}, "
+        f"timeout=120s, streaming=True",
+        flush=True,
+    )
+
+    try:
+        r = requests.post(
+            OPENROUTER_URL,
+            headers=headers,
+            json=payload,
+            timeout=120,
+            stream=True,
+        )
+    except requests.Timeout:
+        raise RuntimeError("OpenRouter request timed out after 120 seconds.")
+    except requests.RequestException as e:
+        raise RuntimeError(f"OpenRouter connection failed: {e}")
+
+    if r.status_code == 429:
+        raise RuntimeError(
+            "OpenRouter rate limit reached (429). "
+            "Wait briefly and try again."
+        )
+
     if r.status_code != 200:
-        raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:500]}")
-    data = r.json()
-    if "choices" not in data:
-        raise RuntimeError(f"OpenRouter returned no answer: {str(data)[:500]}")
-    text = data["choices"][0]["message"]["content"] or ""
+        raise RuntimeError(
+            f"OpenRouter error {r.status_code}: {r.text[:500]}"
+        )
+
+    parts = []
+
+    try:
+        for line in r.iter_lines():
+            if not line:
+                continue
+
+            line = line.decode("utf-8") if isinstance(line, bytes) else line
+
+            if not line.startswith("data:"):
+                continue
+
+            data = line[5:].strip()
+
+            if data == "[DONE]":
+                break
+
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            choices = event.get("choices") or []
+            if not choices:
+                continue
+
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content") or ""
+
+            if piece:
+                parts.append(piece)
+                if show:
+                    print(piece, end="", flush=True)
+
+    except requests.Timeout:
+        raise RuntimeError(
+            "OpenRouter response timed out while generating."
+        )
+
+    text = "".join(parts)
+
     if show:
-        print(text)
+        print()
+
+    if not text:
+        raise RuntimeError("OpenRouter returned an empty response.")
+
+    print(
+        f"[GeoLLM] OpenRouter ← response received "
+        f"({len(text)} characters)",
+        flush=True,
+    )
+
     return text
+
 
 
 def chat(messages, fmt=None, show=True):

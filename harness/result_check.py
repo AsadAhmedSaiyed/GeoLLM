@@ -17,7 +17,7 @@ def _leaves(obj, path=""):
         yield path, obj
 
 
-def check_result(result, output_dir, artifacts, facts, final=True, expected_outputs=None):
+def check_result(result, output_dir, artifacts, facts, final=True, expected_outputs=None, known_files=None):
     """Returns (errors, warnings). Errors go back to the debugger."""
     errors, warnings = [], []
     if not isinstance(result, dict):
@@ -30,6 +30,7 @@ def check_result(result, output_dir, artifacts, facts, final=True, expected_outp
         if "thresholds" not in result:
             warnings.append("No 'thresholds' reported; cutoffs used are unknown.")
     have = {Path(a).name for a in artifacts}
+    known = have | {Path(n).name for n in (known_files or [])} | {Path(n).name for n in facts["files"]}
     for name in expected_outputs or []:
         if name not in have:
             errors.append(f"expected output '{name}' was not created (created: {sorted(have)})")
@@ -46,8 +47,11 @@ def check_result(result, output_dir, artifacts, facts, final=True, expected_outp
             if not lo <= v <= hi:
                 errors.append(f"'{path}' = {v} is not a valid percentage")
         if "hectare" in low and isinstance(v, (int, float)) and not metric:
-            errors.append(f"'{path}' reports an area but the input CRS is not in metres")
-        if isinstance(v, str) and v.lower().endswith(FILE_EXT) and "/workspace/prior/" not in v \
-                and Path(v).name not in have:
-            errors.append(f"'{path}' mentions file '{v}' which was not created by this task")
+            r = rasters[0] if rasters else {}
+            errors.append(f"'{path}' reports an area, but the input CRS ({r.get('crs')}) has resolution in "
+                          f"{r.get('resolution_units')}, not metres")
+        if known_files is not None and isinstance(v, str) and v.lower().endswith(FILE_EXT) \
+                and "/workspace/" not in v and Path(v).name not in known:
+            errors.append(f"'{path}' mentions file '{v}', which is not an input, an earlier task's output, "
+                          f"or an output of this task. Known files: {sorted(known)}")
     return errors, warnings
