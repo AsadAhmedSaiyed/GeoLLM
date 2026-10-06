@@ -11,3 +11,4 @@ data/*
 *.tar
 .env
 .vscode/
+node_modules
