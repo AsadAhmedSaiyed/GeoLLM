@@ -18,6 +18,14 @@ OUTPUT_LIMIT_MB = int(os.environ.get("GEOLLM_OUTPUT_LIMIT_MB", "1024"))
 def _tail(text, n=MAX_LOG):
     return text if len(text) <= n else "...[truncated]...\n" + text[-n:]
 
+def _error_summary(stderr):
+    if not stderr:
+        return ""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return lines[-1]
+
 
 def _open_perms(path):
     for root, dirs, files in os.walk(path):
@@ -44,6 +52,14 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
         dest = in_dir / Path(f).name
         shutil.copy(f, dest)
         os.chmod(dest, 0o644)
+    input_manifest = [
+        {
+         "host_path": str(Path(f).resolve()),
+         "sandbox_path": f"/workspace/input/{Path(f).name}",
+         "filename": Path(f).name,
+        }
+        for f in input_files
+    ]    
     (code_dir / "script.py").write_text(code)
     for d in (work, in_dir, code_dir):
         os.chmod(d, 0o755)
@@ -112,8 +128,24 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
             result = None
     shutil.rmtree(work, ignore_errors=True)
     return {
-        "exit_code": exit_code, "timed_out": timed_out, "oom": oom, "oversize": oversize,
-        "stdout": _tail(stdout), "stderr": _tail(stderr), "startup_s": round(startup, 2),
-        "duration_s": round(duration, 2), "result": result, "artifacts": artifacts,
-        "run_dir": str(run_dir), "output_dir": str(dest_out),
+        "exit_code": exit_code,
+    "timed_out": timed_out,
+    "oom": oom,
+    "oversize": oversize,
+    "stdout": _tail(stdout),
+    "stderr": _tail(stderr),
+    "startup_s": round(startup, 2),
+    "duration_s": round(duration, 2),
+    "result": result,
+    "artifacts": artifacts,
+    "run_dir": str(run_dir),
+    "output_dir": str(dest_out),
+    "error": _error_summary(stderr),
+    # Sandbox contract exposed to the agent
+    "sandbox": {
+        "working_directory": "/workspace/output",
+        "input_directory": "/workspace/input",
+        "output_directory": "/workspace/output",
+        "input_files": input_manifest,
+    },
     }

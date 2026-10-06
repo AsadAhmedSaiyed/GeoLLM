@@ -1,0 +1,33 @@
+{
+  "name": "geollm",
+  "version": "1.0.0",
+  "description": "Offline geospatial analysis: a local LLM writes Python that runs in a fresh, no-network Docker container.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AsadAhmedSaiyed/GeoLLM.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AsadAhmedSaiyed/GeoLLM/issues"
+  },
+  "homepage": "https://github.com/AsadAhmedSaiyed/GeoLLM#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.3",
+    "typebox": "^1.3.35"
+  }
+}

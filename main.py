@@ -4,7 +4,9 @@ from pathlib import Path
 
 import harness  # puts lib/ on sys.path
 from geollm_lib.bands import ROLES
-from harness.agent import solve
+# from harness.agent import solve
+from harness.pi_harness import solve
+
 
 DATA = Path("data")
 EXT = {".tif", ".tiff", ".geojson", ".gpkg", ".json"}

@@ -94,10 +94,18 @@ def signatures():
 
 
 def module_overview():
-    return "\n".join(
-        f"- geollm_lib.{m}: {i['doc']} [{', '.join(i['functions'])}]"
-        for m, i in signatures().items()
-    )
+    blocks = []
+
+    for mod, info in signatures().items():
+        blocks.append(f"# geollm_lib.{mod} - {info['doc']}")
+
+        for f in info["functions"].values():
+            blocks.append(
+                f"  from geollm_lib.{mod} import {f['sig']}\n"
+                f"    {f['doc'].replace(chr(10), ' ')[:500]}"
+            )
+
+    return "\n".join(blocks)
 
 
 def docs_for(modules):
