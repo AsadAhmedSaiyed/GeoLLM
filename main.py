@@ -4,8 +4,8 @@ from pathlib import Path
 
 import harness  # puts lib/ on sys.path
 from geollm_lib.bands import ROLES
-# from harness.agent import solve
-from harness.pi_harness import solve
+from harness import chat
+from harness.orchestrator import GeoLLMOrchestrator
 
 
 DATA = Path("data")
@@ -15,8 +15,8 @@ p = argparse.ArgumentParser(description="Ask a question about geospatial files (
 p.add_argument("question")
 p.add_argument("files", nargs="*", help="file names in data/ or paths. Default: the only raster in data/")
 p.add_argument("--bands", default="", help='only for unlabelled bands, e.g. "red=3,nir=4"')
-p.add_argument("--max-turns", type=int, default=None, help="max attempts per task (default 3)")
-p.add_argument("--no-explain", action="store_true", help="print the raw result JSON instead of an explanation")
+p.add_argument("--max-turns", type=int, default=None, help="max tool calls per Pi run")
+p.add_argument("--no-explain", action="store_true", help="keep the final answer short")
 a = p.parse_args()
 
 files = []
@@ -28,7 +28,8 @@ for f in a.files:
 if not files:
     rasters = sorted(x for x in DATA.glob("*") if x.suffix.lower() in (".tif", ".tiff"))
     if len(rasters) != 1:
-        sys.exit("Say which files to use. Files in data/: " + ", ".join(x.name for x in sorted(DATA.glob("*")) if x.suffix.lower() in EXT))
+        sys.exit("Say which files to use. Files in data/: "
+                 + ", ".join(x.name for x in sorted(DATA.glob("*")) if x.suffix.lower() in EXT))
     files = [str(rasters[0])]
 
 overrides = {}
@@ -38,11 +39,41 @@ for part in filter(None, a.bands.split(",")):
         sys.exit(f"Bad --bands entry '{part}'. Use role=number with roles {ROLES}")
     overrides[role.strip()] = int(num)
 
-r = solve(a.question, files, overrides=overrides, max_turns=a.max_turns, explain=not a.no_explain)
-print("\n" + "=" * 60)
-print(("I need one detail before I can answer:\n" if r["status"] == "clarify" else "") + r["answer"])
-print(f"\nstatus: {r['status']} | attempts: {r['turns']} | {r['seconds']}s | tasks: {r['tasks']}")
-for w in r["warnings"]:
-    print("warning:", w)
-if r["artifacts"]:
-    print("files in", r["run_dir"] + ":", *r["artifacts"], sep="\n  ")
+
+def on_finish():
+    print("\n" + orch.outcome_line() + "\n> ", end="", flush=True)
+
+
+orch = GeoLLMOrchestrator(on_finish=on_finish)
+orch.run_async(a.question, files, overrides=overrides, max_turns=a.max_turns,
+               explain=not a.no_explain)
+print("Analysis running in background. Progress prints below. "
+      "Chat with me about anything (do not paste the question again). Type 'quit' to exit.")
+
+history = []
+while True:
+    try:
+        q = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        break
+    if q.lower() in ("quit", "exit"):
+        break
+    if not q:
+        continue
+    history.append({"role": "user", "content": q})
+    try:
+        reply = chat.ask(history[-6:], orch.snapshot())
+    except Exception as e:
+        reply = f"(chat model error: {e})"
+    if reply.strip().startswith("RUN_JOB:"):
+        task = reply.strip()[len("RUN_JOB:"):].strip()
+        print(f"\nProposed new job:\n{task}")
+        if input("Run it? [y/N] ").strip().lower() != "y":
+            reply = "Cancelled. No new job was started."
+        elif orch.run_async(task, files, overrides=overrides, max_turns=a.max_turns,
+                            explain=not a.no_explain):
+            reply = "Started a new background job."
+        else:
+            reply = "A job is still running. Ask again when it finishes."
+    history.append({"role": "assistant", "content": reply})
+    print(reply)

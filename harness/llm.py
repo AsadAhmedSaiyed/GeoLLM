@@ -157,7 +157,8 @@ def chat(messages, fmt=None, show=True):
 
 
 def vision_available():
-    return bool(VISION_MODEL) and PROVIDER in ("openrouter", "ollama")
+    return bool(VISION_MODEL) and (PROVIDER in ("openrouter", "ollama") or bool(os.environ.get("OPENROUTER_API_KEY")))
+
 
 
 def chat_vision(prompt, image_paths):

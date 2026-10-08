@@ -26,6 +26,7 @@ class Config:
     result_contract: str
     max_message_chars: int
     verbose: bool
+    vision_max_retries: int
 
     @property
     def tool_timeout_s(self) -> int:
@@ -53,4 +54,5 @@ def load_config() -> Config:
         ),
         max_message_chars=_f("GEOLLM_MAX_MESSAGE_CHARS", 6000),
         verbose=os.environ.get("GEOLLM_PI_VERBOSE", "1") != "0",
+        vision_max_retries=_f("GEOLLM_VISION_MAX_RETRIES", 2),
     )
