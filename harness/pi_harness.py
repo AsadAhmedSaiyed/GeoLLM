@@ -116,7 +116,8 @@ def solve(question, files, overrides=None, max_turns=None, explain=True,
            "GEOLLM_RUN_DIR": str(run_dir),
            "GEOLLM_ALLOWED_FILES": json.dumps([str(f) for f in files]),
            "GEOLLM_TOOL_TIMEOUT_S": str(cfg.tool_timeout_s),
-           "GEOLLM_MAX_TOOL_CALLS": str(cfg.max_tool_calls)}
+           "GEOLLM_MAX_TOOL_CALLS": str(cfg.max_tool_calls),
+           "GEOLLM_QUESTION": question}
 
     args = [pi_exe, "--mode", "rpc", "--no-session", "--no-builtin-tools",
             "--no-context-files", "--no-extensions", "-e", str(EXTENSION)]

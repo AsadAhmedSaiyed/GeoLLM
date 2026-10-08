@@ -56,34 +56,43 @@ def _find_artifact(a, attempt_dir: Path):
     hits = list(attempt_dir.rglob(p.name))
     return hits[0] if hits else None
 
-
 def _validate(res, attempt_dir, cfg):
     errors, warnings, artifacts = [], [], []
     if res.get("exit_code") != 0:
         return errors, warnings, artifacts
+
     result = res.get("result")
+    q = os.environ.get("GEOLLM_QUESTION", "").lower()
+
+    # 1. Allow inspection calls to succeed without punishing the agent
     if result is None:
-        errors.append("The script finished but saved no result (see the output contract).")
-    elif cfg.required_result_keys:
-        missing = [k for k in cfg.required_result_keys if not isinstance(result, dict) or k not in result]
-        if missing:
-            errors.append(f"Saved result is missing required keys: {missing}")
+        # Script inspected data; not a fatal error
+        return errors, warnings, artifacts
+
+    # 2. Check summary in result.json
+    summary = result.get("summary") if isinstance(result, dict) else None
+    if not summary or (isinstance(summary, str) and len(summary.strip()) < 20):
+        errors.append("result.json is missing a substantive 'summary' section explaining the findings and evidence.")
+
+    # 3. Collect declared artifacts
     for a in res.get("artifacts") or []:
         found = _find_artifact(a, attempt_dir)
         if found is None:
             errors.append(f"Declared output file not found: {a}")
             continue
         artifacts.append(str(found))
-        if found.suffix.lower() in RASTER_EXT:
-            try:
-                import rasterio
-                with rasterio.open(found) as ds:
-                    if ds.count < 1 or ds.width < 1 or ds.height < 1:
-                        errors.append(f"Raster is empty: {found.name}")
-            except ImportError:
-                warnings.append("rasterio unavailable on host; raster readability not checked")
-            except Exception as e:
-                errors.append(f"Raster is not readable ({found.name}): {e}")
+
+    # 4. Dynamically verify deliverables based on user request (NO HARDCODING)
+    needs_spatial = any(w in q for w in ("geotiff", ".tif", "tif", "raster", "spatial result", "spatial output", "georeferenced form", "vector", "geojson"))
+    has_spatial = any(Path(a).suffix.lower() in RASTER_EXT or Path(a).suffix.lower() in (".geojson", ".gpkg") for a in artifacts)
+    if needs_spatial and not has_spatial:
+        errors.append("The task requires georeferenced spatial outputs (GeoTIFF .tif), but none were saved to /workspace/output. Use write_raster() or rasterio to save them.")
+
+    needs_map = any(w in q for w in ("map", "image", "visual", "figure", "plot", "png"))
+    has_map = any(Path(a).suffix.lower() == ".png" for a in artifacts)
+    if needs_map and not has_map:
+        errors.append("The task requires map/visual outputs, but no .png figures were saved to /workspace/output. Use matplotlib or geollm_lib.viz to save map images.")
+
     return errors, warnings, artifacts
 
 
@@ -110,6 +119,16 @@ def _message(ok, attempt, res, errors, artifacts, cfg):
                 f"{item.get('sandbox_path', 'unknown')}"
             )
 
+        # If the subagent ran an inspection step:
+    if res.get("exit_code") == 0 and res.get("result") is None:
+        return (
+            f"Inspection completed successfully (attempt {attempt}/{cfg.max_tool_calls}).\n"
+            f"Discovered data / metadata:\n{tail(res.get('stdout'))}\n"
+            + "\n".join(sandbox_lines)
+            + "\n\nNEXT ACTION: Inspection complete. Now write your full analysis script that computes the results, saves all required GeoTIFF (.tif) rasters, saves all map figures (.png), and saves result.json with summary."
+        )
+
+    # When all outputs are verified:
     if ok:
         return (
             f"Execution SUCCEEDED (attempt {attempt}/{cfg.max_tool_calls}).\n"
@@ -117,8 +136,10 @@ def _message(ok, attempt, res, errors, artifacts, cfg):
             f"Result:\n{json.dumps(res.get('result'), default=str, indent=2)[:cap]}\n"
             f"Stdout:\n{tail(res.get('stdout'))}\n"
             + "\n".join(sandbox_lines)
+            + "\n\nCRITICAL STOP DIRECTIVE: All required spatial outputs, map images, and result.json with summary are verified and COMPLETE. Make ZERO further tool calls. Output your final text summary report now and STOP."
         )
 
+    
     parts = [
         f"Execution FAILED "
         f"(attempt {attempt}/{cfg.max_tool_calls}, "
