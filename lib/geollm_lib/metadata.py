@@ -1,6 +1,8 @@
 """Facts about the input files (what the LLM sees instead of pixels)."""
 import math
 from pathlib import Path
+import os
+MAX_SAMPLED_BANDS = int(os.environ.get("GEOLLM_MAX_BAND_SAMPLES", "10"))
 
 import rasterio
 from rasterio.errors import RasterioIOError
@@ -47,15 +49,18 @@ def inspect_geotiff(path):
         labels = list(src.descriptions)
         bands = []
         for i in range(1, src.count + 1):
-            entry = {"index": i, "label": labels[i - 1], "role": label_role(labels[i - 1], sensor),
-                     "dtype": src.dtypes[i - 1], "nodata": _safe(src.nodatavals[i - 1])}
+          entry = {...}
+          if i <= MAX_SAMPLED_BANDS:          # only sample first N bands
             entry.update(_band_sample(src, i))
-            bands.append(entry)
+          bands.append(entry)
+
         metric = src.crs.is_projected and str(src.crs.linear_units).lower() in ("metre", "meter", "m")
         rx, ry = src.res
         return {
             "kind": "raster", "format": "GeoTIFF", "width": src.width, "height": src.height,
-            "band_count": src.count, "bands": bands, "band_roles": infer_roles(labels, tags),
+            "band_count": src.count, "bands": bands[:MAX_SAMPLED_BANDS] if src.count > MAX_SAMPLED_BANDS else bands,
+"bands_truncated": src.count > MAX_SAMPLED_BANDS,
+ "band_roles": infer_roles(labels, tags),
             "sensor": sensor, "date": tags.get("ACQUISITION_DATETIME"),
             "crs": src.crs.to_string(), "crs_is_projected": src.crs.is_projected,
             "resolution": [rx, ry], "resolution_units": src.crs.linear_units if src.crs.is_projected else "degrees",
