@@ -5,7 +5,7 @@ from pathlib import Path
 import harness  # puts lib/ on sys.path
 from geollm_lib.bands import ROLES
 from harness import chat
-from harness.orchestrator import GeoLLMOrchestrator
+from harness.orchestrator import TaskManager
 
 
 DATA = Path("data")
@@ -40,15 +40,16 @@ for part in filter(None, a.bands.split(",")):
     overrides[role.strip()] = int(num)
 
 
-def on_finish():
-    print("\n" + orch.outcome_line() + "\n> ", end="", flush=True)
+def on_finish(task_id):
+    print("\n" + tm.outcome_line(task_id) + "\n> ", end="", flush=True)
 
 
-orch = GeoLLMOrchestrator(on_finish=on_finish)
-orch.run_async(a.question, files, overrides=overrides, max_turns=a.max_turns,
-               explain=not a.no_explain)
-print("Analysis running in background. Progress prints below. "
-      "Chat with me about anything (do not paste the question again). Type 'quit' to exit.")
+tm = TaskManager(on_finish=on_finish, auto_approve=True)
+
+task_id = tm.submit_task(a.question, files, overrides=overrides, max_turns=a.max_turns,
+                         explain=not a.no_explain)
+print(f"Analysis running in background as {task_id}. Progress prints below. "
+      f"Chat with me about anything. Type 'quit' to exit.")
 
 history = []
 while True:
@@ -62,7 +63,7 @@ while True:
         continue
     history.append({"role": "user", "content": q})
     try:
-        reply = chat.ask(history[-6:], orch.snapshot())
+        reply = chat.ask(history[-6:], tm.multi_snapshot())
     except Exception as e:
         reply = f"(chat model error: {e})"
     if reply.strip().startswith("RUN_JOB:"):
@@ -70,10 +71,16 @@ while True:
         print(f"\nProposed new job:\n{task}")
         if input("Run it? [y/N] ").strip().lower() != "y":
             reply = "Cancelled. No new job was started."
-        elif orch.run_async(task, files, overrides=overrides, max_turns=a.max_turns,
-                            explain=not a.no_explain):
-            reply = "Started a new background job."
         else:
-            reply = "A job is still running. Ask again when it finishes."
+            new_tid = tm.submit_task(task, files, overrides=overrides, max_turns=a.max_turns,
+                                     explain=not a.no_explain)
+            if new_tid:
+                reply = f"Started new background job as {new_tid}."
+            else:
+                reply = "All 3 task slots are busy. Wait for one to finish."
     history.append({"role": "assistant", "content": reply})
     print(reply)
+
+# QUIT FIX: kill all running tasks and force exit
+tm.cancel_all()
+sys.exit(0)

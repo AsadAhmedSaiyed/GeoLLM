@@ -85,8 +85,8 @@ def _stderr_tail(run_dir, n=400):
         return ""
 
 
-def solve(question, files, overrides=None, max_turns=None, explain=True,
-          on_step=None, state=None) -> dict:
+def solve(question, files, overrides=None, max_turns=None, explain=True, on_step=None, state=None, task_id="task_1", task_state=None) -> dict:
+
     step = on_step or (lambda s: None)
     state = state if state is not None else {}
     t0 = time.time()
@@ -105,10 +105,14 @@ def solve(question, files, overrides=None, max_turns=None, explain=True,
         return _result("failed", f"Missing Pi extension: {EXTENSION}")
 
     facts = inspect_dataset(files)
-    run_dir = cfg.runs_dir / (time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4])
+    run_dir = cfg.runs_dir / (time.strftime("%Y%m%d_%H%M%S") + "_" + task_id)
+
     run_dir.mkdir(parents=True, exist_ok=True)
+    if not task_state or getattr(task_state, "auto_approve", False):
+        (run_dir / "plan_approved.flag").touch()
     state.update(run_dir=str(run_dir), facts=json.dumps(facts, default=str)[:3000],
                  tool_calls=0, pi_text="", last_tool="")
+
 
     env = {**os.environ,
            "GEOLLM_PYTHON": sys.executable,
@@ -117,7 +121,8 @@ def solve(question, files, overrides=None, max_turns=None, explain=True,
            "GEOLLM_ALLOWED_FILES": json.dumps([str(f) for f in files]),
            "GEOLLM_TOOL_TIMEOUT_S": str(cfg.tool_timeout_s),
            "GEOLLM_MAX_TOOL_CALLS": str(cfg.max_tool_calls),
-           "GEOLLM_QUESTION": question}
+           "GEOLLM_QUESTION": question,
+           "GEOLLM_TASK_ID": task_id}
 
     args = [pi_exe, "--mode", "rpc", "--no-session", "--no-builtin-tools",
             "--no-context-files", "--no-extensions", "-e", str(EXTENSION)]
@@ -152,19 +157,102 @@ def solve(question, files, overrides=None, max_turns=None, explain=True,
     print("[GeoLLM] Starting Pi RPC...", flush=True)
     print(f"[GeoLLM] Run directory: {run_dir}", flush=True)
     pi = PiRPC(args, cwd=Path.cwd(), env=env, stderr_path=run_dir / "pi_stderr.log")
+    if task_state:
+        task_state.pi_rpc = pi
     state["pi_live"] = pi.snapshot          # lets the status chat read real Pi state
+
 
     warnings, answer = [], ""
     stats = {"tool_calls": 0, "turns": 0, "aborted": False}
     vision_log = []
     session_problem = False
     try:
+        #new
         prompt = _build_prompt(cfg, question, files, facts, overrides, explain)
-        step("Pi is reading the data and writing code")
+        step("Pi is reading data and drafting an analysis plan")
         stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
                               cfg.max_tool_calls, on_event)
         answer = pi.last_assistant_text()
+
+        # ---- Plan Approval Gate ----
+        plan_file = run_dir / "plan.json"
+        plan_approved = not task_state or getattr(task_state, "auto_approve", False)
+        revisions = 0
+
+        # Case 1: CLI Auto-Approve (executes immediately without blocking)
+        if task_state and getattr(task_state, "auto_approve", False):
+            if plan_file.exists():
+                plan_file.unlink()
+                step("Plan auto-approved (CLI mode) — executing analysis")
+                pi.drain()
+                stats = pi.run_prompt(
+                    "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
+                    "Write all requested GeoTIFF/PNG files and verify deliverables.",
+                    cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls, on_event
+                )
+                answer = pi.last_assistant_text()
+
+        # Case 2: Web UI Human-in-the-Loop Review
+        elif task_state:
+            while revisions <= 3:
+                if not plan_file.exists():
+                    break
+
+                try:
+                    pdata = json.loads(plan_file.read_text(encoding="utf-8"))
+                    plan_file.unlink()
+                except Exception:
+                    break
+
+                task_state.approval_event.clear()
+                task_state.plan = pdata.get("plan", "")
+                task_state.status = "pending_approval"
+                step("Plan submitted — waiting for user approval")
+
+                approved = task_state.approval_event.wait(timeout=1800)
+                if not approved or task_state.error == "Cancelled by user":
+                    if not approved:
+                        task_state.error = "Approval timed out after 30 minutes"
+                    task_state.status = "failed"
+                    return _result("failed", task_state.error, run_dir)
+
+                if task_state.revision_feedback:
+                    revisions += 1
+                    step(f"Revising plan ({revisions}/3): {task_state.revision_feedback[:50]}...")
+                    task_state.status = "running"
+                    fb = task_state.revision_feedback
+                    task_state.revision_feedback = None
+                    pi.drain()
+                    stats = pi.run_prompt(
+                        f"The user reviewed your plan and requested changes:\n{fb}\n\n"
+                        "Revise your approach and call `propose_plan` again.",
+                        cfg.idle_timeout_s, cfg.total_timeout_s,
+                        cfg.max_tool_calls, on_event
+                    )
+                    answer = pi.last_assistant_text()
+                    continue
+
+                plan_approved = True
+                (run_dir / "plan_approved.flag").touch()
+                step("Plan approved — running substantive code execution")
+                task_state.status = "running"
+                pi.drain()
+                stats = pi.run_prompt(
+                    "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
+                    "Write all requested GeoTIFF/PNG files and verify deliverables.",
+                    cfg.idle_timeout_s, cfg.total_timeout_s,
+                    cfg.max_tool_calls, on_event
+                )
+                answer = pi.last_assistant_text()
+                break
+
+            if not plan_approved:
+                msg = ("Too many plan revisions" if revisions > 3 else "Agent did not propose a plan")
+                return _result("failed", msg, run_dir, warnings=[msg])
+
         step("First analysis finished")
+
+        #new
 
         # ---- vision loop: check -> Pi fixes -> check again ----
         if llm.vision_available():

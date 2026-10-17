@@ -28,23 +28,34 @@ def _next_attempt(run_dir: Path):
 
 
 def _safe_inputs(requested, allowed_originals):
-    """Only files GeoLLM itself supplied may be mounted. Returns (files, error)."""
+    """Only files GeoLLM itself supplied may be mounted. Returns (files, error).
+    Accepts host paths, filenames, and container paths (/workspace/input/<file>)."""
     allowed = {str(Path(o).resolve()): o for o in allowed_originals}
+    allowed_by_name = {Path(o).name: o for o in allowed_originals}
     if not requested:
         return list(allowed.values()), None
     out = []
     for r in requested:
         hit = allowed.get(str(Path(r).resolve()))
         if hit is None:
+            name = r
+            if r.startswith("/workspace/input/"):
+                name = r[len("/workspace/input/"):]
+            name = Path(name).name
+            hit = allowed_by_name.get(name)
+        if hit is None:
             return None, f"Input file not permitted: {r!r}. Allowed: {list(allowed.values())}"
         out.append(hit)
     return out, None
 
 
+
 def _call_executor(code, files, attempt_dir, cfg):
     params = inspect.signature(run_code).parameters
-    wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus}
+    task_id = os.environ.get("GEOLLM_TASK_ID", "")
+    wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id}
     return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params})
+
 
 
 def _find_artifact(a, attempt_dir: Path):
@@ -175,11 +186,28 @@ def main():
         attempt, attempt_dir = _next_attempt(run_dir)
         out["attempt"] = attempt
 
+                # 1. Cancel check
+        if (run_dir / "cancelled.flag").exists():
+            out["message"] = "Execution aborted: task was cancelled by user."
+            sys.stdout.write(json.dumps(out, default=str) + "\n")
+            sys.stdout.flush()
+            return
+
+        # 2. Plan gate write guard
+        code_str = payload.get("code") or ""
+        if not (run_dir / "plan_approved.flag").exists():
+            if any(k in code_str for k in [".write(", "to_file(", "savefig", "np.save", "imwrite"]):
+                out["message"] = "Policy violation: Call propose_plan and wait for user approval before saving deliverable files."
+                sys.stdout.write(json.dumps(out, default=str) + "\n")
+                sys.stdout.flush()
+                return
+
         files, err = _safe_inputs(payload.get("input_files") or [], allowed)
         if err:
             out["message"] = err
         else:
             (attempt_dir / "script.py").write_text(payload["code"], encoding="utf-8")
+
             with contextlib.redirect_stdout(sys.stderr):      # keep our stdout clean
                 res = _call_executor(payload["code"], files, attempt_dir, cfg)
             errors, warnings, artifacts = _validate(res, attempt_dir, cfg)

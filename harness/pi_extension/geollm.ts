@@ -29,7 +29,8 @@ export default function (pi: ExtensionAPI) {
       "inside the sandbox. Prefer dynamically discovering files from " +
       "/workspace/input/. Returns execution status, complete error information, " +
       "sandbox paths, stdout/stderr, results and artifacts. " +
-      `Allowed host input files: ${allowed.join(", ")}`,
+      `Allowed input files (inside container: /workspace/input/<filename>): ${allowed.map(f => "/workspace/input/" + f.split(/[/\\]/).pop()).join(", ")}`,
+
 
     parameters: Type.Object({
       code: Type.String({ description: "Complete Python script to execute." }),
@@ -146,9 +147,52 @@ export default function (pi: ExtensionAPI) {
           }
         });
 
-        child.stdin.write(JSON.stringify(params));
+                child.stdin.write(JSON.stringify(params));
         child.stdin.end();
       });
+    },
+  });
+
+  // ---- Plan Proposal Tool ----
+  pi.registerTool({
+    name: "propose_plan",
+    label: "Propose Analysis Plan",
+    description:
+      "Submit an analysis plan for user review BEFORE writing substantive code. " +
+      "Call this after inspecting metadata. Once called, wait for approval.",
+    parameters: Type.Object({
+      plan: Type.String({
+        description: "Markdown describing: hypothesis, bands/indices, methods, and expected outputs.",
+      }),
+      expected_outputs: Type.Array(Type.String(), {
+        description: "Expected filenames like ['water_mask.tif', 'report.png'].",
+      }),
+    }),
+        async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const fs = await import("node:fs");
+      const runDir = process.env.GEOLLM_RUN_DIR;
+      if (!runDir) {
+        return {
+          content: [{ type: "text", text: "Error: GEOLLM_RUN_DIR not set." }],
+          details: { ok: false, error: "GEOLLM_RUN_DIR not set" },
+          isError: true,
+        };
+      }
+      fs.writeFileSync(
+        `${runDir}/plan.json`,
+        JSON.stringify({ plan: params.plan, outputs: params.expected_outputs }, null, 2),
+        "utf-8"
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Plan submitted to user. Waiting for approval or revision feedback. Do NOT run code until instructed.",
+          },
+        ],
+        details: { ok: true, plan: params.plan, outputs: params.expected_outputs },
+        isError: false,
+      };
     },
   });
 }

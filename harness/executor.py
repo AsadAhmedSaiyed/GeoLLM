@@ -40,11 +40,11 @@ def _size_mb(path):
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
 
-def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None, prior=None):
+def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None, prior=None, task_id=""):
     """Run `code` once. prior={task_id: host_dir} mounts earlier task outputs read-only at /workspace/prior/<task_id>.
     Everything is saved under run_dir: code.py, stdout.txt, stderr.txt, outputs/."""
     client = docker.from_env()
-    work = Path(tempfile.mkdtemp(prefix="geollm_"))
+    work = Path(tempfile.mkdtemp(prefix=f"geollm_{task_id}_" if task_id else "geollm_"))
     in_dir, code_dir, out_dir = work / "input", work / "code", work / "output"
     for d in (in_dir, code_dir, out_dir):
         d.mkdir()
@@ -80,13 +80,16 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
     t0 = time.time()
     startup = duration = 0.0
     try:
+        cname = f"geollm_{task_id}_{int(time.time())}" if task_id else None
         container = client.containers.create(
             IMAGE, command=["python", "/workspace/code/script.py"], working_dir="/workspace/output",
+            name=cname,
             environment={"MPLCONFIGDIR": "/tmp/mpl", "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
             network_mode="none", mem_limit=memory, memswap_limit=memory, nano_cpus=int(cpus * 1e9),
             pids_limit=128, read_only=True, tmpfs={"/tmp": "size=512m"},
             cap_drop=["ALL"], security_opt=["no-new-privileges"], volumes=volumes,
         )
+
         container.start()
         startup = time.time() - t0
         t1 = time.time()
