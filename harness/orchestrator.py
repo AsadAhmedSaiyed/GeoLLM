@@ -219,20 +219,22 @@ class TaskManager:
         with self._lock:
             s = dict(ts.state)
             elapsed = round((ts.ended or time.time()) - ts.started, 1) if ts.started else 0
+            recent_events = [e for e in ts.events[-5:] if e]
+            events_summary = " -> ".join(recent_events) if recent_events else ts.step
             lines = [
                 f"[{task_id}] QUESTION: {ts.question}",
                 f"[{task_id}] STATUS: {ts.status}",
-                f"[{task_id}] STEP: {ts.step}",
-                f"[{task_id}] ELAPSED: {elapsed}s" + (" (final)" if ts.ended else ""),
-                f"[{task_id}] TOOL CALLS: {s.get('tool_calls', 0)}",
-                f"[{task_id}] LAST TOOL: {s.get('last_tool', '')}",
-                f"[{task_id}] PI OUTPUT: {s.get('pi_text', '')}",
+                f"[{task_id}] CURRENT_STEP: {ts.step}",
+                f"[{task_id}] RECENT_ACTIVITY: {events_summary}",
+                f"[{task_id}] ELAPSED: {elapsed}s" + (" (finished)" if ts.ended else " (active)"),
+                f"[{task_id}] TOOL_CALLS_COMPLETED: {s.get('tool_calls', 0)}",
             ]
             if ts.plan:
-                lines.append(f"[{task_id}] PLAN: {ts.plan[:500]}")
+                lines.append(f"[{task_id}] PROPOSED_PLAN: {ts.plan[:400]}")
             if ts.error:
-                lines.append(f"[{task_id}] ERROR: {ts.error}")
+                lines.append(f"[{task_id}] ERROR_DETAILS: {ts.error}")
             result = ts.result
+
 
         rd = s.get("run_dir")
         if rd:

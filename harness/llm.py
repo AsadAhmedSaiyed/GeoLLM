@@ -157,22 +157,43 @@ def chat(messages, fmt=None, show=True):
 
 
 def vision_available():
-    return bool(VISION_MODEL) and (PROVIDER in ("openrouter", "ollama") or bool(os.environ.get("OPENROUTER_API_KEY")))
-
+    return bool(VISION_MODEL) and (
+        PROVIDER == "openrouter"
+        or bool(os.environ.get("OPENROUTER_API_KEY"))
+        or "/" in VISION_MODEL
+        or PROVIDER == "ollama"
+    )
 
 
 def chat_vision(prompt, image_paths):
-    """Ask GEOLLM_VISION_MODEL about PNG images. Raises if no vision model is configured."""
+    """Ask GEOLLM_VISION_MODEL about PNG images. Uses OpenRouter for cloud models (e.g. Gemini)."""
     if not vision_available():
         raise RuntimeError("No vision model configured (set GEOLLM_VISION_MODEL).")
     b64 = [base64.b64encode(open(p, "rb").read()).decode() for p in image_paths]
-    if PROVIDER == "openrouter":
+
+    # Route to OpenRouter if an API key is present or model contains '/' (e.g. google/gemini-2.5-flash)
+    use_openrouter = (
+        PROVIDER == "openrouter"
+        or bool(os.environ.get("OPENROUTER_API_KEY"))
+        or "/" in VISION_MODEL
+    )
+    if use_openrouter:
         content = [{"type": "text", "text": prompt}] + [
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in b64]
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in b64
+        ]
         return _openrouter([{"role": "user", "content": content}], False, model=VISION_MODEL)
-    r = requests.post(f"{OLLAMA_URL}/api/chat", timeout=600, json={
-        "model": VISION_MODEL, "stream": False, "options": {"temperature": 0.1},
-        "messages": [{"role": "user", "content": prompt, "images": b64}]})
+
+    # Fallback to local Ollama only for local models without '/'
+    r = requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        timeout=600,
+        json={
+            "model": VISION_MODEL,
+            "stream": False,
+            "options": {"temperature": 0.1},
+            "messages": [{"role": "user", "content": prompt, "images": b64}],
+        },
+    )
     if r.status_code != 200:
         raise RuntimeError(f"Ollama vision error {r.status_code}: {r.text}")
     return r.json()["message"]["content"]

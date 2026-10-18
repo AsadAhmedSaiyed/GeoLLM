@@ -274,15 +274,30 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     warnings.append(f"Vision check failed: {e}")
                     break
                 bad = [v for v in verdicts if v.get("status") == "needs_revision"]
-                vision_log.append({"round": attempt + 1, "checked": len(verdicts),
-                                   "bad": [{"file": v["file"], "issues": v.get("issues", [])} for v in bad]})
+                skipped = [v for v in verdicts if v.get("status") == "skipped"]
+                passed = [v for v in verdicts if v.get("status") == "ok"]
+
+                vision_log.append({
+                    "round": attempt + 1,
+                    "checked": len(verdicts),
+                    "bad": [{"file": v["file"], "issues": v.get("issues", [])} for v in bad],
+                    "skipped": [{"file": v["file"], "reason": v.get("recommended_action", "")} for v in skipped]
+                })
+
+                if skipped:
+                    reason = skipped[0].get("recommended_action", "unknown vision error")
+                    warnings.append(f"Vision check warning: {reason}")
+                    step(f"Vision check warning: {reason[:60]}")
+
                 if not bad:
-                    step("Vision check passed")
+                    if passed:
+                        step("Vision check passed")
                     break
                 if attempt == max_r:
                     warnings.append("Vision issues remain after max retries: "
                                     + "; ".join(v["file"] for v in bad))
                     break
+
                 step(f"Pi fixing {len(bad)} map issue(s) (retry {attempt + 1}/{max_r})")
                 critique = "\n".join(
                     f"- {v['file']}: {'; '.join(map(str, v.get('issues', [])))} "
