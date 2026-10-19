@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 import harness
 from geollm_lib.bands import ROLES
-from harness.orchestrator import TaskManager
+from harness.orchestrator import TaskManager, find_artifacts
 from harness import chat
 
 if sys.platform == "win32":
@@ -51,29 +51,6 @@ class TaskSubmission(BaseModel):
 
 class RevisionPayload(BaseModel):
     feedback: str
-
-
-def find_artifacts(run_dir):
-    artifacts = []
-    if not run_dir or not Path(run_dir).exists():
-        return artifacts
-    for p in Path(run_dir).rglob("*"):
-        if p.is_file() and p.suffix.lower() in [".png", ".tif", ".geojson", ".csv", ".json"]:
-            if any(x in p.name.lower() for x in ["feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", ".flag"]):
-                continue
-            try:
-                rel = p.relative_to(Path.cwd()).as_posix()
-            except ValueError:
-                parts = p.parts
-                idx = parts.index("runs") if "runs" in parts else 0
-                rel = "/".join(parts[idx:])
-            artifacts.append({
-                "name": p.name,
-                "url": f"/{rel}",
-                "type": "image" if p.suffix.lower() == ".png" else "raster" if p.suffix.lower() in (".tif", ".tiff") else "file",
-                "ext": p.suffix.lower()
-            })
-    return artifacts
 
 
 def _parse_milestone(task_id, ev_text):
@@ -179,13 +156,15 @@ async def stream_task(task_id: str, request: Request):
     if not ts:
         return JSONResponse({"error": f"Unknown task: {task_id}"}, status_code=404)
 
-    async def event_generator():
-        last_count = 0
-        last_step = ""
-        sent_artifacts = False
-        sent_plan = False
+    last_id_str = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    try:
+        last_sent_id = int(last_id_str) if last_id_str is not None else 0
+    except (ValueError, TypeError):
+        last_sent_id = 0
 
-        yield f"data: {json.dumps({'type': 'start', 'task_id': task_id, 'question': ts.question})}\n\n"
+    async def event_generator():
+        nonlocal last_sent_id
+        last_keepalive = time.time()
 
         while True:
             if await request.is_disconnected():
@@ -195,32 +174,39 @@ async def stream_task(task_id: str, request: Request):
             if not current:
                 break
 
-            for ev in current.events[last_count:]:
-                yield f"data: {json.dumps(_parse_milestone(task_id, ev))}\n\n"
-            last_count = len(current.events)
+            events_to_send = []
+            with task_manager._lock:
+                for ev in current.event_log:
+                    ev_id = ev.get("id", 0)
+                    if ev_id > last_sent_id:
+                        events_to_send.append(ev)
 
-            if current.step != last_step:
-                last_step = current.step
-                yield f"data: {json.dumps({'type': 'step', 'task_id': task_id, 'text': last_step})}\n\n"
+            for ev in events_to_send:
+                ev_id = ev.get("id")
+                last_sent_id = ev_id
+                last_keepalive = time.time()
+                yield f"id: {ev_id}\ndata: {json.dumps(ev)}\n\n"
 
-            if current.status == "pending_approval" and current.plan and not sent_plan:
-                sent_plan = True
-                yield f"data: {json.dumps({'type': 'plan_ready', 'task_id': task_id, 'plan': current.plan})}\n\n"
-            elif current.status != "pending_approval":
-                sent_plan = False
-
+            # Stop streaming only after a finish event
             if current.status in ("done", "partial", "failed"):
-                if not sent_artifacts and current.result:
-                    arts = find_artifacts(current.result.get("run_dir"))
-                    if arts:
-                        sent_artifacts = True
-                        yield f"data: {json.dumps({'type': 'artifacts', 'task_id': task_id, 'artifacts': arts})}\n\n"
-                yield f"data: {json.dumps({'type': 'finish', 'task_id': task_id, 'status': current.status, 'error': current.error})}\n\n"
-                break
+                if any(ev.get("type") == "finish" for ev in events_to_send) or (
+                    len(current.event_log) > 0 and current.event_log[-1].get("type") == "finish" and last_sent_id >= current.event_log[-1].get("id", 0)
+                ):
+                    break
 
-            await asyncio.sleep(1.0)
+            now = time.time()
+            if now - last_keepalive >= 15.0:
+                last_keepalive = now
+                yield ": keepalive\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+            await asyncio.sleep(0.2)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 
 
 @app.post("/api/tasks/{task_id}/cancel")
@@ -233,9 +219,9 @@ async def cancel_task(task_id: str):
 @app.get("/api/tasks/{task_id}/artifacts")
 async def get_task_artifacts(task_id: str):
     ts = task_manager.get_task(task_id)
-    if not ts or not ts.result:
+    if not ts:
         return JSONResponse({"artifacts": []})
-    run_dir = ts.result.get("run_dir")
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
     return JSONResponse({"artifacts": find_artifacts(run_dir)})
 
 

@@ -12,9 +12,9 @@ export function App() {
   const [files, setFiles] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [tasks, setTasks] = useState({
-    task_1: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [] },
-    task_2: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [] },
-    task_3: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [] }
+    task_1: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [], attempt: null, activities: [] },
+    task_2: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [], attempt: null, activities: [] },
+    task_3: { status: 'idle', question: 'Slot idle — awaiting task assignment', step: 'Ready', elapsed: 0, plan: null, artifacts: [], attempt: null, activities: [] }
   });
 
   const [feedItems, setFeedItems] = useState([
@@ -49,8 +49,54 @@ export function App() {
       });
     }, 1000);
 
+    // Fallback polling every 5s for running tasks to sync state even if SSE drops
+    const pollInterval = setInterval(async () => {
+      setTasks(currentTasks => {
+        const runningTaskIds = Object.keys(currentTasks).filter(
+          tid => currentTasks[tid].status === 'running'
+        );
+        if (runningTaskIds.length === 0) return currentTasks;
+
+        (async () => {
+          try {
+            const res = await fetch('/api/tasks');
+            const data = await res.json();
+            if (data.tasks) {
+              data.tasks.forEach(t => {
+                if (runningTaskIds.includes(t.task_id)) {
+                  setTasks(prev => {
+                    const task = prev[t.task_id];
+                    if (!task) return prev;
+                    const isNowTerminal = ['done', 'partial', 'failed'].includes(t.status);
+                    if (isNowTerminal && streamsRef.current[t.task_id]) {
+                      streamsRef.current[t.task_id].close();
+                      delete streamsRef.current[t.task_id];
+                    }
+                    return {
+                      ...prev,
+                      [t.task_id]: {
+                        ...task,
+                        status: t.status,
+                        step: t.step || task.step,
+                        error: t.error || task.error,
+                        plan: t.plan !== undefined ? t.plan : task.plan,
+                      }
+                    };
+                  });
+                  fetchArtifacts(t.task_id);
+                }
+              });
+            }
+          } catch (_) {}
+        })();
+
+        return currentTasks;
+      });
+    }, 5000);
+
     return () => {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      clearInterval(pollInterval);
       Object.values(streamsRef.current).forEach(es => es.close());
     };
   }, []);
@@ -110,10 +156,14 @@ export function App() {
     try {
       const res = await fetch(`/api/tasks/${taskId}/artifacts`);
       const data = await res.json();
-      if (data.artifacts && data.artifacts.length) {
+      if (data.artifacts) {
         setTasks(prev => ({
           ...prev,
-          [taskId]: { ...prev[taskId], artifacts: data.artifacts }
+          [taskId]: {
+            ...prev[taskId],
+            // Replace (do not append) to prevent duplicate items
+            artifacts: data.artifacts
+          }
         }));
       }
     } catch (_) {}
@@ -147,7 +197,7 @@ export function App() {
       setFeedItems(prev => [
         ...prev,
         {
-          type: 'progress',
+          type: 'text',
           taskId: data.task_id,
           text: `Task dispatched: "${questionText.slice(0, 60)}..."`
         }
@@ -171,11 +221,13 @@ export function App() {
       [taskId]: {
         ...prev[taskId],
         status: 'running',
-        question: questionText,
-        step: 'Initializing container...',
+        question: questionText || prev[taskId]?.question,
+        step: 'Starting analysis...',
         elapsed: 0,
         plan: null,
-        artifacts: []
+        artifacts: [],
+        attempt: null,
+        activities: []
       }
     }));
 
@@ -185,44 +237,236 @@ export function App() {
     es.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        const t = msg.type;
 
-        if (msg.type === 'milestone') {
+        if (t === 'start') {
+          setTasks(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              status: 'running',
+              question: msg.question || prev[taskId].question,
+              step: 'Starting analysis'
+            }
+          }));
+        } else if (t === 'status') {
+          setTasks(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              status: msg.status || prev[taskId].status,
+              step: msg.step || prev[taskId].step
+            }
+          }));
+        } else if (t === 'text') {
+          const delta = msg.delta || '';
+          if (!delta) return;
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = [...(task.activities || [])];
+            const last = acts[acts.length - 1];
+            if (last && last.type === 'text') {
+              acts[acts.length - 1] = { ...last, text: last.text + delta };
+            } else {
+              acts.push({ type: 'text', text: delta });
+            }
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                step: delta.trim() ? delta.trim().slice(0, 80) : task.step,
+                activities: acts
+              }
+            };
+          });
+
+          setFeedItems(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.taskId === taskId && last.type === 'text') {
+              const updated = [...prev];
+              updated[updated.length - 1] = { ...last, text: last.text + delta };
+              return updated;
+            }
+            return [...prev, { type: 'text', taskId, text: delta }];
+          });
+        } else if (t === 'thinking') {
+          const delta = msg.delta || '';
+          if (!delta) return;
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = [...(task.activities || [])];
+            const last = acts[acts.length - 1];
+            if (last && last.type === 'thinking') {
+              acts[acts.length - 1] = { ...last, text: last.text + delta };
+            } else {
+              acts.push({ type: 'thinking', text: delta });
+            }
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                step: 'Thinking...',
+                activities: acts
+              }
+            };
+          });
+        } else if (t === 'tool_start') {
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = [...(task.activities || [])];
+            acts.push({
+              type: 'tool',
+              id: msg.toolCallId,
+              toolName: msg.toolName,
+              args: msg.args,
+              attempt: msg.attempt,
+              running: true
+            });
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                attempt: msg.attempt || task.attempt,
+                step: `Tool: ${msg.toolName}`,
+                activities: acts
+              }
+            };
+          });
+
           setFeedItems(prev => [
             ...prev,
-            { type: 'progress', taskId, text: msg.text }
+            {
+              type: 'tool_start',
+              taskId,
+              toolName: msg.toolName,
+              args: msg.args,
+              attempt: msg.attempt
+            }
           ]);
-        } else if (msg.type === 'step') {
-          setTasks(prev => ({
-            ...prev,
-            [taskId]: { ...prev[taskId], step: msg.text }
-          }));
-        } else if (msg.type === 'plan_ready') {
-          setTasks(prev => ({
-            ...prev,
-            [taskId]: { ...prev[taskId], status: 'pending_approval', plan: msg.plan }
-          }));
+        } else if (t === 'tool_end') {
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = (task.activities || []).map(act => {
+              if (act.type === 'tool' && (act.id === msg.toolCallId || act.running)) {
+                return {
+                  ...act,
+                  running: false,
+                  ok: msg.ok,
+                  exit_code: msg.exit_code,
+                  duration_s: msg.duration_s,
+                  error: msg.error,
+                  stdout: msg.stdout
+                };
+              }
+              return act;
+            });
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                step: `Tool ${msg.ok ? 'succeeded' : 'failed'} (exit ${msg.exit_code})`,
+                activities: acts
+              }
+            };
+          });
+
           setFeedItems(prev => [
             ...prev,
-            { type: 'progress', taskId, text: 'Analysis plan proposed — review required' }
+            {
+              type: 'tool_end',
+              taskId,
+              ok: msg.ok,
+              exit_code: msg.exit_code,
+              duration_s: msg.duration_s,
+              error: msg.error
+            }
           ]);
-        } else if (msg.type === 'artifacts') {
+        } else if (t === 'vision_check') {
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = [...(task.activities || [])];
+            acts.push({
+              type: 'vision_check',
+              image: msg.image,
+              state: msg.state,
+              verdict: msg.verdict,
+              text: msg.text,
+              index: msg.index,
+              total: msg.total
+            });
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                step: msg.state === 'started'
+                  ? `Checking ${msg.image} (${msg.index}/${msg.total})`
+                  : `${msg.image}: ${msg.verdict || 'checked'}`,
+                activities: acts
+              }
+            };
+          });
+
+          setFeedItems(prev => [
+            ...prev,
+            {
+              type: 'vision_check',
+              taskId,
+              image: msg.image,
+              state: msg.state,
+              verdict: msg.verdict,
+              text: msg.text
+            }
+          ]);
+        } else if (t === 'plan_ready') {
           setTasks(prev => ({
             ...prev,
-            [taskId]: { ...prev[taskId], artifacts: msg.artifacts }
+            [taskId]: {
+              ...prev[taskId],
+              status: 'pending_approval',
+              plan: msg.plan,
+              step: 'Plan review required'
+            }
           }));
-        } else if (msg.type === 'finish') {
+
+          setFeedItems(prev => [
+            ...prev,
+            {
+              type: 'plan_ready',
+              taskId,
+              plan: msg.plan
+            }
+          ]);
+        } else if (t === 'artifacts') {
+          const arts = msg.artifacts || [];
+          setTasks(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              artifacts: arts,
+              step: `Produced ${arts.length} artifacts`
+            }
+          }));
+        } else if (t === 'finish') {
           setTasks(prev => ({
             ...prev,
             [taskId]: {
               ...prev[taskId],
               status: msg.status,
+              error: msg.error,
               step: msg.status === 'done' ? 'Completed' : (msg.error || msg.status)
             }
           }));
+
           setFeedItems(prev => [
             ...prev,
-            { type: 'progress', taskId, text: `Task ${msg.status.toUpperCase()}: ${msg.error || 'All deliverables ready'}` }
+            {
+              type: 'finish',
+              taskId,
+              status: msg.status,
+              error: msg.error
+            }
           ]);
+
           es.close();
           delete streamsRef.current[taskId];
           fetchArtifacts(taskId);
@@ -230,10 +474,8 @@ export function App() {
       } catch (_) {}
     };
 
-    es.onerror = () => {
-      es.close();
-      delete streamsRef.current[taskId];
-    };
+    // Auto-reconnect: do NOT close or delete stream ref on error
+    es.onerror = () => {};
   };
 
   const handleApprovePlan = async (taskId) => {

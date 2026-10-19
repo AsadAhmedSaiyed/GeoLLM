@@ -1,6 +1,81 @@
 // Astryx Worker Sandbox Slots Component (3 Concurrent Sandboxes)
 import { html, React } from '/static/js/html.js';
-const { useState } = React;
+const { useState, useEffect, useRef } = React;
+
+function TaskActivityFeed({ activities }) {
+  const feedRef = useRef(null);
+  const userScrolledUpRef = useRef(false);
+
+  const handleScroll = (e) => {
+    const el = e.target;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    userScrolledUpRef.current = !isAtBottom;
+  };
+
+  useEffect(() => {
+    if (feedRef.current && !userScrolledUpRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
+  }, [activities]);
+
+  if (!activities || activities.length === 0) return null;
+
+  return html`
+    <div className="worker-activity-feed" ref=${feedRef} onScroll=${handleScroll}>
+      ${activities.map((act, i) => {
+        if (act.type === 'thinking') {
+          return html`
+            <details key=${i} className="claude-thinking">
+              <summary>💭 Thinking</summary>
+              <div className="thinking-content">${act.text}</div>
+            </details>
+          `;
+        } else if (act.type === 'text') {
+          return html`
+            <div key=${i} className="claude-text">${act.text}</div>
+          `;
+        } else if (act.type === 'tool') {
+          const shortArgs = typeof act.args === 'string'
+            ? act.args.slice(0, 80)
+            : act.args ? JSON.stringify(act.args).slice(0, 80) : '';
+          return html`
+            <div key=${i} className="tool-card ${act.running ? 'running' : act.ok ? 'success' : 'failed'}">
+              <div className="tool-card-header">
+                <span className="tool-status-icon">
+                  ${act.running ? html`<span className="spinner-icon-sm"></span>` : act.ok ? '✓' : '✗'}
+                </span>
+                <span className="tool-name">${act.toolName}</span>
+                ${act.attempt ? html`<span className="tool-attempt">att ${act.attempt}</span>` : null}
+                ${!act.running ? html`
+                  <span className="tool-meta">
+                    ${act.duration_s != null ? `${act.duration_s}s · ` : ''}exit ${act.exit_code}
+                  </span>
+                ` : null}
+              </div>
+              ${shortArgs ? html`<div className="tool-args">${shortArgs}</div>` : null}
+              ${(act.error || act.stdout) ? html`
+                <details className="tool-details">
+                  <summary>output / stderr</summary>
+                  <pre>${(act.error || act.stdout).slice(-500)}</pre>
+                </details>
+              ` : null}
+            </div>
+          `;
+        } else if (act.type === 'vision_check') {
+          const isDone = act.state === 'done';
+          return html`
+            <div key=${i} className="vision-row ${isDone ? (act.verdict === 'ok' ? 'pass' : 'fail') : 'checking'}">
+              <span className="vision-img">${act.image}</span>
+              <span className="vision-verdict">${isDone ? act.verdict : 'checking...'}</span>
+              ${act.text ? html`<span className="vision-text">${act.text}</span>` : null}
+            </div>
+          `;
+        }
+        return null;
+      })}
+    </div>
+  `;
+}
 
 export function WorkerSlots({
   tasks,
@@ -46,11 +121,28 @@ export function WorkerSlots({
             step: 'Ready',
             elapsed: 0,
             plan: null,
-            artifacts: []
+            artifacts: [],
+            attempt: null,
+            activities: []
           };
 
           const isRunning = task.status === 'running';
           const isPendingApproval = task.status === 'pending_approval';
+
+          // De-duplicate deliverables by URL before rendering
+          const uniqueArtifacts = [];
+          const seenUrls = new Set();
+          (task.artifacts || []).forEach(art => {
+            if (art && art.url && !seenUrls.has(art.url)) {
+              seenUrls.add(art.url);
+              uniqueArtifacts.push(art);
+            }
+          });
+
+          // Latest real event text truncated, never fixed string
+          const headerStep = task.step
+            ? (task.step.length > 70 ? task.step.slice(0, 67) + '...' : task.step)
+            : (isRunning ? 'Running...' : 'Ready');
 
           return html`
             <div
@@ -60,6 +152,7 @@ export function WorkerSlots({
               <div className="card-topbar">
                 <div className="card-slot-title">
                   <span className="slot-name">CONTAINER #${idx + 1}</span>
+                  ${task.attempt ? html`<span className="attempt-pill">attempt ${task.attempt} of 15</span>` : null}
                   <span className="slot-timer">${formatSeconds(task.elapsed)}</span>
                 </div>
                 <span className="status-pill ${task.status}">
@@ -82,9 +175,11 @@ export function WorkerSlots({
               <div className="human-progress-bar">
                 ${isRunning ? html`<span className="spinner-icon"></span>` : null}
                 <span style=${{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  ${formatHumanStep(task.step, task.status)}
+                  ${headerStep}
                 </span>
               </div>
+
+              <${TaskActivityFeed} activities=${task.activities} />
 
               ${isPendingApproval && task.plan ? html`
                 <div className="plan-review-box">
@@ -116,10 +211,10 @@ export function WorkerSlots({
                 </div>
               ` : null}
 
-              ${task.artifacts && task.artifacts.length > 0 ? html`
+              ${uniqueArtifacts.length > 0 ? html`
                 <div className="artifacts-shelf">
                   <span style=${{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Deliverables:</span>
-                  ${task.artifacts.map((art) => {
+                  ${uniqueArtifacts.map((art) => {
                     const isTif = art.ext === '.tif' || art.ext === '.tiff';
                     const isImg = art.type === 'image';
 
@@ -189,13 +284,3 @@ function formatSeconds(secs) {
   return `${m}:${s}`;
 }
 
-function formatHumanStep(stepText, status) {
-  if (!stepText || status === 'idle') return 'Sandbox ready for execution';
-  let clean = stepText.replace(/\[\d{1,2}:\d{2}:\d{2}\]/g, '').trim();
-  if (clean.startsWith('Pi is ')) {
-    clean = clean.slice(6);
-  } else if (clean.startsWith('Pi ')) {
-    clean = clean.slice(3);
-  }
-  return clean.charAt(0).toUpperCase() + clean.slice(1);
-}

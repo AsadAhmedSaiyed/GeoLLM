@@ -24,6 +24,8 @@ class TaskState:
     started: Optional[float] = None
     ended: Optional[float] = None
     events: list = field(default_factory=list)
+    event_log: list = field(default_factory=list)
+    next_event_id: int = 1
     state: dict = field(default_factory=dict)
     question: str = ""
     files: list = field(default_factory=list)
@@ -34,7 +36,97 @@ class TaskState:
     run_id: int = 0
     pi_rpc: Optional[object] = field(default=None, repr=False)
     _thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _flushed_events: int = field(default=0, repr=False)
 
+
+def find_artifacts(run_dir) -> list:
+    """Find deliverables from the final succeeded attempt only. No duplicates."""
+    artifacts = []
+    if not run_dir:
+        return artifacts
+    rd = Path(run_dir)
+    if not rd.exists():
+        return artifacts
+
+    final_attempt = None
+    sf = rd / "last_status.json"
+    status_data = None
+    if sf.exists():
+        try:
+            status_data = json.loads(sf.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Check if last_status records the final attempt / success
+    if status_data:
+        if status_data.get("ok"):
+            final_attempt = status_data.get("attempt")
+        else:
+            # If no attempt succeeded, return an empty list and do not show files from failed attempts
+            return []
+
+    # If last_status wasn't there or didn't specify attempt, find highest attempt_XX with outputs
+    if final_attempt is None:
+        attempts = sorted(rd.glob("attempt_*"), reverse=True)
+        for ad in attempts:
+            out_dir = ad / "outputs"
+            if out_dir.exists() and any(out_dir.iterdir()):
+                try:
+                    num = int(ad.name.split("_")[-1])
+                    final_attempt = num
+                    break
+                except ValueError:
+                    pass
+
+    if final_attempt is None:
+        return []
+
+    attempt_str = f"attempt_{int(final_attempt):02d}"
+    attempt_dir = rd / attempt_str
+    outputs_dir = attempt_dir / "outputs"
+    if not outputs_dir.exists():
+        return []
+
+    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".csv", ".json"}
+    excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", ".flag"}
+
+    candidate_paths = []
+    if status_data and status_data.get("ok") and status_data.get("artifacts"):
+        for a in status_data["artifacts"]:
+            ap = Path(a)
+            if ap.exists() and ap.is_file() and ap.parent.resolve() == outputs_dir.resolve():
+                candidate_paths.append(ap)
+
+    if not candidate_paths:
+        candidate_paths = [p for p in outputs_dir.iterdir() if p.is_file()]
+
+    seen_names = set()
+    for p in candidate_paths:
+        ext = p.suffix.lower()
+        if ext not in valid_exts:
+            continue
+        if any(x in p.name.lower() for x in excluded_names):
+            continue
+        if p.name in seen_names:
+            continue
+        seen_names.add(p.name)
+
+        try:
+            rel = p.relative_to(Path.cwd()).as_posix()
+        except ValueError:
+            parts = p.parts
+            idx = parts.index("runs") if "runs" in parts else 0
+            rel = "/".join(parts[idx:])
+
+        artifacts.append({
+            "name": p.name,
+            "url": f"/{rel}",
+            "type": "image" if ext == ".png" else "raster" if ext in (".tif", ".tiff") else "file",
+            "ext": ext,
+            "attempt": final_attempt,
+        })
+
+    return artifacts
 
 
 class TaskManager:
@@ -65,6 +157,9 @@ class TaskManager:
                     ts.started = time.time()
                     ts.ended = None
                     ts.events = []
+                    ts.event_log = []
+                    ts.next_event_id = 1
+                    ts._flushed_events = 0
                     ts.state = {}
                     ts.question = question
                     ts.files = list(files)
@@ -123,6 +218,8 @@ class TaskManager:
         except Exception:
             pass
 
+        self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "error": "Cancelled by user"}, ts.run_id)
+
         if self.on_finish:
             self.on_finish(task_id)
 
@@ -155,21 +252,78 @@ class TaskManager:
 
     # ---- internal ----
 
-    def _on_step(self, task_id: str, text: str, run_id: int):
+    def _on_step(self, task_id: str, ev, run_id: int):
         ts = self.tasks[task_id]
         with self._lock:
             if ts.run_id != run_id:
                 return  # Discard step events from old/cancelled run
-            ts.step = text
-            ts.events.append(f"[{time.strftime('%H:%M:%S')}] {text}")
-        print(f"\n[GeoLLM:{task_id}] {text}", flush=True)
+
+            if isinstance(ev, dict):
+                ev_data = dict(ev)
+            else:
+                ev_data = {"type": "status", "status": ts.status, "text": str(ev)}
+
+            ev_data["task_id"] = task_id
+            ev_data["id"] = ts.next_event_id
+            ts.next_event_id += 1
+
+            ts.event_log.append(ev_data)
+
+            # Update ts.step and ts.events from real event
+            t = ev_data.get("type")
+            if t == "tool_start":
+                step_str = f"Running tool: {ev_data.get('toolName')}"
+            elif t == "tool_end":
+                step_str = f"Tool {ev_data.get('toolCallId')} finished (exit {ev_data.get('exit_code')})"
+            elif t == "vision_check":
+                step_str = f"Vision check: {ev_data.get('image')} ({ev_data.get('state')})"
+            elif t == "text":
+                d = ev_data.get("delta", "")
+                step_str = d.strip()[:100] if d.strip() else ts.step
+            elif t == "thinking":
+                step_str = "Thinking..."
+            elif t == "status":
+                step_str = ev_data.get("step") or ev_data.get("status") or ts.status
+            elif t == "plan_ready":
+                step_str = "Plan proposed"
+            elif t == "turn":
+                step_str = f"Turn {ev_data.get('turn', '')}".strip()
+            elif t == "artifacts":
+                step_str = f"Generated {len(ev_data.get('artifacts', []))} artifacts"
+            elif t == "finish":
+                step_str = f"Finished ({ev_data.get('status')})"
+            else:
+                step_str = str(ev_data.get("step") or ev_data.get("text") or t or "")
+
+            if step_str:
+                ts.step = step_str
+                ts.events.append(f"[{time.strftime('%H:%M:%S')}] {step_str}")
+
+            # Flush events to runs/<run>/events.jsonl
+            rd = ts.state.get("run_dir")
+            if rd:
+                try:
+                    events_file = Path(rd) / "events.jsonl"
+                    flushed = getattr(ts, "_flushed_events", 0)
+                    to_flush = ts.event_log[flushed:]
+                    if to_flush:
+                        with open(events_file, "a", encoding="utf-8") as f:
+                            for item in to_flush:
+                                f.write(json.dumps(item) + "\n")
+                        ts._flushed_events = len(ts.event_log)
+                except Exception:
+                    pass
+
+        if ev_data.get("type") not in ("text", "thinking"):
+            print(f"\n[GeoLLM:{task_id}] {ts.step}", flush=True)
 
     def _work(self, task_id: str, question: str, files: list, kw: dict, run_id: int):
         ts = self.tasks[task_id]
+        self._on_step(task_id, {"type": "start", "task_id": task_id, "question": question}, run_id)
         try:
             r = solve(
                 question, files,
-                on_step=lambda text: self._on_step(task_id, text, run_id),
+                on_step=lambda ev: self._on_step(task_id, ev, run_id),
                 state=ts.state,
                 task_id=task_id,
                 task_state=ts,
@@ -182,15 +336,40 @@ class TaskManager:
                 ts.status = {"ok": "done", "partial": "partial"}.get(r["status"], "failed")
                 if ts.status != "done":
                     ts.error = "; ".join(r["warnings"]) or "run failed"
+
+            # Emit deliverables and finish
+            rd = ts.state.get("run_dir") or (r.get("run_dir") if isinstance(r, dict) else None)
+            arts = find_artifacts(rd) if rd else []
+            if arts:
+                self._on_step(task_id, {"type": "artifacts", "task_id": task_id, "artifacts": arts}, run_id)
+            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": ts.status, "error": ts.error}, run_id)
+
         except Exception as e:
             with self._lock:
                 if ts.run_id != run_id or ts.error == "Cancelled by user":
                     return
                 ts.error = str(e)
                 ts.status = "failed"
-        ts.ended = time.time()
-        if self.on_finish:
-            self.on_finish(task_id)
+            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "error": ts.error}, run_id)
+
+        finally:
+            ts.ended = time.time()
+            with self._lock:
+                rd = ts.state.get("run_dir")
+                if rd:
+                    try:
+                        events_file = Path(rd) / "events.jsonl"
+                        flushed = getattr(ts, "_flushed_events", 0)
+                        to_flush = ts.event_log[flushed:]
+                        if to_flush:
+                            with open(events_file, "a", encoding="utf-8") as f:
+                                for item in to_flush:
+                                    f.write(json.dumps(item) + "\n")
+                            ts._flushed_events = len(ts.event_log)
+                    except Exception:
+                        pass
+            if self.on_finish:
+                self.on_finish(task_id)
 
 
     # ---- reporting ----
@@ -227,7 +406,6 @@ class TaskManager:
 
             # Build human-readable recent activity from raw events
             recent_events = [e for e in ts.events[-8:] if e]
-            # Strip timestamps from events for cleaner reading
             clean_events = []
             for ev in recent_events:
                 import re
@@ -236,26 +414,8 @@ class TaskManager:
                     clean_events.append(clean)
             activity_trail = " → ".join(clean_events) if clean_events else ts.step
 
-            # Determine a meaningful current-action description
-            step_text = ts.step or "idle"
-            if "thinking" in step_text.lower():
-                current_action = "The agent is analyzing data and deciding what to do next"
-            elif "sandbox tool" in step_text.lower():
-                current_action = f"The agent is running Python analysis code (execution #{tool_calls})"
-            elif "reading data" in step_text.lower():
-                current_action = "The agent is inspecting the input datasets and planning the analysis"
-            elif "plan" in step_text.lower() and "approv" in step_text.lower():
-                current_action = "Plan was approved, agent is now executing the full analysis"
-            elif "plan submitted" in step_text.lower():
-                current_action = "The agent has proposed an analysis plan and is waiting for user approval"
-            elif "vision" in step_text.lower():
-                current_action = "Quality-checking output maps with vision model"
-            elif "finished" in step_text.lower():
-                current_action = "Analysis is complete"
-            elif "fixing" in step_text.lower():
-                current_action = "The agent is fixing issues found in the output maps"
-            else:
-                current_action = step_text
+            # Set current_action from latest real event and STATUS only from ts.status
+            current_action = ts.step or "idle"
 
             lines = [
                 f"--- Container #{container_num} ({task_id}) ---",

@@ -54,14 +54,29 @@ export function UnifiedChat({
             Multi-task timeline and supervisor chat will appear here.
           </div>
         ` : feedItems.map((item, idx) => {
-          if (item.type === 'progress') {
+          if (item.taskId) {
             const tagClass = item.taskId === 'task_1' ? 't1' : item.taskId === 'task_2' ? 't2' : 't3';
             const taskLabel = item.taskId === 'task_1' ? 'Container #1' : item.taskId === 'task_2' ? 'Container #2' : 'Container #3';
+
+            let eventContent = '';
+            if (item.type === 'tool_start') {
+              eventContent = `Tool: ${item.toolName} (attempt ${item.attempt || 1})`;
+            } else if (item.type === 'tool_end') {
+              eventContent = `Tool ${item.ok ? 'succeeded ✓' : 'failed ✗'} (exit ${item.exit_code}, ${item.duration_s || 0}s)`;
+            } else if (item.type === 'vision_check') {
+              eventContent = `Vision [${item.image}]: ${item.state === 'started' ? 'Inspecting map...' : `${item.verdict}${item.text ? ' - ' + item.text : ''}`}`;
+            } else if (item.type === 'plan_ready') {
+              eventContent = 'Analysis plan proposed — review required';
+            } else if (item.type === 'finish') {
+              eventContent = `Task ${item.status.toUpperCase()}: ${item.error || 'Completed'}`;
+            } else {
+              eventContent = item.text || '';
+            }
 
             return html`
               <div key=${idx} className="event-row">
                 <span className="task-tag ${tagClass}">${taskLabel}</span>
-                <span style=${{ flex: 1 }}>${humanizeProgress(item.text)}</span>
+                <span style=${{ flex: 1, wordBreak: 'break-word' }}>${eventContent}</span>
               </div>
             `;
           } else if (item.type === 'user') {
@@ -110,161 +125,3 @@ export function UnifiedChat({
   `;
 }
 
-
-/**
- * Converts raw engine log lines into natural, human-readable progress sentences.
- * The raw events come from pi_harness.py on_event() and step() calls.
- */
-function humanizeProgress(rawText) {
-  if (!rawText) return '';
-
-  // Strip timestamps like [14:11:34]
-  let text = rawText
-    .replace(/\[\d{1,2}:\d{2}:\d{2}\]/g, '')
-    .replace(/^\d{1,2}:\d{2}:\d{2}\s*/, '')
-    .trim();
-
-  // --- Exact pattern matches → natural language ---
-
-  // "Pi is thinking" → "Analyzing the data and deciding next steps"
-  if (/^Pi is thinking$/i.test(text)) {
-    return 'Analyzing the data and deciding next steps';
-  }
-
-  // "Pi is reading data and drafting an analysis plan"
-  if (/reading data and drafting/i.test(text)) {
-    return 'Reading your datasets and drafting an analysis plan';
-  }
-
-  // "Pi running sandbox tool (call N)" → "Running analysis code (step N)"
-  const toolCallMatch = text.match(/running sandbox tool \(call (\d+)\)/i);
-  if (toolCallMatch) {
-    const n = toolCallMatch[1];
-    return `Running analysis code — step ${n} of the pipeline`;
-  }
-
-  // "Sandbox run finished (isError=False)" → "Code execution completed successfully"
-  if (/sandbox run finished.*isError=False/i.test(text)) {
-    return 'Code execution completed successfully';
-  }
-
-  // "Sandbox run finished (isError=True)" → "Code execution encountered an error"
-  if (/sandbox run finished.*isError=True/i.test(text)) {
-    return 'Code execution encountered an error — agent will attempt a fix';
-  }
-
-  // "Plan submitted — waiting for user approval"
-  if (/plan submitted.*waiting for.*approval/i.test(text)) {
-    return 'Analysis plan is ready — waiting for your approval';
-  }
-
-  // "Plan approved — running substantive code execution"
-  if (/plan approved.*running.*code/i.test(text)) {
-    return 'Plan approved — now executing the full analysis';
-  }
-
-  // "Plan approved — executing code"
-  if (/plan approved.*executing/i.test(text)) {
-    return 'Plan approved — executing the analysis code';
-  }
-
-  // "Plan auto-approved (CLI mode)"
-  if (/plan auto-approved/i.test(text)) {
-    return 'Plan auto-approved — starting full analysis';
-  }
-
-  // "First analysis finished"
-  if (/first analysis finished/i.test(text)) {
-    return 'Initial analysis complete — verifying outputs';
-  }
-
-  // "Vision model checking N map(s) (round M)"
-  const visionCheckMatch = text.match(/vision.*checking (\d+) map.*round (\d+)/i);
-  if (visionCheckMatch) {
-    return `Quality-checking ${visionCheckMatch[1]} output map(s) — round ${visionCheckMatch[2]}`;
-  }
-
-  // "Vision check passed"
-  if (/vision check passed/i.test(text)) {
-    return 'All output maps passed quality inspection ✓';
-  }
-
-  // "Vision check warning: ..."
-  const visionWarnMatch = text.match(/vision check warning:\s*(.+)/i);
-  if (visionWarnMatch) {
-    return `Quality check warning: ${visionWarnMatch[1]}`;
-  }
-
-  // "Pi fixing N map issue(s) (retry M/K)"
-  const fixingMatch = text.match(/fixing (\d+) map issue.*retry (\d+)\/(\d+)/i);
-  if (fixingMatch) {
-    return `Fixing ${fixingMatch[1]} map issue(s) — attempt ${fixingMatch[2]} of ${fixingMatch[3]}`;
-  }
-
-  // "Revising plan (N/3): feedback..."
-  const reviseMatch = text.match(/revising plan \((\d+)\/(\d+)\):\s*(.+)/i);
-  if (reviseMatch) {
-    return `Revising the plan based on your feedback (revision ${reviseMatch[1]})`;
-  }
-
-  // "Finished (ok)" / "Finished (failed)" / "Finished (partial)"
-  const finishedMatch = text.match(/finished \((\w+)\)/i);
-  if (finishedMatch) {
-    const status = finishedMatch[1].toLowerCase();
-    if (status === 'ok') return 'Analysis completed successfully — all outputs are ready';
-    if (status === 'partial') return 'Analysis partially completed — some outputs may be incomplete';
-    if (status === 'failed') return 'Analysis failed — check error details';
-    return `Analysis finished with status: ${status}`;
-  }
-
-  // "Pi session problem: ..."
-  const sessionMatch = text.match(/pi session problem:\s*(.+)/i);
-  if (sessionMatch) {
-    return `Session issue: ${sessionMatch[1]}`;
-  }
-
-  // "Task dispatched: ..."
-  const dispatchMatch = text.match(/^Task dispatched:\s*"?(.+)"?$/i);
-  if (dispatchMatch) {
-    return `Task dispatched: "${dispatchMatch[1].slice(0, 70)}..."`;
-  }
-
-  // "Analysis plan proposed — review required"
-  if (/analysis plan proposed/i.test(text)) {
-    return 'Analysis plan proposed — review required';
-  }
-
-  // "Plan approved — executing code"
-  if (/^Plan approved/i.test(text)) {
-    return 'Plan approved — executing the analysis';
-  }
-
-  // "Task aborted by user"
-  if (/aborted by user/i.test(text)) {
-    return 'Task cancelled by user';
-  }
-
-  // "Task DONE: All deliverables ready"
-  if (/task done.*deliverables/i.test(text)) {
-    return 'Task complete — all deliverables are ready for download';
-  }
-
-  // "Task FAILED: ..."
-  const failedMatch = text.match(/task failed:\s*(.+)/i);
-  if (failedMatch) {
-    return `Task failed: ${failedMatch[1]}`;
-  }
-
-  // --- Fallback: strip "Pi" prefix and capitalize ---
-  text = text
-    .replace(/\(isError=False\)/gi, 'succeeded')
-    .replace(/\(isError=True\)/gi, 'failed');
-
-  if (text.startsWith('Pi is ')) {
-    text = text.slice(6);
-  } else if (text.startsWith('Pi ')) {
-    text = text.slice(3);
-  }
-
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
