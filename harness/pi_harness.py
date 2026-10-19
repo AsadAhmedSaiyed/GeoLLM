@@ -85,6 +85,55 @@ def _stderr_tail(run_dir, n=400):
         return ""
 
 
+def _summarize_script_action(code: str) -> str:
+    """Extract a concise, human-readable summary of what the Python script is doing (Claude-style)."""
+    if not code:
+        return "Executing analysis code"
+
+    lines = code.split("\n")
+    # 1. First look for leading descriptive comments or docstrings anywhere in the first 20 lines
+    for line in lines[:20]:
+        s = line.strip()
+        if s.startswith("#") and len(s) > 4:
+            clean = s.lstrip("# \t-").strip()
+            if not any(k in clean.lower() for k in ["coding", "flake8", "pylint", "utf-8", "type:", "nogil"]):
+                return clean[:75]
+        if s.startswith(('"""', "'''")) and len(s) > 5:
+            clean = s.strip("\"' \t").strip()
+            if clean:
+                return clean[:75]
+
+    # 2. Key geospatial analysis signatures
+    lo = code.lower()
+    if any(k in lo for k in ["wavelength", "subdatasets", "emit_"]):
+        return "Analyzing hyperspectral bands and wavelength calibration"
+    if any(k in lo for k in ["transform_bounds", "bounds", "d.profile", "ds.profile", "glob("]):
+        return "Inspecting spatial extent, CRS, and band profiles"
+    if "otsu" in lo:
+        return "Applying Otsu threshold segmentation"
+    if any(k in lo for k in ["threshold", "np.where", "binary_mask"]):
+        return "Classifying raster features using thresholding"
+    if any(k in lo for k in ["reproject", "resampling", "warp", "reproject_to_grid"]):
+        return "Resampling and aligning raster layers"
+    if "ndwi" in lo or "mndwi" in lo:
+        return "Calculating NDWI water spectral index"
+    if "ndvi" in lo:
+        return "Calculating NDVI vegetation spectral index"
+    if "nbr" in lo or "burn_severity" in lo:
+        return "Calculating NBR burn severity index"
+    if any(k in lo for k in ["savefig", "write(", "dst.write", "export"]):
+        return "Rendering GeoTIFF output map and visual preview"
+    if any(k in lo for k in ["kmeans", "cluster", "pca"]):
+        return "Running clustering / dimensionality reduction"
+
+    # 3. Fallback: first meaningful non-import statement
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith(("import ", "from ", "def ", "class ", "try:", "except")):
+            return f"Processing: {s[:50]}"
+    return "Executing geospatial analysis script"
+
+
 def solve(question, files, overrides=None, max_turns=None, explain=True, on_step=None, state=None, task_id="task_1", task_state=None) -> dict:
 
     step = on_step or (lambda s: None)
@@ -140,19 +189,86 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 state["pi_text"] = (state.get("pi_text", "") + piece)[-800:]
                 if cfg.verbose:
                     print(piece, end="", flush=True)
+        elif t == "message_end":
+            msg = ev.get("message") or {}
+            if msg.get("role") == "assistant":
+                content = msg.get("content") or []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        txt = item.get("text", "").strip()
+                        first_line = txt.split("\n")[0].strip()
+                        if len(first_line) > 10 and not first_line.startswith(("{", "[", "```")):
+                            step(first_line[:120])
+                            break
         elif t == "turn_start":
-            step("Pi is thinking")
+            turn_num = state.get("turns", 0) + 1
+            state["turns"] = turn_num
+            if state.get("last_error"):
+                step("Diagnosing code error and formulating correction")
+            elif state.get("tool_calls", 0) == 0:
+                step("Analyzing task requirements and inspecting datasets")
+            else:
+                step(f"Evaluating intermediate results (step #{state.get('tool_calls', 0)})")
         elif t == "tool_execution_start":
             state["tool_calls"] = state.get("tool_calls", 0) + 1
-            state["last_tool"] = f"running {ev.get('toolName')}"
-            step(f"Pi running sandbox tool (call {state['tool_calls']})")
+            tool_name = ev.get("toolName") or ev.get("name") or "tool"
+            args = ev.get("args") or ev.get("input") or {}
+            state["last_tool"] = f"running {tool_name}"
+
+            if tool_name == "propose_plan":
+                step("Formulating analysis plan and defining target deliverables")
+            elif tool_name == "run_geospatial_code":
+                code = args.get("code", "") if isinstance(args, dict) else ""
+                action_desc = _summarize_script_action(code)
+                step(f"Running analysis: {action_desc}")
+            else:
+                step(f"Executing tool {tool_name}")
+
             if cfg.verbose:
-                print(f"\n[pi] running tool: {ev.get('toolName')}", flush=True)
+                print(f"\n[pi] running tool: {tool_name}", flush=True)
         elif t == "tool_execution_end":
-            state["last_tool"] = f"finished (isError={ev.get('isError')})"
-            step(f"Sandbox run finished (isError={ev.get('isError')})")
+            is_err = ev.get("isError")
+            res = ev.get("result") or {}
+            details = res.get("details") or {} if isinstance(res, dict) else {}
+            ok = details.get("ok", not is_err)
+            artifacts = details.get("artifacts") or []
+
+            if not ok or is_err:
+                state["last_tool"] = "finished (error)"
+                err_text = details.get("error") or details.get("message") or ""
+                err_hint = ""
+                if "Error:" in err_text:
+                    err_hint = err_text.split("Error:")[1].split("\n")[0].strip()
+                elif err_text:
+                    err_hint = err_text.split("\n")[0].strip()
+                if err_hint:
+                    step(f"Execution failed ({err_hint[:50]}) — attempting fix")
+                    state["last_error"] = err_hint[:50]
+                else:
+                    step("Execution encountered an error — agent will attempt a fix")
+                    state["last_error"] = "Execution error"
+            else:
+                state["last_tool"] = "finished (ok)"
+                state["last_error"] = None
+                if artifacts:
+                    art_names = ", ".join(Path(a).name for a in artifacts[:2])
+                    step(f"Produced outputs: {art_names}")
+                else:
+                    content = res.get("content") or [] if isinstance(res, dict) else []
+                    txt = ""
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            txt = c.get("text", "")
+                            break
+                    if "Inspection completed" in txt or "Discovered data" in txt:
+                        step("Dataset inspection complete — dimensions and metadata verified")
+                    elif "propose_plan" in str(state.get("last_tool", "")):
+                        step("Analysis plan drafted successfully")
+                    else:
+                        step(f"Pipeline step #{state.get('tool_calls', 0)} completed successfully")
+
             if cfg.verbose:
-                print(f"[pi] tool finished (isError={ev.get('isError')})", flush=True)
+                print(f"[pi] tool finished (isError={is_err})", flush=True)
 
     print("[GeoLLM] Starting Pi RPC...", flush=True)
     print(f"[GeoLLM] Run directory: {run_dir}", flush=True)
@@ -167,9 +283,11 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
     vision_log = []
     session_problem = False
     try:
-        #new
         prompt = _build_prompt(cfg, question, files, facts, overrides, explain)
-        step("Pi is reading data and drafting an analysis plan")
+        ds_names = ", ".join(Path(f).name for f in files[:2])
+        if len(files) > 2:
+            ds_names += f" (+{len(files)-2} more)"
+        step(f"Reading dataset: {ds_names} — drafting analysis plan")
         stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
                               cfg.max_tool_calls, on_event)
         answer = pi.last_assistant_text()
@@ -207,7 +325,7 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 task_state.approval_event.clear()
                 task_state.plan = pdata.get("plan", "")
                 task_state.status = "pending_approval"
-                step("Plan submitted — waiting for user approval")
+                step("Analysis plan ready — waiting for your approval")
 
                 approved = task_state.approval_event.wait(timeout=1800)
                 if not approved or task_state.error == "Cancelled by user":
@@ -234,7 +352,7 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
 
                 plan_approved = True
                 (run_dir / "plan_approved.flag").touch()
-                step("Plan approved — running substantive code execution")
+                step("Plan approved — now executing the full analysis")
                 task_state.status = "running"
                 pi.drain()
                 stats = pi.run_prompt(
@@ -250,7 +368,7 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 msg = ("Too many plan revisions" if revisions > 3 else "Agent did not propose a plan")
                 return _result("failed", msg, run_dir, warnings=[msg])
 
-        step("First analysis finished")
+        step("Initial analysis complete — verifying outputs")
 
         #new
 
@@ -267,7 +385,7 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     expected_outputs=[str(a) for a in _read_status(run_dir).get("artifacts", [])]
                                      or ["the outputs the question asks for"],
                 )
-                step(f"Vision model checking {len(rels)} map(s) (round {attempt + 1})")
+                step(f"Quality-checking {len(rels)} output map(s) — round {attempt + 1}")
                 try:
                     verdicts = visual_check.check_images(task_stub, run_dir, rels, run_dir / "feedback")
                 except Exception as e:
@@ -287,18 +405,18 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 if skipped:
                     reason = skipped[0].get("recommended_action", "unknown vision error")
                     warnings.append(f"Vision check warning: {reason}")
-                    step(f"Vision check warning: {reason[:60]}")
+                    step(f"Quality check warning: {reason[:60]}")
 
                 if not bad:
                     if passed:
-                        step("Vision check passed")
+                        step("All output maps passed quality inspection")
                     break
                 if attempt == max_r:
                     warnings.append("Vision issues remain after max retries: "
                                     + "; ".join(v["file"] for v in bad))
                     break
 
-                step(f"Pi fixing {len(bad)} map issue(s) (retry {attempt + 1}/{max_r})")
+                step(f"Fixing {len(bad)} map issue(s) — attempt {attempt + 1} of {max_r}")
                 critique = "\n".join(
                     f"- {v['file']}: {'; '.join(map(str, v.get('issues', [])))} "
                     f"| fix: {v.get('recommended_action', '')}" for v in bad)
@@ -318,7 +436,7 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
         session_problem = True
         stats = pi.last_stats
         warnings.append(f"Pi session problem: {e}")
-        step(f"Pi session problem: {e}")
+        step(f"Session issue: {e}")
     finally:
         pi.close()
 
@@ -362,7 +480,12 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
         if tail:
             warnings.append(f"pi_stderr.log tail: {tail}")
 
-    step(f"Finished ({status})")
+    if status == "ok":
+        step("Analysis completed successfully — all outputs are ready")
+    elif status == "partial":
+        step("Analysis partially completed — some outputs may be incomplete")
+    else:
+        step("Analysis failed — check error details")
     return _result(
         status,
         answer or "No textual summary was returned.",

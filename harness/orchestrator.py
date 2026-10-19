@@ -216,44 +216,87 @@ class TaskManager:
         ts = self.tasks.get(task_id)
         if not ts:
             return f"[{task_id}] UNKNOWN"
+
+        container_num = {"task_1": 1, "task_2": 2, "task_3": 3}.get(task_id, "?")
+
         with self._lock:
             s = dict(ts.state)
             elapsed = round((ts.ended or time.time()) - ts.started, 1) if ts.started else 0
-            recent_events = [e for e in ts.events[-5:] if e]
-            events_summary = " -> ".join(recent_events) if recent_events else ts.step
+            elapsed_str = f"{int(elapsed//60)}m {int(elapsed%60)}s" if elapsed >= 60 else f"{int(elapsed)}s"
+            tool_calls = s.get('tool_calls', 0)
+
+            # Build human-readable recent activity from raw events
+            recent_events = [e for e in ts.events[-8:] if e]
+            # Strip timestamps from events for cleaner reading
+            clean_events = []
+            for ev in recent_events:
+                import re
+                clean = re.sub(r'\[\d{1,2}:\d{2}:\d{2}\]\s*', '', ev).strip()
+                if clean:
+                    clean_events.append(clean)
+            activity_trail = " → ".join(clean_events) if clean_events else ts.step
+
+            # Determine a meaningful current-action description
+            step_text = ts.step or "idle"
+            if "thinking" in step_text.lower():
+                current_action = "The agent is analyzing data and deciding what to do next"
+            elif "sandbox tool" in step_text.lower():
+                current_action = f"The agent is running Python analysis code (execution #{tool_calls})"
+            elif "reading data" in step_text.lower():
+                current_action = "The agent is inspecting the input datasets and planning the analysis"
+            elif "plan" in step_text.lower() and "approv" in step_text.lower():
+                current_action = "Plan was approved, agent is now executing the full analysis"
+            elif "plan submitted" in step_text.lower():
+                current_action = "The agent has proposed an analysis plan and is waiting for user approval"
+            elif "vision" in step_text.lower():
+                current_action = "Quality-checking output maps with vision model"
+            elif "finished" in step_text.lower():
+                current_action = "Analysis is complete"
+            elif "fixing" in step_text.lower():
+                current_action = "The agent is fixing issues found in the output maps"
+            else:
+                current_action = step_text
+
             lines = [
-                f"[{task_id}] QUESTION: {ts.question}",
-                f"[{task_id}] STATUS: {ts.status}",
-                f"[{task_id}] CURRENT_STEP: {ts.step}",
-                f"[{task_id}] RECENT_ACTIVITY: {events_summary}",
-                f"[{task_id}] ELAPSED: {elapsed}s" + (" (finished)" if ts.ended else " (active)"),
-                f"[{task_id}] TOOL_CALLS_COMPLETED: {s.get('tool_calls', 0)}",
+                f"--- Container #{container_num} ({task_id}) ---",
+                f"TASK: {ts.question}",
+                f"STATUS: {ts.status}",
+                f"WHAT IT'S DOING NOW: {current_action}",
+                f"CODE EXECUTIONS COMPLETED: {tool_calls}",
+                f"ELAPSED TIME: {elapsed_str}" + (" (finished)" if ts.ended else " (still working)"),
+                f"ACTIVITY TRAIL: {activity_trail}",
             ]
             if ts.plan:
-                lines.append(f"[{task_id}] PROPOSED_PLAN: {ts.plan[:400]}")
+                lines.append(f"PROPOSED_PLAN: {ts.plan[:400]}")
             if ts.error:
-                lines.append(f"[{task_id}] ERROR_DETAILS: {ts.error}")
+                lines.append(f"ERROR: {ts.error}")
             result = ts.result
-
 
         rd = s.get("run_dir")
         if rd:
             try:
                 live = json.loads((Path(rd) / "last_status.json").read_text(encoding="utf-8"))
-                lines.append(f"[{task_id}] SANDBOX: ok={live.get('ok')} "
-                             f"msg={str(live.get('message', ''))[:400]} "
-                             f"artifacts={live.get('artifacts')}")
+                artifacts_list = live.get('artifacts', [])
+                if artifacts_list:
+                    artifact_names = [Path(a).name if isinstance(a, str) else str(a) for a in artifacts_list]
+                    lines.append(f"OUTPUT FILES PRODUCED: {', '.join(artifact_names)}")
+                sandbox_msg = str(live.get('message', ''))[:400]
+                if sandbox_msg:
+                    lines.append(f"SANDBOX RESULT: {'Success' if live.get('ok') else 'Failed'} — {sandbox_msg}")
             except Exception:
                 pass
 
         if result:
             lines += [
-                f"[{task_id}] FINAL: {result['status']}",
-                f"[{task_id}] ANSWER: {result['answer'][:1500]}",
-                f"[{task_id}] WARNINGS: {result['warnings']}",
-                f"[{task_id}] FILES: {result['artifacts']}",
+                f"FINAL STATUS: {result['status']}",
+                f"AGENT'S SUMMARY: {result['answer'][:1500]}",
             ]
-        lines.append(f"[{task_id}] EVENTS: " + " | ".join(ts.events[-10:]))
+            if result.get('warnings'):
+                lines.append(f"WARNINGS: {'; '.join(str(w) for w in result['warnings'][:3])}")
+            if result.get('artifacts'):
+                file_names = [Path(a).name if isinstance(a, str) else str(a) for a in result['artifacts']]
+                lines.append(f"DELIVERABLES: {', '.join(file_names)}")
+
         return "\n".join(lines)
 
     def multi_snapshot(self) -> str:
@@ -261,7 +304,9 @@ class TaskManager:
         for tid in TASK_IDS:
             ts = self.tasks[tid]
             if ts.status == "idle":
-                sections.append(f"[{tid}] IDLE (no job)")
+                container_num = {"task_1": 1, "task_2": 2, "task_3": 3}.get(tid, "?")
+                sections.append(f"--- Container #{container_num} ({tid}) ---\nSTATUS: idle (no job assigned)")
             else:
                 sections.append(self.task_snapshot(tid))
         return "\n\n".join(sections)
+

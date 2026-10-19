@@ -24,14 +24,17 @@ app = FastAPI(title="GeoLLM Web Interface")
 
 DATA_DIR = Path("data")
 RUNS_DIR = Path("runs")
+STATIC_DIR = Path("static")
 TEMPLATES_DIR = Path("templates")
 
 DATA_DIR.mkdir(exist_ok=True)
 RUNS_DIR.mkdir(exist_ok=True)
 TEMPLATES_DIR.mkdir(exist_ok=True)
+STATIC_DIR.mkdir(exist_ok=True)
 
 app.mount("/runs", StaticFiles(directory="runs"), name="runs")
 app.mount("/data", StaticFiles(directory="data"), name="data")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Web manager requires human plan approval in browser
 task_manager = TaskManager(auto_approve=False)
@@ -75,20 +78,18 @@ def find_artifacts(run_dir):
 
 def _parse_milestone(task_id, ev_text):
     lo = ev_text.lower()
-    if "thinking" in lo or "reading" in lo or "drafting" in lo:
+    if any(k in lo for k in ["thinking", "analyzing", "reading", "evaluating", "diagnosing"]):
         icon = "thinking"
-    elif "sandbox tool" in lo or "running" in lo:
+    elif any(k in lo for k in ["running", "executing", "processing", "calculating", "applying", "sandbox tool"]):
         icon = "running"
-    elif "finished" in lo:
-        icon = "error" if "iserror=true" in lo or "failed" in lo else "check"
-    elif "vision" in lo:
-        icon = "vision"
-    elif "success" in lo:
+    elif any(k in lo for k in ["produced", "created", "success", "verified", "passed", "complete"]):
         icon = "done"
-    elif "failed" in lo or "error" in lo:
-        icon = "error"
-    elif "plan" in lo or "approval" in lo:
+    elif any(k in lo for k in ["plan", "approval", "roadmap"]):
         icon = "plan"
+    elif any(k in lo for k in ["failed", "error", "cancelled"]):
+        icon = "error"
+    elif any(k in lo for k in ["vision", "quality-checking"]):
+        icon = "vision"
     else:
         icon = "info"
     return {"type": "milestone", "task_id": task_id, "icon": icon, "text": ev_text}
