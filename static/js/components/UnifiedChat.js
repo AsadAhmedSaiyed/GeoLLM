@@ -1,7 +1,6 @@
-// Astryx Unified Multi-Agent Chat & Progress Console
+// GeoLLM Unified Chat Component (Styled from design/reference.html)
 import { html, React } from '/static/js/html.js';
-import { IconSparkles, IconUser, IconRocket } from '/static/js/icons.js';
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 export function UnifiedChat({
   feedItems = [],
@@ -11,18 +10,21 @@ export function UnifiedChat({
   onNotify
 }) {
   const [inputText, setInputText] = useState('');
+  const [filter, setFilter] = useState('Everything');
+  const [target, setTarget] = useState('Main LLM');
   const [confirmClear, setConfirmClear] = useState(false);
-  const feedEndRef = useRef(null);
+  const logRef = useRef(null);
 
   useEffect(() => {
-    if (feedEndRef.current) {
-      feedEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
     }
   }, [feedItems]);
 
   const handleSend = () => {
     if (!inputText.trim()) return;
-    onSendMessage(inputText.trim());
+    const msg = target === 'Main LLM' ? inputText.trim() : `[@${target}] ${inputText.trim()}`;
+    onSendMessage(msg);
     setInputText('');
   };
 
@@ -31,6 +33,10 @@ export function UnifiedChat({
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleQuickPrompt = (text) => {
+    setInputText(text);
   };
 
   const handleClear = () => {
@@ -44,83 +50,144 @@ export function UnifiedChat({
     if (onNotify) onNotify('Feed cleared', 'info');
   };
 
-  return html`
-    <div className="chat-console-card">
-      <div className="chat-console-header">
-        <div className="chat-console-title">
-          <${IconSparkles} size=${15} className="sparkle-icon" />
-          <span className="console-title-text">Supervisor Console & Feed</span>
-          <span className="pill-badge unified-badge">Unified</span>
-        </div>
+  // Filter feed items
+  const filteredFeed = useMemo(() => {
+    return feedItems.filter(item => {
+      if (filter === 'Everything') return true;
+      const isMsg = item.type === 'user' || item.type === 'assistant';
+      if (filter === 'Chat only') return isMsg;
+      if (filter === '#1') return item.taskId === 'task_1';
+      if (filter === '#2') return item.taskId === 'task_2';
+      if (filter === '#3') return item.taskId === 'task_3';
+      return true;
+    });
+  }, [feedItems, filter]);
 
+  const getTimeString = (item) => {
+    if (item.timestamp) return item.timestamp;
+    const d = new Date();
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  };
+
+  return html`
+    <aside className="con">
+      <div className="ch">
+        <span>Unified chat</span>
+        <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="tag" style=${{ background: '#16312C', color: '#7DD3C8' }}>
+            Main LLM connected
+          </span>
+          <button
+            type="button"
+            className="btn s"
+            onClick=${handleClear}
+            style=${{ background: '#16201B', borderColor: '#2A3831', color: '#8FA39A', fontSize: '11px', height: '24px', padding: '0 8px' }}
+            title="Clear chat feed"
+          >
+            ${confirmClear ? 'Confirm clear?' : 'Clear'}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt">
+        Talk to the main LLM, or send a message to one task. Task updates stream into the same thread.
+      </div>
+
+      <div className="seg">
         <button
-          className="btn btn-secondary btn-xs btn-clear-feed"
-          onClick=${handleClear}
+          className=${filter === 'Everything' ? 'on' : ''}
+          onClick=${() => setFilter('Everything')}
           type="button"
-          title="Clear supervisor feed"
         >
-          ${confirmClear ? 'Confirm Clear?' : 'Clear'}
+          Everything
+        </button>
+        <button
+          className=${filter === 'Chat only' ? 'on' : ''}
+          onClick=${() => setFilter('Chat only')}
+          type="button"
+        >
+          Chat only
+        </button>
+        <button
+          className=${filter === '#1' ? 'on' : ''}
+          onClick=${() => setFilter('#1')}
+          type="button"
+        >
+          #1
+        </button>
+        <button
+          className=${filter === '#2' ? 'on' : ''}
+          onClick=${() => setFilter('#2')}
+          type="button"
+        >
+          #2
+        </button>
+        <button
+          className=${filter === '#3' ? 'on' : ''}
+          onClick=${() => setFilter('#3')}
+          type="button"
+        >
+          #3
         </button>
       </div>
 
-      <div className="unified-feed" role="log" aria-live="polite">
-        ${feedItems.length === 0 ? html`
-          <div className="feed-empty-state">
-            Multi-task timeline and supervisor chat will appear here.
+      <div className="log" ref=${logRef} role="log" aria-live="polite">
+        ${filteredFeed.length === 0 ? html`
+          <div style=${{ padding: '24px 16px', textAlign: 'center', color: '#5B6B64', fontSize: '12px' }}>
+            No updates in this view.
           </div>
-        ` : feedItems.map((item, idx) => {
-          if (item.taskId) {
-            const tagClass = item.taskId === 'task_1' ? 't1' : item.taskId === 'task_2' ? 't2' : 't3';
-            const taskLabel = item.taskId === 'task_1' ? 'Sandbox #1' : item.taskId === 'task_2' ? 'Sandbox #2' : 'Sandbox #3';
+        ` : filteredFeed.map((item, idx) => {
+          const time = getTimeString(item);
 
-            let eventContent = '';
+          if (item.taskId) {
+            const taskTag = item.taskId === 'task_1' ? '#1' : item.taskId === 'task_2' ? '#2' : '#3';
+            const isError = item.type === 'tool_end' && !item.ok;
+
+            let eventText = '';
             if (item.type === 'tool_start') {
-              eventContent = `Tool execution: ${item.toolName} (pass ${item.attempt || 1})`;
+              eventText = `Tool invocation: ${item.toolName} (attempt ${item.attempt || 1})`;
             } else if (item.type === 'tool_end') {
-              eventContent = `Tool completed: ${item.toolName || 'task'} (${item.ok ? 'success' : 'failed'}, exit ${item.exit_code}, ${item.duration_s || 0}s)`;
+              eventText = item.ok
+                ? `Tool ${item.toolName || 'task'} finished (exit ${item.exit_code}, ${item.duration_s || 0}s)`
+                : `Tool ${item.toolName || 'task'} failed (exit ${item.exit_code}, ${item.duration_s || 0}s)`;
             } else if (item.type === 'vision_check') {
-              eventContent = `Vision inspection [${item.image}]: ${item.state === 'started' ? 'Analyzing map artifact...' : `${item.verdict === 'ok' ? 'Verified' : 'Defect found'}${item.text ? ' — ' + item.text : ''}`}`;
+              eventText = `Map QA [${item.image}]: ${item.state === 'started' ? 'Inspecting raster...' : `${item.verdict === 'ok' ? 'Passed' : 'Defect detected'}${item.text ? ' — ' + item.text : ''}`}`;
             } else if (item.type === 'plan_ready') {
-              eventContent = 'Analysis plan drafted — awaiting operator review';
+              eventText = 'Analysis plan proposed — review required.';
             } else if (item.type === 'finish') {
-              eventContent = `Task ${item.status.toUpperCase()}: ${item.error || 'Execution finished successfully'}`;
+              eventText = `Task finished (${item.status}): ${item.error || 'All deliverables ready'}`;
             } else {
-              eventContent = item.text || '';
+              eventText = item.text || '';
             }
 
             return html`
-              <div key=${idx} className="event-row">
-                <span className="task-tag ${tagClass}">${taskLabel}</span>
-                <span className="event-text">${eventContent}</span>
+              <div key=${idx} className="lg ${isError ? 'e' : ''}">
+                <time className="mono">${time}</time>
+                <em className="mono">${taskTag}</em>
+                <span>${eventText}</span>
               </div>
             `;
           } else if (item.type === 'user') {
             return html`
-              <div key=${idx} className="chat-item user">
-                <div className="sender-label">
-                  <${IconUser} size=${12} />
-                  <span>Operator</span>
-                </div>
-                <div className="msg-bubble">${item.text}</div>
+              <div key=${idx} className="msg u">
+                <b>You · ${time}</b>
+                <p>${item.text}</p>
               </div>
             `;
           } else if (item.type === 'assistant') {
             return html`
-              <div key=${idx} className="chat-item assistant">
-                <div className="sender-label">
-                  <${IconSparkles} size=${12} />
-                  <span>Supervisor Agent</span>
-                </div>
-                <div className="msg-bubble">${item.text}</div>
+              <div key=${idx} className="msg a">
+                <b>Main LLM · ${time}</b>
+                <p>${item.text}</p>
                 ${item.proposedJob ? html`
-                  <div className="proposed-job-action">
+                  <div style=${{ marginTop: '8px' }}>
                     <button
-                      className="btn btn-primary btn-sm btn-dispatch"
+                      className="btn s p"
                       onClick=${() => onDispatchProposedJob(item.proposedJob)}
                       type="button"
+                      style=${{ height: '28px', fontSize: '11.5px' }}
                     >
-                      <${IconRocket} size=${12} />
-                      <span>Dispatch Proposed Analysis</span>
+                      Dispatch proposed analysis
                     </button>
                   </div>
                 ` : null}
@@ -129,27 +196,67 @@ export function UnifiedChat({
           }
           return null;
         })}
-        <div ref=${feedEndRef} />
       </div>
 
-      <div className="chat-composer-row">
-        <input
-          className="chat-composer-input"
-          placeholder="Ask supervisor agent about any sandbox or dataset..."
+      <div className="cb">
+        <div className="qs">
+          <button
+            type="button"
+            onClick=${() => handleQuickPrompt('Summarise all tasks')}
+          >
+            Summarise all tasks
+          </button>
+          <button
+            type="button"
+            onClick=${() => handleQuickPrompt('Explain the last failure')}
+          >
+            Explain the last failure
+          </button>
+          <button
+            type="button"
+            onClick=${() => handleQuickPrompt('Compare #1 and #3')}
+          >
+            Compare #1 and #3
+          </button>
+        </div>
+
+        <textarea
+          aria-label="Message"
+          placeholder="Message the main LLM about any task, dataset or result"
           value=${inputText}
           onInput=${(e) => setInputText(e.target.value)}
           onKeyDown=${handleKeyDown}
-          aria-label="Supervisor chat message"
         />
-        <button
-          className="btn btn-primary btn-sm btn-send-chat"
-          onClick=${handleSend}
-          disabled=${!inputText.trim()}
-          type="button"
-        >
-          Send
-        </button>
+
+        <div className="cr">
+          <select
+            aria-label="Send to"
+            value=${target}
+            onChange=${(e) => setTarget(e.target.value)}
+          >
+            <option value="Main LLM">To: Main LLM</option>
+            <option value="Task #1">To: Task #1</option>
+            <option value="Task #2">To: Task #2</option>
+            <option value="Task #3">To: Task #3</option>
+          </select>
+
+          <div className="sp"></div>
+
+          <span className="mono" style=${{ fontSize: '11px', color: '#8FA39A' }}>
+            Enter to send
+          </span>
+
+          <button
+            className="btn p"
+            onClick=${handleSend}
+            disabled=${!inputText.trim()}
+            type="button"
+            style=${{ height: '34px', padding: '0 18px' }}
+          >
+            Send
+          </button>
+        </div>
       </div>
-    </div>
+    </aside>
   `;
 }

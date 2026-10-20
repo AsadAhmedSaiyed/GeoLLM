@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoLLM Workspace</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#14201C;background:#F3F4F1}
+*{box-sizing:border-box}
+button,input,textarea,select{font-family:inherit}
+button{cursor:pointer}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+.app{height:980px;display:flex;flex-direction:column}
+.top{height:56px;flex:none;display:flex;align-items:center;gap:14px;padding:0 20px;background:#fff;border-bottom:1px solid #DCE1DB}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:17px}
+.logo{width:28px;height:28px;border-radius:8px;background:#0F766E;display:grid;place-items:center}
+.tag{font-size:12px;padding:3px 9px;border-radius:999px;background:#E6F0EE;color:#0B5C55;font-weight:500}
+.sp{flex:1}
+.stat{display:flex;align-items:center;gap:8px;font-size:13px;color:#4B5B54}
+.dot{width:8px;height:8px;border-radius:50%;background:#16A34A}
+.main{flex:1;min-height:0;display:grid;grid-template-columns:280px minmax(0,1fr) 500px}
+.side{background:#fff;border-right:1px solid #DCE1DB;display:flex;flex-direction:column;min-height:0}
+.sh{padding:16px 16px 8px;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#4B5B54}
+.in{margin:0 16px 8px;height:36px;border:1px solid #C9D1CB;border-radius:8px;padding:0 10px;font-size:13px;width:calc(100% - 32px)}
+.chips{display:flex;gap:6px;padding:0 16px 10px;flex-wrap:wrap}
+.fc{border:1px solid #C9D1CB;background:#fff;border-radius:999px;font-size:12px;padding:0 11px;height:28px;color:#2B3A34}
+.fc.on{background:#14201C;color:#fff;border-color:#14201C}
+.list{flex:1;overflow:auto;padding:0 8px}
+.gh{display:flex;justify-content:space-between;padding:12px 8px 4px;font-size:12px;font-weight:600}
+.gh span{font-weight:400;color:#5B6B64}
+.ds{display:grid;grid-template-columns:20px 1fr;gap:2px 8px;padding:8px;border-radius:8px;font-size:13px;cursor:pointer;align-items:start}
+.ds:hover{background:#F3F4F1}
+.ds.sel{background:#E6F0EE}
+.ds input{margin:2px 0 0;accent-color:#0F766E;width:16px;height:16px}
+.ds small{grid-column:2;font-size:11.5px;color:#5B6B64}
+.sf{padding:12px 16px;border-top:1px solid #DCE1DB;display:flex;justify-content:space-between;align-items:center;font-size:13px}
+.btn{height:36px;padding:0 14px;border-radius:8px;border:1px solid #C9D1CB;background:#fff;font-size:13px;font-weight:500;color:#14201C}
+.btn.p{background:#0F766E;border-color:#0F766E;color:#fff}
+.btn.s{height:30px;font-size:12px;padding:0 10px}
+.btn.d{color:#991B1B;border-color:#E5B4B4}
+.ctr{overflow:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.card{background:#fff;border:1px solid #DCE1DB;border-radius:12px}
+.comp{padding:16px}
+.comp label.h{display:block;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#4B5B54;margin-bottom:8px}
+.comp textarea{width:100%;height:84px;resize:vertical;border:1px solid #C9D1CB;border-radius:8px;padding:10px 12px;font-size:14px;line-height:1.5;color:#14201C}
+.att{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.at{font-size:12px;background:#E6F0EE;color:#0B5C55;border-radius:6px;padding:3px 8px}
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.bar select,.bar input[type=number]{height:36px;border:1px solid #C9D1CB;border-radius:8px;padding:0 8px;font-size:13px;background:#fff}
+.bar label{font-size:13px;color:#2B3A34;display:flex;align-items:center;gap:6px}
+.sec{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#4B5B54}
+.tc{padding:16px;display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:6px 18px}
+.th{grid-row:1 / span 4;grid-column:2;border-radius:8px;border:1px solid #DCE1DB;min-height:150px;position:relative;overflow:hidden}
+.th i{position:absolute;left:8px;bottom:8px;font-style:normal;font-size:11px;background:#14201Cd9;color:#fff;padding:2px 6px;border-radius:4px}
+.hd{display:flex;align-items:center;gap:10px}
+.num{width:24px;height:24px;border-radius:6px;background:#14201C;color:#fff;font-size:12px;display:grid;place-items:center;font-weight:600}
+.ttl{font-weight:600;font-size:15px}
+.pill{font-size:12px;font-weight:500;padding:3px 9px;border-radius:999px}
+.pill.ok{background:#DCFCE7;color:#166534}
+.pill.run{background:#FEF3C7;color:#92400E}
+.pill.bad{background:#FEE2E2;color:#991B1B}
+.q{font-size:13px;color:#4B5B54;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0}
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;font-size:11px;color:#5B6B64}
+.steps b{display:block;height:4px;border-radius:2px;background:#DCE1DB;margin-bottom:4px}
+.steps b.d{background:#0F766E}
+.steps b.a{background:#D97706}
+.meta{font-size:12px;color:#4B5B54;display:flex;gap:14px;flex-wrap:wrap}
+.files{display:flex;gap:6px;flex-wrap:wrap}
+.f{font-size:11.5px;border:1px solid #DCE1DB;background:#F8F9F7;border-radius:6px;padding:4px 8px;color:#14201C}
+.f u{text-decoration:none;color:#0F766E;margin-left:6px;font-family:'IBM Plex Sans',sans-serif}
+.act{display:flex;gap:8px}
+.con{background:#101714;display:flex;flex-direction:column;min-height:0;color:#C9D6CF}
+.ch{padding:14px 16px 10px;display:flex;justify-content:space-between;align-items:center;color:#fff;font-weight:600;font-size:14px}
+.seg{display:flex;gap:4px;padding:0 16px 10px}
+.seg button{background:transparent;border:1px solid #2A3831;color:#A9BBB2;border-radius:6px;height:26px;padding:0 10px;font-size:12px}
+.seg button.on{background:#E6F0EE;color:#0B3B36;border-color:#E6F0EE}
+.log{flex:1;overflow:auto;border-top:1px solid #1E2A25;display:flex;flex-direction:column-reverse}.log>*{flex:none}
+.lg{display:grid;grid-template-columns:48px 34px 1fr;gap:8px;padding:9px 16px;font-size:12.5px;line-height:1.45;border-bottom:1px solid #1B2621}
+.lg time{font-family:'IBM Plex Mono',monospace;color:#8FA39A;font-size:11.5px}
+.lg em{font-style:normal;font-weight:600;color:#7DD3C8;font-family:'IBM Plex Mono',monospace;font-size:12px}
+.lg.e{background:#2A1517}
+.lg.e span{color:#FCA5A5}
+.ci{padding:12px;border-top:1px solid #1E2A25;display:flex;gap:8px}
+.ci input{flex:1;height:38px;border-radius:8px;border:1px solid #2A3831;background:#16201B;color:#fff;padding:0 12px;font-size:13px}
+.ci .btn{background:#0F766E;border-color:#0F766E;color:#fff;height:38px}
+.msg{padding:10px 16px;display:flex;flex-direction:column;gap:4px}.msg b{font-size:11.5px;color:#8FA39A;font-weight:500}.msg p{margin:0;font-size:13.5px;line-height:1.55;padding:10px 12px;border-radius:10px;max-width:92%}.msg.u{align-items:flex-end}.msg.u p{background:#0F766E;color:#fff;border-bottom-right-radius:3px}.msg.a p{background:#1A2822;color:#E3ECE7;border:1px solid #2A3831;border-bottom-left-radius:3px}.cb{border-top:1px solid #1E2A25;padding:12px;display:flex;flex-direction:column;gap:8px}.qs{display:flex;gap:6px;flex-wrap:wrap}.qs button{background:#16201B;border:1px solid #2A3831;color:#B9CBC2;border-radius:999px;font-size:12px;padding:0 11px;height:28px}.cb textarea{width:100%;height:76px;resize:none;border-radius:10px;border:1px solid #2A3831;background:#16201B;color:#fff;padding:10px 12px;font-size:13.5px;line-height:1.5}.cr{display:flex;align-items:center;gap:8px}.cr select{height:34px;border-radius:8px;border:1px solid #2A3831;background:#16201B;color:#C9D6CF;font-size:12.5px;padding:0 8px}.cr .btn{background:#0F766E;border-color:#0F766E;color:#fff;height:34px;padding:0 18px}.mt{font-size:11.5px;color:#8FA39A;padding:0 16px 8px}
+@media (max-width:1100px){.app{height:auto}.main{display:block}.tc{grid-template-columns:1fr}.th{grid-column:1;grid-row:auto}.con{min-height:420px}}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top">
+<div class="brand"><div class="logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></div>GeoLLM <span class="tag">Astryx Sandbox</span></div>
+<div class="sp"></div>
+<div class="stat"><span class="dot"></span>Cluster ready · 1 of 3 workers active</div>
+<div class="stat mono">Docker + Pi RPC</div>
+<button class="btn s">Run history</button>
+</header>
+<div class="main">
+<aside class="side">
+<div class="sh">Datasets · data/ (33)</div>
+<input class="in" type="search" aria-label="Search datasets" placeholder="Search datasets">
+<div class="chips"><button class="fc on">All</button><button class="fc">Radar</button><button class="fc">Optical</button><button class="fc">Hyperspectral</button></div>
+<div class="list">
+<div class="gh">Sentinel-1 radar <span>5 files</span></div>
+<label class="ds"><input type="checkbox"><span class="mono">S1_2016_VV.tif</span><small>18 Apr 2016 · 20 m · UTM 40N</small></label>
+<label class="ds sel"><input type="checkbox" checked><span class="mono">S1_2024pre_VV.tif</span><small>12 Apr 2024 · 20 m · UTM 40N</small></label>
+<label class="ds sel"><input type="checkbox" checked><span class="mono">S1_2024pre_VH.tif</span><small>12 Apr 2024 · 20 m · UTM 40N</small></label>
+<label class="ds sel"><input type="checkbox" checked><span class="mono">S1_2024post_VV.tif</span><small>18 May 2024 · 20 m · UTM 40N</small></label>
+<label class="ds sel"><input type="checkbox" checked><span class="mono">S1_2024post_VH.tif</span><small>18 May 2024 · 20 m · UTM 40N</small></label>
+<div class="gh">Landsat 8 optical <span>12 files</span></div>
+<label class="ds"><input type="checkbox"><span class="mono">L8_2016 · 6 bands</span><small>20 Mar 2016 · 30 m</small></label>
+<label class="ds"><input type="checkbox"><span class="mono">L8_2024 · 6 bands</span><small>13 May 2024 · 30 m</small></label>
+<div class="gh">Sentinel-2 optical <span>12 files</span></div>
+<label class="ds"><input type="checkbox"><span class="mono">S2_2024pre · 6 bands</span><small>Early Apr 2024 · partial cover</small></label>
+<label class="ds"><input type="checkbox"><span class="mono">S2_2024 · 6 bands</span><small>17 May 2024 · 10 m</small></label>
+<div class="gh">Hyperspectral <span>1 file</span></div>
+<label class="ds"><input type="checkbox"><span class="mono">EMIT_reflectance.tif</span><small>20 Aug 2022 · 285 bands · EPSG:4326</small></label>
+</div>
+<div class="sf"><span><b>4</b> selected</span><button class="btn s">Upload</button></div>
+</aside>
+<main class="ctr">
+<section class="card comp">
+<label class="h" for="q">New task</label>
+<textarea id="q">These radar images cover the same area on 12 April 2024 and 18 May 2024, each in two channels. Tell me honestly whether the later image can show the flood itself, and outline any areas that still look wet.</textarea>
+<div class="att"><span class="at mono">S1_2024pre_VV</span><span class="at mono">S1_2024pre_VH</span><span class="at mono">S1_2024post_VV</span><span class="at mono">S1_2024post_VH</span></div>
+<div class="bar">
+<select aria-label="Template"><option>Template: radar change</option><option>Template: land cover</option><option>Template: hyperspectral</option></select>
+<label>Max turns <input type="number" value="25" style="width:64px"></label>
+<label><input type="checkbox" checked> Explain results</label>
+<span class="sp"></span>
+<button class="btn p" style="height:40px;padding:0 20px">Run task &nbsp;<span class="mono" style="font-size:11px;opacity:.85">Ctrl+Enter</span></button>
+</div>
+</section>
+<div class="sec"><span>Tasks · 3 sandboxes</span><span style="font-weight:400;text-transform:none;letter-spacing:0">1 running · 2 done</span></div>
+
+<article class="card tc">
+<div class="hd"><span class="num">1</span><span class="ttl">Hyperspectral material map</span><span class="pill ok">Done</span><span class="sp"></span><span class="mono" style="font-size:12px;color:#4B5B54">11:20</span></div>
+<p class="q">This satellite image records hundreds of thin colour slices for each pixel over part of Dubai and Sharjah on 20 August 2022. Map the ground materials using fixed limits.</p>
+<div><div class="steps"><div><b class="d"></b>Read</div><div><b class="d"></b>Code</div><div><b class="d"></b>Run</div><div><b class="d"></b>QA maps</div><div><b class="d"></b>Done</div></div></div>
+<div class="meta"><span>Attempt 1 of 15</span><span>QA round 3 passed</span><span>5 inputs</span></div>
+<div class="th" style="background:linear-gradient(135deg,#2B6CB0 0 28%,#2F9E5B 28% 62%,#B5543C 62% 70%,#2F9E5B 70%)"><i class="mono">material_map.png · EPSG:4326</i></div>
+<div class="files"><span class="f mono">material_map.tif<u>Preview</u></span><span class="f mono">confidence_map.tif<u>Preview</u></span><span class="f mono">material_outlines.geojson</span><span class="f mono">spectral_signatures.csv</span><span class="f mono">result.json</span></div>
+<div class="act"><button class="btn s">Open on map</button><button class="btn s">Download all</button></div>
+</article>
+
+<article class="card tc">
+<div class="hd"><span class="num">2</span><span class="ttl">Landsat land-cover change</span><span class="pill run">Running</span><span class="sp"></span><span class="mono" style="font-size:12px;color:#4B5B54">04:12</span></div>
+<p class="q">These are natural-colour and infrared satellite images of Dubai and Sharjah from 20 March 2016 and 13 May 2024. Map water, plants, bare sand and built-up land for each date.</p>
+<div><div class="steps"><div><b class="d"></b>Read</div><div><b class="d"></b>Code</div><div><b class="a"></b>Run</div><div><b></b>QA maps</div><div><b></b>Done</div></div></div>
+<div class="meta"><span>Attempt 5 of 8, retrying</span><span>Last error: exit code -1</span><span>8 inputs</span></div>
+<div class="th" style="background:#EEF0EC"><i class="mono">Waiting for first output</i></div>
+<div class="files"><span class="f mono">landcover_2016.tif<u>Preview</u></span><span class="f mono">transition_area_km2.csv</span></div>
+<div class="act"><button class="btn s d">Abort</button><button class="btn s">View code</button></div>
+</article>
+
+<article class="card tc">
+<div class="hd"><span class="num">3</span><span class="ttl">Radar surface response</span><span class="pill ok">Done</span><span class="sp"></span><span class="mono" style="font-size:12px;color:#4B5B54">14:18</span></div>
+<p class="q">These radar images cover the same area on 12 April 2024 and 18 May 2024, each in two radar channels. A very heavy rainstorm hit Dubai on 14 to 17 April 2024.</p>
+<div><div class="steps"><div><b class="d"></b>Read</div><div><b class="d"></b>Code</div><div><b class="d"></b>Run</div><div><b class="d"></b>QA maps</div><div><b class="d"></b>Done</div></div></div>
+<div class="meta"><span>Attempt 2 of 15</span><span>QA round 2 passed</span><span>4 inputs</span></div>
+<div class="th" style="background:linear-gradient(120deg,#16477F 0 30%,#E5D08F 30% 78%,#8A6D4F 78%)"><i class="mono">sar_change_map.png · UTM 40N</i></div>
+<div class="files"><span class="f mono">vv_change_db.tif<u>Preview</u></span><span class="f mono">vh_change_db.tif<u>Preview</u></span><span class="f mono">vv_vh_ratio_change_db.tif</span><span class="f mono">possible_residual_wetness.geojson</span><span class="f mono">result.json</span></div>
+<div class="act"><button class="btn s">Open on map</button><button class="btn s">Download all</button></div>
+</article>
+</main>
+<aside class="con">
+<div class="ch"><span>Unified chat</span><span class="tag" style="background:#16312C;color:#7DD3C8">Main LLM connected</span></div><div class="mt">Talk to the main LLM, or send a message to one task. Task updates stream into the same thread.</div>
+<div class="seg"><button class="on">Everything</button><button>Chat only</button><button>#1</button><button>#2</button><button>#3</button></div>
+<div class="log">
+<div class="msg a"><b>Main LLM · 20:53</b><p>Task #2 failed on attempt 5 while running k-means and is retrying with a fix. Tasks #1 and #3 are done. Want me to abort #2 and rerun it with a simpler method?</p></div><div class="msg u"><b>You · 20:52</b><p>Why is task 2 still running, and are the other two finished?</p></div><div class="lg"><time>20:51</time><em>#1</em><span>Analysis completed. All outputs are ready.</span></div>
+<div class="lg"><time>20:49</time><em>#1</em><span>Quality-checking 4 output maps, round 3.</span></div>
+<div class="lg e"><time>20:47</time><em>#2</em><span>Execution failed (attempt 5 of 8, exit code -1). Diagnosing the error and writing a fix.</span></div>
+<div class="lg"><time>20:46</time><em>#2</em><span>Running analysis: k-means initialisation on sampled points.</span></div>
+<div class="lg"><time>20:44</time><em>#3</em><span>Analysis completed. 8 deliverables ready.</span></div>
+<div class="lg"><time>20:41</time><em>#1</em><span>Produced material_map.png and confidence_map.tif.</span></div>
+<div class="lg"><time>20:38</time><em>#2</em><span>Reading 8 rasters on the 20 m grid.</span></div>
+<div class="lg"><time>20:36</time><em>#1</em><span>Analysing hyperspectral bands and wavelength calibration.</span></div>
+</div>
+<div class="cb"><div class="qs"><button>Summarise all tasks</button><button>Explain the last failure</button><button>Compare #1 and #3</button></div><textarea aria-label="Message" placeholder="Message the main LLM about any task, dataset or result"></textarea><div class="cr"><select aria-label="Send to"><option>To: Main LLM</option><option>To: Task #1</option><option>To: Task #2</option><option>To: Task #3</option></select><span class="sp"></span><span class="mono" style="font-size:11px;color:#8FA39A">Enter to send</span><button class="btn">Send</button></div></div>
+</aside>
+</div>
+</div>
+
+<script>
+/* ---- GeoLLM UI behaviour (frontend only). Wire the TODOs to your backend. ---- */
+const log = document.querySelector('.log');
+const ta = document.querySelector('.cb textarea');
+const target = document.querySelector('.cr select');
+const now = () => new Date().toTimeString().slice(0,5);
+
+function addMessage(who, text, label){            // who: 'u' (you) or 'a' (main LLM)
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.innerHTML = '<b></b><p></p>';
+  d.querySelector('b').textContent = label + ' \u00b7 ' + now();
+  d.querySelector('p').textContent = text;
+  log.prepend(d);                                  // .log is column-reverse: prepend = newest at bottom
+}
+function addEvent(task, text, isError){            // call this for each task update from the backend
+  const d = document.createElement('div');
+  d.className = 'lg' + (isError ? ' e' : '');
+  d.innerHTML = '<time></time><em></em><span></span>';
+  d.querySelector('time').textContent = now();
+  d.querySelector('em').textContent = '#' + task;
+  d.querySelector('span').textContent = text;
+  log.prepend(d);
+}
+async function sendChat(){
+  const t = ta.value.trim(); if(!t) return;
+  addMessage('u', t, 'You \u2192 ' + target.value.replace('To: ',''));
+  ta.value = '';
+  // TODO: POST to your backend, e.g. chat.ask(history, orch.snapshot()):
+  // const r = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'},
+  //   body: JSON.stringify({message:t, target:target.value})});
+  // addMessage('a', (await r.json()).reply, 'Main LLM');
+}
+document.querySelector('.cr .btn').addEventListener('click', sendChat);
+ta.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChat(); }});
+document.querySelectorAll('.qs button').forEach(b => b.addEventListener('click', () => { ta.value = b.textContent; ta.focus(); }));
+
+// TODO: live task updates (server-sent events), e.g.
+// new EventSource('/api/stream').onmessage = e => { const m = JSON.parse(e.data); addEvent(m.task, m.text, m.error); };
+
+// Console filter tabs
+document.querySelectorAll('.seg button').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('.seg button').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  const f = btn.textContent.trim();
+  log.querySelectorAll('.msg,.lg').forEach(el => {
+    const isMsg = el.classList.contains('msg');
+    const tag = el.querySelector('em') ? el.querySelector('em').textContent : '';
+    el.style.display = f==='Everything' || (f==='Chat only' && isMsg) || (f===tag && !isMsg) ? '' : 'none';
+  });
+}));
+
+// Dataset selection + counter
+const countEl = document.querySelector('.sf b');
+document.querySelectorAll('.ds input').forEach(cb => cb.addEventListener('change', () => {
+  cb.closest('.ds').classList.toggle('sel', cb.checked);
+  countEl.textContent = document.querySelectorAll('.ds input:checked').length;
+}));
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { html, React } from '/static/js/html.js';
 const { useState, useEffect, useRef } = React;
 
 import { Navbar } from '/static/js/components/Navbar.js';
+import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js';
 import { QueryConsole } from '/static/js/components/QueryConsole.js';
 import { WorkerSlots } from '/static/js/components/WorkerSlots.js';
 import { UnifiedChat } from '/static/js/components/UnifiedChat.js';
@@ -599,25 +600,34 @@ export function App() {
         isClusterBusy=${activeWorkerCount > 0}
       />
 
-      <${QueryConsole}
-        files=${files}
-        selectedFiles=${selectedFiles}
-        setSelectedFiles=${setSelectedFiles}
-        onSubmitTask=${handleSubmitTask}
-        onUploadFiles=${handleUploadFiles}
-        isSubmitting=${isSubmitting}
-        onNotify=${showToast}
-      />
-
-      <main className="workspace-container">
-        <${WorkerSlots}
-          tasks=${tasks}
-          onApprovePlan=${handleApprovePlan}
-          onRevisePlan=${handleRevisePlan}
-          onCancelTask=${handleCancelTask}
-          onPreviewFile=${(url, name, type) => setPreviewTarget({ url, name, type })}
+      <div className="main">
+        <${DatasetSidebar}
+          files=${files}
+          selectedFiles=${selectedFiles}
+          setSelectedFiles=${setSelectedFiles}
+          onUploadFiles=${handleUploadFiles}
           onNotify=${showToast}
         />
+
+        <main className="ctr">
+          <${QueryConsole}
+            files=${files}
+            selectedFiles=${selectedFiles}
+            setSelectedFiles=${setSelectedFiles}
+            onSubmitTask=${handleSubmitTask}
+            isSubmitting=${isSubmitting}
+            onNotify=${showToast}
+          />
+
+          <${WorkerSlots}
+            tasks=${tasks}
+            onApprovePlan=${handleApprovePlan}
+            onRevisePlan=${handleRevisePlan}
+            onCancelTask=${handleCancelTask}
+            onPreviewFile=${(url, name, type) => setPreviewTarget({ url, name, type })}
+            onNotify=${showToast}
+          />
+        </main>
 
         <${UnifiedChat}
           feedItems=${feedItems}
@@ -626,7 +636,7 @@ export function App() {
           onClearChat=${handleClearChat}
           onNotify=${showToast}
         />
-      </main>
+      </div>
 
       <${TiffPreviewModal}
         previewTarget=${previewTarget}

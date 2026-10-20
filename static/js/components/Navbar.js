@@ -1,39 +1,30 @@
-// Astryx Navbar Component (Deep Technical Dark)
+// GeoLLM Navbar Component (Styled from design/reference.html)
 import { html } from '/static/js/html.js';
-import { IconSatellite } from '/static/js/icons.js';
 
-export function Navbar({ activeWorkerCount, isClusterBusy }) {
+export function Navbar({ activeWorkerCount = 0, isClusterBusy = false }) {
   return html`
-    <header className="astryx-header">
-      <div className="brand-wrapper">
-        <div className="brand-icon" aria-hidden="true">
-          <${IconSatellite} size=${17} />
+    <header className="top">
+      <div className="brand">
+        <div className="logo" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+            <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" />
+            <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" />
+          </svg>
         </div>
-        <div className="brand-title-group">
-          <span className="brand-name">GeoLLM</span>
-          <span className="brand-subtitle">Autonomous Geospatial Workbench</span>
-        </div>
-        <span className="pill-badge brand-badge">3 Sandboxes</span>
+        <span>GeoLLM</span>
+        <span className="tag">Workspace</span>
       </div>
 
-      <div className="header-telemetry">
-        <div className="telemetry-node">
-          <span
-            className="status-indicator ${isClusterBusy ? 'busy' : ''}"
-            aria-label=${isClusterBusy ? 'Cluster busy' : 'Cluster idle'}
-          ></span>
-          <span className="telemetry-label">
-            ${isClusterBusy
-              ? `${activeWorkerCount} of 3 Sandboxes Active`
-              : 'Cluster Ready · 0/3 Active'}
-          </span>
-        </div>
-        <div className="telemetry-separator">/</div>
-        <div className="telemetry-node">
-          <span className="telemetry-dim">Execution Engine:</span>
-          <span className="telemetry-val">Isolated Docker Containers</span>
-        </div>
+      <div className="sp"></div>
+
+      <div className="stat">
+        <span className="dot ${isClusterBusy ? 'busy' : ''}"></span>
+        <span>${isClusterBusy ? `${activeWorkerCount} of 3 workers active` : 'Cluster ready · 0 of 3 workers active'}</span>
       </div>
+
+      <button className="btn s" type="button" onClick=${() => window.location.reload()}>
+        Refresh
+      </button>
     </header>
   `;
 }
