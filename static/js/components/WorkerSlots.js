@@ -1,5 +1,17 @@
-// Astryx Worker Sandbox Slots Component (3 Concurrent Sandboxes)
+// Astryx Worker Sandbox Slots Component (Balanced 3-Container Grid Deck)
 import { html, React } from '/static/js/html.js';
+import {
+  IconLayers,
+  IconImage,
+  IconFileText,
+  IconDownload,
+  IconCheck,
+  IconX,
+  IconAlertTriangle,
+  IconRefresh,
+  IconStopCircle,
+  IconEye
+} from '/static/js/icons.js';
 const { useState, useEffect, useRef } = React;
 
 function TaskActivityFeed({ activities }) {
@@ -26,7 +38,10 @@ function TaskActivityFeed({ activities }) {
         if (act.type === 'thinking') {
           return html`
             <details key=${i} className="claude-thinking">
-              <summary>💭 Thinking</summary>
+              <summary className="thinking-summary">
+                <span className="thinking-dot"></span>
+                <span>Sub-agent Reasoning</span>
+              </summary>
               <div className="thinking-content">${act.text}</div>
             </details>
           `;
@@ -36,16 +51,17 @@ function TaskActivityFeed({ activities }) {
           `;
         } else if (act.type === 'tool') {
           const shortArgs = typeof act.args === 'string'
-            ? act.args.slice(0, 80)
-            : act.args ? JSON.stringify(act.args).slice(0, 80) : '';
+            ? act.args.slice(0, 90)
+            : act.args ? JSON.stringify(act.args).slice(0, 90) : '';
+
           return html`
             <div key=${i} className="tool-card ${act.running ? 'running' : act.ok ? 'success' : 'failed'}">
               <div className="tool-card-header">
                 <span className="tool-status-icon">
-                  ${act.running ? html`<span className="spinner-icon-sm"></span>` : act.ok ? '✓' : '✗'}
+                  ${act.running ? html`<span className="spinner-icon-sm"></span>` : act.ok ? html`<${IconCheck} size=${12} />` : html`<${IconX} size=${12} />`}
                 </span>
                 <span className="tool-name">${act.toolName}</span>
-                ${act.attempt ? html`<span className="tool-attempt">att ${act.attempt}</span>` : null}
+                ${act.attempt ? html`<span className="tool-attempt">pass ${act.attempt}</span>` : null}
                 ${!act.running ? html`
                   <span className="tool-meta">
                     ${act.duration_s != null ? `${act.duration_s}s · ` : ''}exit ${act.exit_code}
@@ -55,7 +71,7 @@ function TaskActivityFeed({ activities }) {
               ${shortArgs ? html`<div className="tool-args">${shortArgs}</div>` : null}
               ${(act.error || act.stdout) ? html`
                 <details className="tool-details">
-                  <summary>output / stderr</summary>
+                  <summary>Console Output</summary>
                   <pre>${(act.error || act.stdout).slice(-500)}</pre>
                 </details>
               ` : null}
@@ -65,9 +81,14 @@ function TaskActivityFeed({ activities }) {
           const isDone = act.state === 'done';
           return html`
             <div key=${i} className="vision-row ${isDone ? (act.verdict === 'ok' ? 'pass' : 'fail') : 'checking'}">
-              <span className="vision-img">${act.image}</span>
-              <span className="vision-verdict">${isDone ? act.verdict : 'checking...'}</span>
-              ${act.text ? html`<span className="vision-text">${act.text}</span>` : null}
+              <div className="vision-header">
+                <${IconEye} size=${12} />
+                <span className="vision-img">${act.image}</span>
+                <span className="vision-verdict ${act.verdict === 'ok' ? 'ok' : 'review'}">
+                  ${isDone ? (act.verdict === 'ok' ? 'VERIFIED' : 'DEFECTS DETECTED') : 'ANALYZING...'}
+                </span>
+              </div>
+              ${act.text ? html`<div className="vision-text">${act.text}</div>` : null}
             </div>
           `;
         }
@@ -78,13 +99,15 @@ function TaskActivityFeed({ activities }) {
 }
 
 export function WorkerSlots({
-  tasks,
+  tasks = {},
   onApprovePlan,
   onRevisePlan,
   onCancelTask,
-  onPreviewFile
+  onPreviewFile,
+  onNotify
 }) {
   const [feedbackMap, setFeedbackMap] = useState({});
+  const [confirmCancelTaskId, setConfirmCancelTaskId] = useState(null);
 
   const handleFeedbackChange = (taskId, text) => {
     setFeedbackMap(prev => ({ ...prev, [taskId]: text }));
@@ -93,27 +116,40 @@ export function WorkerSlots({
   const handleRevise = (taskId) => {
     const text = feedbackMap[taskId] || '';
     if (!text.trim()) {
-      alert('Please enter revision feedback.');
+      if (onNotify) {
+        onNotify('Please describe your proposed plan adjustments before requesting changes.', 'warning');
+      }
       return;
     }
     onRevisePlan(taskId, text.trim());
     handleFeedbackChange(taskId, '');
+    if (onNotify) {
+      onNotify(`Revision request sent to Container #${taskId.slice(-1)}`, 'info');
+    }
   };
 
   const slotOrder = ['task_1', 'task_2', 'task_3'];
+
+  const formatSeconds = (sec) => {
+    if (!sec || isNaN(sec)) return '00:00';
+    const total = Math.floor(sec);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
 
   return html`
     <div className="workers-section">
       <div className="section-headline">
         <div className="headline-text">
-          <span>Worker Sandboxes</span>
-          <span className="pill-badge" style=${{ background: '#e2e8f0', color: '#334155' }}>
-            3 Isolated Docker Containers
+          <span className="headline-title">Sandbox Worker Deck</span>
+          <span className="pill-badge sandbox-badge">
+            3 Isolated Docker Sandboxes
           </span>
         </div>
       </div>
 
-      <div style=${{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+      <div className="workers-grid">
         ${slotOrder.map((taskId, idx) => {
           const task = tasks[taskId] || {
             status: 'idle',
@@ -128,6 +164,9 @@ export function WorkerSlots({
 
           const isRunning = task.status === 'running';
           const isPendingApproval = task.status === 'pending_approval';
+          const isDone = task.status === 'done';
+          const isFailed = task.status === 'failed';
+          const isPartial = task.status === 'partial';
 
           // De-duplicate deliverables by URL before rendering
           const uniqueArtifacts = [];
@@ -139,135 +178,188 @@ export function WorkerSlots({
             }
           });
 
-          // Latest real event text truncated, never fixed string
+          // Truncated progress text
           const headerStep = task.step
             ? (task.step.length > 70 ? task.step.slice(0, 67) + '...' : task.step)
-            : (isRunning ? 'Running...' : 'Ready');
+            : (isRunning ? 'Processing pipeline...' : 'Ready');
 
           return html`
             <div
               key=${taskId}
-              className="worker-card ${isRunning ? 'active-run' : ''} ${isPendingApproval ? 'review-gate' : ''}"
+              className="worker-card ${isRunning ? 'active-run' : ''} ${isPendingApproval ? 'review-gate' : ''} ${isDone ? 'finished' : ''}"
             >
               <div className="card-topbar">
                 <div className="card-slot-title">
-                  <span className="slot-name">CONTAINER #${idx + 1}</span>
-                  ${task.attempt ? html`<span className="attempt-pill">attempt ${task.attempt} of 15</span>` : null}
+                  <span className="slot-name">SANDBOX #${idx + 1}</span>
+                  ${task.attempt ? html`<span className="attempt-pill">Pass ${task.attempt}/15</span>` : null}
                   <span className="slot-timer">${formatSeconds(task.elapsed)}</span>
                 </div>
-                <span className="status-pill ${task.status}">
-                  ${task.status.replace('_', ' ')}
+
+                <span className="status-pill status-${task.status}">
+                  ${isRunning ? html`<span className="spinner-icon-xs"></span>` : null}
+                  ${isDone ? html`<${IconCheck} size=${11} />` : null}
+                  ${isPendingApproval ? html`<${IconAlertTriangle} size=${11} />` : null}
+                  <span className="status-text">${task.status.replace('_', ' ')}</span>
                 </span>
               </div>
 
               <div className="card-query-banner">
-                <div style=${{
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  fontWeight: 500
-                }}>
+                <div className="card-query-text" title=${task.question}>
                   ${task.question}
                 </div>
               </div>
 
               <div className="human-progress-bar">
-                ${isRunning ? html`<span className="spinner-icon"></span>` : null}
-                <span style=${{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                ${isRunning ? html`<span className="spinner-icon-sm"></span>` : null}
+                <span className="progress-step-text">
                   ${headerStep}
                 </span>
               </div>
 
-              <${TaskActivityFeed} activities=${task.activities} />
+              <div className="card-body-scrollable">
+                <${TaskActivityFeed} activities=${task.activities} />
 
-              ${isPendingApproval && task.plan ? html`
-                <div className="plan-review-box">
-                  <div className="plan-review-header">
-                    <span>⚠️ Proposed Plan — Review Required</span>
-                    <span style=${{ fontSize: '10px', fontFamily: 'var(--font-mono)' }}>GATE</span>
+                ${isPendingApproval && task.plan ? html`
+                  <div className="plan-review-box">
+                    <div className="plan-review-header">
+                      <div className="plan-review-title">
+                        <${IconAlertTriangle} size=${14} />
+                        <span>Proposed Analysis Plan</span>
+                      </div>
+                      <span className="plan-gate-tag">REVIEW GATE</span>
+                    </div>
+
+                    <div className="plan-code-view">${task.plan}</div>
+
+                    <input
+                      className="feedback-input"
+                      placeholder="Enter change request (e.g. use Otsu thresholding, save GeoTIFF)..."
+                      value=${feedbackMap[taskId] || ''}
+                      onInput=${(e) => handleFeedbackChange(taskId, e.target.value)}
+                    />
+
+                    <div className="plan-btn-row">
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick=${() => handleRevise(taskId)}
+                        type="button"
+                      >
+                        <${IconRefresh} size=${12} />
+                        <span>Request Changes</span>
+                      </button>
+                      <button
+                        className="btn btn-success btn-sm"
+                        onClick=${() => {
+                          onApprovePlan(taskId);
+                          if (onNotify) onNotify(`Plan approved for Sandbox #${idx + 1}. Execution started.`, 'success');
+                        }}
+                        type="button"
+                      >
+                        <${IconCheck} size=${12} />
+                        <span>Approve & Execute</span>
+                      </button>
+                    </div>
                   </div>
-                  <div className="plan-code-view">${task.plan}</div>
-                  <input
-                    className="feedback-input"
-                    placeholder="Enter change request (e.g. use Otsu thresholding, save GeoTIFF)..."
-                    value=${feedbackMap[taskId] || ''}
-                    onInput=${(e) => handleFeedbackChange(taskId, e.target.value)}
-                  />
-                  <div style=${{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick=${() => handleRevise(taskId)}
-                    >
-                      ↺ Request Changes
-                    </button>
-                    <button
-                      className="btn btn-success btn-sm"
-                      onClick=${() => onApprovePlan(taskId)}
-                    >
-                      ✓ Approve & Execute
-                    </button>
+                ` : null}
+
+                ${uniqueArtifacts.length > 0 ? html`
+                  <div className="artifacts-shelf">
+                    <span className="artifacts-shelf-title">Deliverables (${uniqueArtifacts.length}):</span>
+                    <div className="artifacts-list">
+                      ${uniqueArtifacts.map((art) => {
+                        const isTif = art.ext === '.tif' || art.ext === '.tiff';
+                        const isImg = art.type === 'image';
+
+                        if (isTif) {
+                          return html`
+                            <button
+                              key=${art.name}
+                              className="artifact-btn artifact-tif"
+                              onClick=${() => onPreviewFile(art.url, art.name, 'tif')}
+                              title="Click to preview GeoTIFF with band analysis"
+                              type="button"
+                            >
+                              <${IconLayers} size=${13} />
+                              <span className="artifact-name">${art.name}</span>
+                              <span className="artifact-action-tag">Preview</span>
+                            </button>
+                          `;
+                        } else if (isImg) {
+                          return html`
+                            <button
+                              key=${art.name}
+                              className="artifact-btn artifact-img"
+                              onClick=${() => onPreviewFile(art.url, art.name, 'image')}
+                              title="Click to view full-resolution map"
+                              type="button"
+                            >
+                              <${IconImage} size=${13} />
+                              <span className="artifact-name">${art.name}</span>
+                            </button>
+                          `;
+                        } else {
+                          return html`
+                            <a
+                              key=${art.name}
+                              href=${art.url}
+                              download
+                              className="artifact-btn artifact-file"
+                              title="Download data deliverable"
+                            >
+                              <${IconFileText} size=${13} />
+                              <span className="artifact-name">${art.name}</span>
+                              <${IconDownload} size=${11} />
+                            </a>
+                          `;
+                        }
+                      })}
+                    </div>
                   </div>
-                </div>
-              ` : null}
+                ` : null}
+              </div>
 
-              ${uniqueArtifacts.length > 0 ? html`
-                <div className="artifacts-shelf">
-                  <span style=${{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Deliverables:</span>
-                  ${uniqueArtifacts.map((art) => {
-                    const isTif = art.ext === '.tif' || art.ext === '.tiff';
-                    const isImg = art.type === 'image';
+              <div className="card-footer-action">
+                <span className="container-id-tag">container: geollm_${taskId}</span>
 
-                    if (isTif) {
-                      return html`
-                        <button
-                          key=${art.name}
-                          className="artifact-btn"
-                          onClick=${() => onPreviewFile(art.url, art.name, 'tif')}
-                          title="Click to preview GeoTIFF"
-                        >
-                          🗺️ ${art.name} <span style=${{ color: '#2563eb', fontWeight: 700 }}>Preview</span>
-                        </button>
-                      `;
-                    } else if (isImg) {
-                      return html`
-                        <button
-                          key=${art.name}
-                          className="artifact-btn"
-                          onClick=${() => onPreviewFile(art.url, art.name, 'image')}
-                          title="Click to preview Map Image"
-                        >
-                          📊 ${art.name}
-                        </button>
-                      `;
-                    } else {
-                      return html`
-                        <a
-                          key=${art.name}
-                          href=${art.url}
-                          download
-                          className="artifact-btn"
-                          title="Download file"
-                        >
-                          📁 ${art.name}
-                        </a>
-                      `;
-                    }
-                  })}
-                </div>
-              ` : null}
-
-              <div className="card-footer">
-                <span style=${{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#94a3b8' }}>
-                  geollm_${taskId}
-                </span>
-                <button
-                  className="btn btn-outline-danger btn-sm"
-                  disabled=${task.status === 'idle' || task.status === 'done' || task.status === 'failed'}
-                  onClick=${() => onCancelTask(taskId)}
-                >
-                  ✕ Abort
-                </button>
+                ${(isRunning || isPendingApproval) ? html`
+                  ${confirmCancelTaskId === taskId ? html`
+                    <div className="confirm-abort-row">
+                      <span className="confirm-abort-prompt">Stop task?</span>
+                      <button
+                        className="btn btn-danger btn-xs"
+                        onClick=${() => {
+                          onCancelTask(taskId);
+                          setConfirmCancelTaskId(null);
+                          if (onNotify) onNotify(`Cancelled task in Sandbox #${idx + 1}`, 'warning');
+                        }}
+                        type="button"
+                      >
+                        Yes, Stop
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-xs"
+                        onClick=${() => setConfirmCancelTaskId(null)}
+                        type="button"
+                      >
+                        Keep
+                      </button>
+                    </div>
+                  ` : html`
+                    <button
+                      className="btn btn-outline-danger btn-xs btn-abort"
+                      onClick=${() => setConfirmCancelTaskId(taskId)}
+                      title="Cancel active execution in this sandbox"
+                      type="button"
+                    >
+                      <${IconStopCircle} size=${12} />
+                      <span>Abort</span>
+                    </button>
+                  `}
+                ` : html`
+                  <span className="slot-idle-indicator">
+                    ${isDone ? 'Execution completed' : isFailed ? 'Execution failed' : 'Slot standby'}
+                  </span>
+                `}
               </div>
             </div>
           `;
@@ -276,11 +368,3 @@ export function WorkerSlots({
     </div>
   `;
 }
-
-function formatSeconds(secs) {
-  if (!secs) return '00:00';
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = Math.floor(secs % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-

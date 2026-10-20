@@ -1,5 +1,6 @@
-// Astryx GeoTIFF & Image Standalone Preview Modal
+// Astryx GeoTIFF & Image Standalone Preview Modal (Deep Dark Theme)
 import { html, React } from '/static/js/html.js';
+import { IconLayers, IconImage, IconX, IconDownload } from '/static/js/icons.js';
 const { useEffect, useRef, useState } = React;
 
 export function TiffPreviewModal({ previewTarget, onClose }) {
@@ -45,7 +46,7 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
         bands: georaster.numberOfRasters,
         min: georaster.mins ? georaster.mins[0] : 'N/A',
         max: georaster.maxs ? georaster.maxs[0] : 'N/A',
-        projection: georaster.projection || 'EPSG:32640'
+        projection: georaster.projection || 'EPSG:32640 / UTM'
       });
 
       const canvas = canvasRef.current;
@@ -67,15 +68,16 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
           const idx = (y * canvas.width + x) * 4;
 
           if (val === null || val === undefined || isNaN(val) || val === georaster.noDataValue) {
-            imgData.data[idx] = 15;
-            imgData.data[idx + 1] = 23;
-            imgData.data[idx + 2] = 42;
+            imgData.data[idx] = 11;
+            imgData.data[idx + 1] = 15;
+            imgData.data[idx + 2] = 25;
             imgData.data[idx + 3] = 0;
           } else {
             const norm = Math.max(0, Math.min(1, (val - minVal) / range));
-            imgData.data[idx] = Math.round(68 + norm * 187);
-            imgData.data[idx + 1] = Math.round(1 + norm * 190);
-            imgData.data[idx + 2] = Math.round(84 + norm * (213 - 84));
+            // Technical viridis-inspired telemetry palette
+            imgData.data[idx] = Math.round(56 + norm * 199);
+            imgData.data[idx + 1] = Math.round(189 + norm * (240 - 189));
+            imgData.data[idx + 2] = Math.round(248 - norm * 100);
             imgData.data[idx + 3] = 255;
           }
         }
@@ -84,7 +86,7 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
       ctx.putImageData(imgData, 0, 0);
       setLoading(false);
     } catch (err) {
-      setError(`Failed to parse GeoTIFF: ${err.message}`);
+      setError(`Failed to parse GeoTIFF raster: ${err.message}`);
       setLoading(false);
     }
   };
@@ -92,36 +94,57 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
   if (!previewTarget) return null;
 
   return html`
-    <div className="modal-backdrop" onClick=${onClose}>
+    <div className="modal-backdrop" onClick=${onClose} role="dialog" aria-modal="true">
       <div className="modal-content-card" onClick=${(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title">
-            <span>${previewTarget.type === 'tif' ? '🗺️ GeoTIFF Raster Inspector' : '📊 Map Deliverable Preview'}</span>
-            <span style=${{ color: '#94a3b8', fontWeight: 'normal' }}>— ${previewTarget.name}</span>
+            <div className="modal-icon-badge">
+              ${previewTarget.type === 'tif' ? html`<${IconLayers} size=${16} />` : html`<${IconImage} size=${16} />`}
+            </div>
+            <div className="modal-title-text">
+              <span className="modal-main-title">
+                ${previewTarget.type === 'tif' ? 'GeoTIFF Raster Inspector' : 'Map Deliverable Preview'}
+              </span>
+              <span className="modal-sub-title">${previewTarget.name}</span>
+            </div>
           </div>
+
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-secondary btn-xs btn-modal-close"
             onClick=${onClose}
-            style=${{ padding: '2px 8px', fontSize: '12px' }}
+            aria-label="Close modal (Esc)"
+            type="button"
           >
-            ✕
+            <${IconX} size=${14} />
           </button>
         </div>
 
         <div className="modal-body">
           <div className="canvas-preview-container">
-            ${loading ? html`<div style=${{ color: '#38bdf8', padding: '40px' }}>Loading and parsing raster...</div>` : null}
-            ${error ? html`<div style=${{ color: '#f87171', padding: '40px' }}>${error}</div>` : null}
+            ${loading ? html`
+              <div className="modal-loading-box">
+                <span className="spinner-icon-md"></span>
+                <span>Parsing raster bands and spatial headers...</span>
+              </div>
+            ` : null}
+
+            ${error ? html`
+              <div className="modal-error-box">
+                <span>${error}</span>
+              </div>
+            ` : null}
 
             ${previewTarget.type === 'tif' ? html`
               <canvas
                 ref=${canvasRef}
                 style=${{ display: loading || error ? 'none' : 'block' }}
+                className="geotiff-canvas"
               />
             ` : html`
               <img
                 src=${previewTarget.url}
                 alt=${previewTarget.name}
+                className="modal-deliverable-image"
               />
             `}
           </div>
@@ -134,32 +157,33 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
               </div>
               <div className="metadata-box">
                 <span className="metadata-label">Bands</span>
-                <span className="metadata-val">${metadata.bands} band(s)</span>
+                <span className="metadata-val">${metadata.bands} band${metadata.bands > 1 ? 's' : ''}</span>
               </div>
               <div className="metadata-box">
-                <span className="metadata-label">Value Range</span>
+                <span className="metadata-label">Value Dynamic Range</span>
                 <span className="metadata-val">
                   ${typeof metadata.min === 'number' ? metadata.min.toFixed(2) : metadata.min} to ${typeof metadata.max === 'number' ? metadata.max.toFixed(2) : metadata.max}
                 </span>
               </div>
               <div className="metadata-box">
-                <span className="metadata-label">CRS / Spatial</span>
-                <span className="metadata-val">EPSG:32640 / UTM</span>
+                <span className="metadata-label">Spatial Reference</span>
+                <span className="metadata-val">${metadata.projection}</span>
               </div>
             </div>
           ` : null}
 
-          <div style=${{ width: '100%', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+          <div className="modal-footer-actions">
+            <button className="btn btn-secondary btn-sm" onClick=${onClose} type="button">
+              Close Inspector
+            </button>
             <a
               href=${previewTarget.url}
               download=${previewTarget.name}
-              className="btn btn-primary btn-sm"
+              className="btn btn-primary btn-sm btn-modal-download"
             >
-              ⬇️ Download Deliverable
+              <${IconDownload} size=${13} />
+              <span>Download Deliverable</span>
             </a>
-            <button className="btn btn-secondary btn-sm" onClick=${onClose}>
-              Close Inspector
-            </button>
           </div>
         </div>
       </div>

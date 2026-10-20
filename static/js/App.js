@@ -7,8 +7,10 @@ import { QueryConsole } from '/static/js/components/QueryConsole.js';
 import { WorkerSlots } from '/static/js/components/WorkerSlots.js';
 import { UnifiedChat } from '/static/js/components/UnifiedChat.js';
 import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js';
+import { ToastContainer } from '/static/js/components/Toast.js';
 
 export function App() {
+  const [toasts, setToasts] = useState([]);
   const [files, setFiles] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [tasks, setTasks] = useState({
@@ -30,6 +32,18 @@ export function App() {
 
   const streamsRef = useRef({});
   const timerIntervalRef = useRef(null);
+
+  const showToast = (message, type = 'info', title = '') => {
+    const id = Date.now() + Math.random().toString(36).slice(2, 7);
+    setToasts(prev => [...prev, { id, message, type, title }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4500);
+  };
+
+  const dismissToast = (id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   useEffect(() => {
     loadFiles();
@@ -120,8 +134,9 @@ export function App() {
     try {
       await fetch('/api/upload', { method: 'POST', body: fd });
       await loadFiles();
+      showToast('Successfully uploaded dataset files into data/', 'success');
     } catch (err) {
-      alert(`Upload error: ${err.message}`);
+      showToast(err.message, 'error', 'Upload Failed');
     }
   };
 
@@ -172,7 +187,7 @@ export function App() {
   const handleSubmitTask = async (questionText, targetFiles) => {
     if (!questionText.trim()) return;
     if (!targetFiles || !targetFiles.length) {
-      alert('Please select at least one dataset file.');
+      showToast('Please select at least one dataset file before running.', 'warning');
       return;
     }
 
@@ -189,10 +204,12 @@ export function App() {
 
       const data = await res.json();
       if (!res.ok || data.error) {
-        alert(data.error || 'Failed to submit task');
+        showToast(data.error || 'Failed to submit task', 'error', 'Submission Failed');
         setIsSubmitting(false);
         return;
       }
+
+      showToast(`Task assigned to Sandbox #${data.task_id.slice(-1)}`, 'success');
 
       setFeedItems(prev => [
         ...prev,
@@ -205,7 +222,7 @@ export function App() {
 
       streamTask(data.task_id, questionText);
     } catch (err) {
-      alert(`Submission error: ${err.message}`);
+      showToast(err.message, 'error', 'Connection Error');
     } finally {
       setIsSubmitting(false);
     }
@@ -576,7 +593,7 @@ export function App() {
   const activeWorkerCount = Object.values(tasks).filter(t => t.status === 'running' || t.status === 'pending_approval').length;
 
   return html`
-    <div>
+    <div className="app-shell">
       <${Navbar}
         activeWorkerCount=${activeWorkerCount}
         isClusterBusy=${activeWorkerCount > 0}
@@ -589,15 +606,17 @@ export function App() {
         onSubmitTask=${handleSubmitTask}
         onUploadFiles=${handleUploadFiles}
         isSubmitting=${isSubmitting}
+        onNotify=${showToast}
       />
 
-      <div className="workspace-container">
+      <main className="workspace-container">
         <${WorkerSlots}
           tasks=${tasks}
           onApprovePlan=${handleApprovePlan}
           onRevisePlan=${handleRevisePlan}
           onCancelTask=${handleCancelTask}
           onPreviewFile=${(url, name, type) => setPreviewTarget({ url, name, type })}
+          onNotify=${showToast}
         />
 
         <${UnifiedChat}
@@ -605,12 +624,18 @@ export function App() {
           onSendMessage=${handleSendMessage}
           onDispatchProposedJob=${(jobPrompt) => handleSubmitTask(jobPrompt, selectedFiles)}
           onClearChat=${handleClearChat}
+          onNotify=${showToast}
         />
-      </div>
+      </main>
 
       <${TiffPreviewModal}
         previewTarget=${previewTarget}
         onClose=${() => setPreviewTarget(null)}
+      />
+
+      <${ToastContainer}
+        toasts=${toasts}
+        onDismiss=${dismissToast}
       />
     </div>
   `;
