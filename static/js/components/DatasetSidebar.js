@@ -149,24 +149,34 @@ export function DatasetSidebar({
             ${items.map(item => {
               const isChecked = selectedFiles.includes(item.name);
               return html`
-                <label
+                <div
                   key=${item.name}
                   className="ds ${isChecked ? 'sel' : ''}"
-                  onClick=${(e) => {
-                    // prevent duplicate triggers from checkbox + label
-                    if (e.target.tagName !== 'INPUT') {
+                  onClick=${() => toggleFile(item.name)}
+                  role="checkbox"
+                  aria-checked=${isChecked}
+                  tabIndex="0"
+                  onKeyDown=${(e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                      e.preventDefault();
                       toggleFile(item.name);
                     }
                   }}
+                  style=${{ cursor: 'pointer', userSelect: 'none' }}
                 >
                   <input
                     type="checkbox"
                     checked=${isChecked}
-                    onChange=${() => toggleFile(item.name)}
+                    onClick=${(e) => e.stopPropagation()}
+                    onChange=${(e) => {
+                      e.stopPropagation();
+                      toggleFile(item.name);
+                    }}
+                    tabIndex="-1"
                   />
                   <span className="mono">${item.name}</span>
                   <small>${item.meta} · ${item.size_mb} MB</small>
-                </label>
+                </div>
               `;
             })}
           </div>

@@ -1,12 +1,18 @@
-// GeoLLM Task Cards / Worker Slots Component (Styled from design/reference.html)
+// GeoLLM Task Cards / Worker Slots Component (Refined layout, no step bar, markdown output)
 import { html, React } from '/static/js/html.js';
-const { useState, useEffect, useRef } = React;
+import { MarkdownView } from '/static/js/components/MarkdownView.js?v=20261020';
+const { useState, useRef } = React;
 
 function TaskActivityFeed({ activities }) {
   const feedRef = useRef(null);
   const [isOpen, setIsOpen] = useState(false);
 
-  if (!activities || activities.length === 0) return null;
+  const relevantActivities = (activities || []).filter(act => {
+    if (act.type === 'vision_check' && act.state === 'started') return false;
+    return true;
+  });
+
+  if (relevantActivities.length === 0) return null;
 
   return html`
     <div style=${{ marginTop: '8px' }}>
@@ -16,61 +22,71 @@ function TaskActivityFeed({ activities }) {
         style=${{ fontSize: '11px', padding: '0 8px', height: '24px', color: '#4B5B54' }}
         onClick=${() => setIsOpen(!isOpen)}
       >
-        ${isOpen ? 'Hide execution details' : `View execution details (${activities.length} events)`}
+        ${isOpen ? 'Hide execution details' : `View execution details (${relevantActivities.length} events)`}
       </button>
 
       ${isOpen ? html`
         <div className="worker-activity-feed" ref=${feedRef} style=${{ marginTop: '6px' }}>
-          ${activities.map((act, i) => {
+          ${relevantActivities.map((act, i) => {
             if (act.type === 'thinking') {
               return html`
                 <details key=${i} className="claude-thinking">
                   <summary className="mono" style=${{ fontSize: '11px', cursor: 'pointer', color: '#4B5B54' }}>
                     Reasoning log
                   </summary>
-                  <div className="mono" style=${{ whiteSpace: 'pre-wrap', fontSize: '10.5px', marginTop: '4px', color: '#5B6B64' }}>
+                  <div className="mono" style=${{ whiteSpace: 'pre-wrap', fontSize: '10.5px', marginTop: '4px', color: '#5B6B64', wordBreak: 'break-word' }}>
                     ${act.text}
                   </div>
                 </details>
               `;
             } else if (act.type === 'text') {
               return html`
-                <div key=${i} style=${{ fontSize: '12px', color: '#14201C', padding: '4px 0' }}>
-                  ${act.text}
+                <div key=${i} className="activity-markdown" style=${{ padding: '6px 0', borderTop: '1px solid #EAECE8' }}>
+                  <${MarkdownView} content=${act.text} />
                 </div>
               `;
             } else if (act.type === 'tool') {
               const shortArgs = typeof act.args === 'string'
-                ? act.args.slice(0, 80)
-                : act.args ? JSON.stringify(act.args).slice(0, 80) : '';
+                ? act.args
+                : act.args ? JSON.stringify(act.args) : '';
 
               return html`
                 <div key=${i} className="tool-card ${act.running ? 'run' : act.ok ? 'ok' : 'bad'}">
-                  <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11.5px' }}>
+                  <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11.5px', flexWrap: 'wrap' }}>
                     <span className="mono" style=${{ fontWeight: 600 }}>${act.toolName}</span>
                     ${act.attempt ? html`<span className="mono" style=${{ fontSize: '10px', color: '#5B6B64' }}>att ${act.attempt}</span>` : null}
                     <span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: '#5B6B64' }}>
                       ${act.duration_s != null ? `${act.duration_s}s · ` : ''}exit ${act.exit_code}
                     </span>
                   </div>
-                  ${shortArgs ? html`<div className="mono" style=${{ fontSize: '10.5px', color: '#5B6B64' }}>${shortArgs}</div>` : null}
+                  ${shortArgs ? html`
+                    <div className="mono" style=${{ fontSize: '10.5px', color: '#5B6B64', wordBreak: 'break-all', overflowWrap: 'anywhere', marginTop: '2px' }}>
+                      ${shortArgs.length > 200 ? shortArgs.slice(0, 197) + '...' : shortArgs}
+                    </div>
+                  ` : null}
                   ${(act.error || act.stdout) ? html`
                     <details style=${{ marginTop: '4px', fontSize: '10.5px' }}>
                       <summary style=${{ cursor: 'pointer', color: '#4B5B54' }}>Output</summary>
-                      <pre className="mono" style=${{ margin: '4px 0', padding: '4px 6px', background: '#F8F9F7', borderRadius: '4px', overflowX: 'auto' }}>${(act.error || act.stdout).slice(-400)}</pre>
+                      <pre className="mono" style=${{ margin: '4px 0', padding: '6px 8px', background: '#F8F9F7', borderRadius: '4px', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '180px' }}>${(act.error || act.stdout).slice(-1200)}</pre>
                     </details>
                   ` : null}
                 </div>
               `;
             } else if (act.type === 'vision_check') {
-              const isDone = act.state === 'done';
+              const imgName = act.image ? act.image.split(/[\\/]/).pop() : 'image';
+              const isOk = act.verdict === 'ok';
+              const isBad = act.verdict === 'needs_revision';
               return html`
-                <div key=${i} style=${{ fontSize: '11px', padding: '4px 8px', borderRadius: '6px', background: '#F3F4F1', display: 'flex', gap: '8px' }}>
-                  <span className="mono" style=${{ fontWeight: 600 }}>${act.image}</span>
-                  <span className="mono" style=${{ color: act.verdict === 'ok' ? '#166534' : '#991B1B' }}>
-                    ${isDone ? (act.verdict === 'ok' ? 'QA passed' : 'QA failed') : 'QA checking...'}
-                  </span>
-                  ${act.text ? html`<span style=${{ color: '#5B6B64' }}>${act.text}</span>` : null}
+                <div key=${i} className="tool-card ${isOk ? 'ok' : isBad ? 'bad' : 'ok'}" style=${{ padding: '6px 8px' }}>
+                  <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                    <span className="mono" style=${{ fontWeight: 600 }}>Visual QA: ${imgName}</span>
+                    <span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: '#5B6B64' }}>
+                      ${act.verdict || 'checked'}
+                    </span>
+                  </div>
+                  ${act.text && act.text !== 'ok' ? html`
+                    <div style=${{ fontSize: '10.5px', color: '#4B5B54', marginTop: '4px', whiteSpace: 'pre-wrap' }}>${act.text}</div>
+                  ` : null}
                 </div>
               `;
             }
@@ -80,31 +96,6 @@ function TaskActivityFeed({ activities }) {
       ` : null}
     </div>
   `;
-}
-
-function getStepProgress(task) {
-  // Returns state for [Read, Code, Run, QA maps, Done]
-  // state: 'd' (done), 'a' (active), '' (pending)
-  if (task.status === 'done') {
-    return ['d', 'd', 'd', 'd', 'd'];
-  }
-  if (task.status === 'failed') {
-    return ['d', 'd', 'a', '', ''];
-  }
-  if (task.status === 'running') {
-    const s = (task.step || '').toLowerCase();
-    if (s.includes('read') || s.includes('raster') || s.includes('dataset')) {
-      return ['a', '', '', '', ''];
-    }
-    if (s.includes('plan') || s.includes('code') || s.includes('draft')) {
-      return ['d', 'a', '', '', ''];
-    }
-    if (s.includes('qa') || s.includes('vision') || s.includes('inspect')) {
-      return ['d', 'd', 'd', 'a', ''];
-    }
-    return ['d', 'd', 'a', '', ''];
-  }
-  return ['', '', '', '', ''];
 }
 
 export function WorkerSlots({
@@ -179,7 +170,7 @@ export function WorkerSlots({
         let taskTitle = `Task #${taskNum}`;
         if (task.question && task.question !== 'Slot idle — awaiting task assignment') {
           const qFirst = task.question.split('.')[0].trim();
-          taskTitle = qFirst.length > 36 ? qFirst.slice(0, 34) + '...' : qFirst;
+          taskTitle = qFirst.length > 40 ? qFirst.slice(0, 38) + '...' : qFirst;
         }
 
         // Unique artifacts
@@ -192,10 +183,8 @@ export function WorkerSlots({
           }
         });
 
-        const stepStates = getStepProgress(task);
-
-        // Find primary thumbnail image if available
-        const imgArtifact = uniqueArtifacts.find(a => a.type === 'image' || a.name.endsWith('.png'));
+        // Determine if question has markdown
+        const hasMarkdown = task.question && (task.question.includes('**') || task.question.includes('#') || task.question.includes('|'));
 
         return html`
           <article key=${taskId} className="card tc">
@@ -215,45 +204,19 @@ export function WorkerSlots({
               </span>
             </div>
 
-            <p className="q">
-              ${task.question}
-            </p>
-
-            <div>
-              <div className="steps">
-                <div><b className="${stepStates[0]}"></b>Read</div>
-                <div><b className="${stepStates[1]}"></b>Code</div>
-                <div><b className="${stepStates[2]}"></b>Run</div>
-                <div><b className="${stepStates[3]}"></b>QA maps</div>
-                <div><b className="${stepStates[4]}"></b>Done</div>
-              </div>
+            <div className="q-container">
+              ${hasMarkdown ? html`
+                <${MarkdownView} content=${task.question} className="q-markdown" />
+              ` : html`
+                <p className="q">${task.question}</p>
+              `}
             </div>
 
             <div className="meta">
               ${task.attempt ? html`<span>Attempt ${task.attempt} of 15</span>` : null}
               ${task.status === 'idle' ? html`<span>Waiting for assignment</span>` : null}
-              ${task.step && task.status !== 'idle' ? html`<span>${task.step}</span>` : null}
-              ${uniqueArtifacts.length > 0 ? html`<span>${uniqueArtifacts.length} deliverables</span>` : null}
-            </div>
-
-            <!-- Thumbnail Preview Column on the Right -->
-            <div
-              className="th"
-              style=${imgArtifact ? {
-                backgroundImage: `url(${imgArtifact.url})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center'
-              } : {
-                background: isRunning
-                  ? '#FEF9EE'
-                  : isDone
-                  ? 'linear-gradient(135deg, #E6F0EE 0%, #D1E5E1 100%)'
-                  : '#F3F4F1'
-              }}
-            >
-              <i className="mono">
-                ${imgArtifact ? imgArtifact.name : isRunning ? 'Processing in sandbox...' : isDone ? 'Deliverables generated' : 'Waiting for output'}
-              </i>
+              ${task.step && task.status !== 'idle' ? html`<span style=${{ wordBreak: 'break-word' }}>${task.step}</span>` : null}
+              ${uniqueArtifacts.length > 0 ? html`<span><b>${uniqueArtifacts.length}</b> deliverables ready</span>` : null}
             </div>
 
             <!-- Deliverable File Chips -->
@@ -264,15 +227,13 @@ export function WorkerSlots({
                 </span>
               ` : uniqueArtifacts.map(art => {
                 const isTif = art.ext === '.tif' || art.ext === '.tiff';
-                const isImg = art.type === 'image';
+                const isImg = art.type === 'image' || art.name.endsWith('.png');
 
                 return html`
                   <span key=${art.name} className="f mono">
-                    ${art.name}
-                    ${isTif ? html`
-                      <u onClick=${() => onPreviewFile(art.url, art.name, 'tif')}>Preview</u>
-                    ` : isImg ? html`
-                      <u onClick=${() => onPreviewFile(art.url, art.name, 'image')}>Preview</u>
+                    <span className="f-name" title=${art.name}>${art.name}</span>
+                    ${(isTif || isImg) ? html`
+                      <u onClick=${() => onPreviewFile(art.url, art.name, isTif ? 'tif' : 'image')}>Preview</u>
                     ` : null}
                   </span>
                 `;
@@ -281,13 +242,16 @@ export function WorkerSlots({
 
             <!-- Actions Row -->
             <div className="act">
-              ${uniqueArtifacts.some(a => a.ext === '.tif' || a.ext === '.tiff') ? html`
+              ${uniqueArtifacts.some(a => a.ext === '.tif' || a.ext === '.tiff' || a.type === 'image' || a.name.endsWith('.png')) ? html`
                 <button
                   type="button"
                   className="btn s"
                   onClick=${() => {
-                    const tif = uniqueArtifacts.find(a => a.ext === '.tif' || a.ext === '.tiff');
-                    if (tif) onPreviewFile(tif.url, tif.name, 'tif');
+                    const firstPreview = uniqueArtifacts.find(a => a.ext === '.tif' || a.ext === '.tiff' || a.type === 'image' || a.name.endsWith('.png'));
+                    if (firstPreview) {
+                      const isTif = firstPreview.ext === '.tif' || firstPreview.ext === '.tiff';
+                      onPreviewFile(firstPreview.url, firstPreview.name, isTif ? 'tif' : 'image');
+                    }
                   }}
                 >
                   Open on map
@@ -351,7 +315,7 @@ export function WorkerSlots({
 
             <!-- Plan Review Approval Gate -->
             ${isPendingApproval && task.plan ? html`
-              <div style=${{ gridColumn: '1 / -1', marginTop: '10px', padding: '12px', background: '#FEF9EE', border: '1px solid #FDE68A', borderRadius: '8px' }}>
+              <div style=${{ marginTop: '10px', padding: '12px', background: '#FEF9EE', border: '1px solid #FDE68A', borderRadius: '8px' }}>
                 <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <span style=${{ fontSize: '12.5px', fontWeight: 600, color: '#92400E' }}>
                     Proposed Plan — Review Required
@@ -361,7 +325,7 @@ export function WorkerSlots({
                   </span>
                 </div>
 
-                <div className="mono" style=${{ fontSize: '11px', background: '#fff', border: '1px solid #DCE1DB', padding: '8px', borderRadius: '6px', maxHeight: '140px', overflowY: 'auto', whiteSpace: 'pre-wrap', color: '#14201C' }}>
+                <div className="mono" style=${{ fontSize: '11px', background: '#fff', border: '1px solid #DCE1DB', padding: '8px', borderRadius: '6px', maxHeight: '140px', overflowY: 'auto', whiteSpace: 'pre-wrap', color: '#14201C', wordBreak: 'break-word' }}>
                   ${task.plan}
                 </div>
 
@@ -397,9 +361,7 @@ export function WorkerSlots({
             ` : null}
 
             <!-- Expandable execution details -->
-            <div style=${{ gridColumn: '1 / -1' }}>
-              <${TaskActivityFeed} activities=${task.activities} />
-            </div>
+            <${TaskActivityFeed} activities=${task.activities} />
           </article>
         `;
       })}

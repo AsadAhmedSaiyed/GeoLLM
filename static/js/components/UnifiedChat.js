@@ -1,6 +1,7 @@
-// GeoLLM Unified Chat Component (Styled from design/reference.html)
+// GeoLLM Unified Chat Component (Refined with Markdown rendering and clean layout)
 import { html, React } from '/static/js/html.js';
-const { useState, useEffect, useRef, useMemo } = React;
+import { MarkdownView } from '/static/js/components/MarkdownView.js?v=20261020';
+const { useState, useEffect, useRef } = React;
 
 export function UnifiedChat({
   feedItems = [],
@@ -10,7 +11,6 @@ export function UnifiedChat({
   onNotify
 }) {
   const [inputText, setInputText] = useState('');
-  const [filter, setFilter] = useState('Everything');
   const [target, setTarget] = useState('Main LLM');
   const [confirmClear, setConfirmClear] = useState(false);
   const logRef = useRef(null);
@@ -35,10 +35,6 @@ export function UnifiedChat({
     }
   };
 
-  const handleQuickPrompt = (text) => {
-    setInputText(text);
-  };
-
   const handleClear = () => {
     if (!confirmClear) {
       setConfirmClear(true);
@@ -50,23 +46,17 @@ export function UnifiedChat({
     if (onNotify) onNotify('Feed cleared', 'info');
   };
 
-  // Filter feed items
-  const filteredFeed = useMemo(() => {
-    return feedItems.filter(item => {
-      if (filter === 'Everything') return true;
-      const isMsg = item.type === 'user' || item.type === 'assistant';
-      if (filter === 'Chat only') return isMsg;
-      if (filter === '#1') return item.taskId === 'task_1';
-      if (filter === '#2') return item.taskId === 'task_2';
-      if (filter === '#3') return item.taskId === 'task_3';
-      return true;
-    });
-  }, [feedItems, filter]);
-
   const getTimeString = (item) => {
     if (item.timestamp) return item.timestamp;
     const d = new Date();
     return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  };
+
+  // Strip long system paths for clean display
+  const cleanPath = (p) => {
+    if (!p || typeof p !== 'string') return '';
+    const parts = p.split(/[/\\]/);
+    return parts[parts.length - 1];
   };
 
   return html`
@@ -93,50 +83,12 @@ export function UnifiedChat({
         Talk to the main LLM, or send a message to one task. Task updates stream into the same thread.
       </div>
 
-      <div className="seg">
-        <button
-          className=${filter === 'Everything' ? 'on' : ''}
-          onClick=${() => setFilter('Everything')}
-          type="button"
-        >
-          Everything
-        </button>
-        <button
-          className=${filter === 'Chat only' ? 'on' : ''}
-          onClick=${() => setFilter('Chat only')}
-          type="button"
-        >
-          Chat only
-        </button>
-        <button
-          className=${filter === '#1' ? 'on' : ''}
-          onClick=${() => setFilter('#1')}
-          type="button"
-        >
-          #1
-        </button>
-        <button
-          className=${filter === '#2' ? 'on' : ''}
-          onClick=${() => setFilter('#2')}
-          type="button"
-        >
-          #2
-        </button>
-        <button
-          className=${filter === '#3' ? 'on' : ''}
-          onClick=${() => setFilter('#3')}
-          type="button"
-        >
-          #3
-        </button>
-      </div>
-
       <div className="log" ref=${logRef} role="log" aria-live="polite">
-        ${filteredFeed.length === 0 ? html`
+        ${feedItems.length === 0 ? html`
           <div style=${{ padding: '24px 16px', textAlign: 'center', color: '#5B6B64', fontSize: '12px' }}>
-            No updates in this view.
+            Feed is empty · Run a task or send a message to begin.
           </div>
-        ` : filteredFeed.map((item, idx) => {
+        ` : feedItems.map((item, idx) => {
           const time = getTimeString(item);
 
           if (item.taskId) {
@@ -144,41 +96,83 @@ export function UnifiedChat({
             const isError = item.type === 'tool_end' && !item.ok;
 
             let eventText = '';
+            let isMarkdownEvent = false;
+
             if (item.type === 'tool_start') {
               eventText = `Tool invocation: ${item.toolName} (attempt ${item.attempt || 1})`;
             } else if (item.type === 'tool_end') {
               eventText = item.ok
                 ? `Tool ${item.toolName || 'task'} finished (exit ${item.exit_code}, ${item.duration_s || 0}s)`
                 : `Tool ${item.toolName || 'task'} failed (exit ${item.exit_code}, ${item.duration_s || 0}s)`;
-            } else if (item.type === 'vision_check') {
-              eventText = `Map QA [${item.image}]: ${item.state === 'started' ? 'Inspecting raster...' : `${item.verdict === 'ok' ? 'Passed' : 'Defect detected'}${item.text ? ' — ' + item.text : ''}`}`;
             } else if (item.type === 'plan_ready') {
               eventText = 'Analysis plan proposed — review required.';
             } else if (item.type === 'finish') {
               eventText = `Task finished (${item.status}): ${item.error || 'All deliverables ready'}`;
+            } else if (item.type === 'vision_check') {
+              const imgName = cleanPath(item.image) || 'map image';
+              const progressStr = (item.index && item.total) ? ` (${item.index}/${item.total})` : '';
+
+              if (item.state === 'started') {
+                eventText = `Visual check started: inspecting ${imgName}${progressStr}...`;
+              } else {
+                const verdict = item.verdict || (item.text === 'ok' ? 'ok' : 'checked');
+                if (verdict === 'ok') {
+                  eventText = `Visual check passed: ${imgName}${progressStr} (ok)`;
+                } else if (verdict === 'needs_revision') {
+                  const rawText = item.text || 'Revision required';
+                  const bulletPoints = rawText.includes(';')
+                    ? rawText.split(';').map(s => s.trim()).filter(Boolean).map(s => `\n- ${s}`).join('')
+                    : `\n- ${rawText.trim()}`;
+                  eventText = `**Visual check flagged issues for \`${imgName}\`${progressStr}:**${bulletPoints}`;
+                  isMarkdownEvent = true;
+                } else if (verdict === 'skipped') {
+                  eventText = `Visual check skipped for ${imgName}${progressStr}: ${item.text || 'skipped'}`;
+                } else {
+                  eventText = `Visual check [${imgName}${progressStr}]: ${verdict}${item.text && item.text !== verdict ? ` — ${item.text}` : ''}`;
+                  if (eventText.includes(';') || eventText.includes('\n')) {
+                    isMarkdownEvent = true;
+                  }
+                }
+              }
             } else {
               eventText = item.text || '';
+              // Detect markdown elements like headers, tables, bold, lists
+              if (eventText.includes('#') || eventText.includes('|') || eventText.includes('**') || eventText.includes('\n- ') || eventText.includes('`')) {
+                isMarkdownEvent = true;
+              }
+            }
+
+            if (!eventText || !eventText.trim()) {
+              return null;
             }
 
             return html`
               <div key=${idx} className="lg ${isError ? 'e' : ''}">
                 <time className="mono">${time}</time>
                 <em className="mono">${taskTag}</em>
-                <span>${eventText}</span>
+                <div className="event-body">
+                  ${isMarkdownEvent ? html`
+                    <${MarkdownView} content=${eventText} className="markdown-chat" />
+                  ` : html`
+                    <span style=${{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>${eventText}</span>
+                  `}
+                </div>
               </div>
             `;
           } else if (item.type === 'user') {
             return html`
               <div key=${idx} className="msg u">
                 <b>You · ${time}</b>
-                <p>${item.text}</p>
+                <p style=${{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>${item.text}</p>
               </div>
             `;
           } else if (item.type === 'assistant') {
             return html`
               <div key=${idx} className="msg a">
                 <b>Main LLM · ${time}</b>
-                <p>${item.text}</p>
+                <div className="msg-content">
+                  <${MarkdownView} content=${item.text} className="markdown-chat" />
+                </div>
                 ${item.proposedJob ? html`
                   <div style=${{ marginTop: '8px' }}>
                     <button
@@ -199,27 +193,6 @@ export function UnifiedChat({
       </div>
 
       <div className="cb">
-        <div className="qs">
-          <button
-            type="button"
-            onClick=${() => handleQuickPrompt('Summarise all tasks')}
-          >
-            Summarise all tasks
-          </button>
-          <button
-            type="button"
-            onClick=${() => handleQuickPrompt('Explain the last failure')}
-          >
-            Explain the last failure
-          </button>
-          <button
-            type="button"
-            onClick=${() => handleQuickPrompt('Compare #1 and #3')}
-          >
-            Compare #1 and #3
-          </button>
-        </div>
-
         <textarea
           aria-label="Message"
           placeholder="Message the main LLM about any task, dataset or result"

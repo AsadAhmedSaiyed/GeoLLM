@@ -1,4 +1,4 @@
-// Astryx GeoTIFF & Image Standalone Preview Modal (Deep Dark Theme)
+// GeoLLM GeoTIFF & Image Deliverable Inspector Modal
 import { html, React } from '/static/js/html.js';
 import { IconLayers, IconImage, IconX, IconDownload } from '/static/js/icons.js';
 const { useEffect, useRef, useState } = React;
@@ -8,19 +8,25 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [metadata, setMetadata] = useState(null);
+  const [zoom, setZoom] = useState(1);
+
+  const isTif = previewTarget && (previewTarget.type === 'tif' || previewTarget.name?.toLowerCase().endsWith('.tif') || previewTarget.name?.toLowerCase().endsWith('.tiff'));
 
   useEffect(() => {
     if (!previewTarget) return;
 
+    setZoom(1);
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
 
-    if (previewTarget.type === 'tif') {
+    if (isTif) {
       renderGeoTiff(previewTarget.url);
     } else {
       setLoading(false);
+      setError(null);
+      setMetadata(null);
     }
 
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -40,13 +46,17 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
 
       const georaster = await window.parseGeoraster(arrayBuffer);
 
+      const minVal = georaster.mins && georaster.mins[0] != null ? georaster.mins[0] : 'N/A';
+      const maxVal = georaster.maxs && georaster.maxs[0] != null ? georaster.maxs[0] : 'N/A';
+
       setMetadata({
         width: georaster.width,
         height: georaster.height,
-        bands: georaster.numberOfRasters,
-        min: georaster.mins ? georaster.mins[0] : 'N/A',
-        max: georaster.maxs ? georaster.maxs[0] : 'N/A',
-        projection: georaster.projection || 'EPSG:32640 / UTM'
+        bands: georaster.numberOfRasters || 1,
+        min: minVal,
+        max: maxVal,
+        projection: georaster.projection ? `EPSG:${georaster.projection}` : 'EPSG:32640 / UTM',
+        nodata: georaster.noDataValue != null ? georaster.noDataValue : 'None'
       });
 
       const canvas = canvasRef.current;
@@ -58,9 +68,9 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
       const imgData = ctx.createImageData(canvas.width, canvas.height);
 
       const rasterData = georaster.values[0];
-      const minVal = georaster.mins ? georaster.mins[0] : 0;
-      const maxVal = georaster.maxs ? georaster.maxs[0] : 1;
-      const range = (maxVal - minVal) || 1;
+      const numericMin = typeof minVal === 'number' ? minVal : 0;
+      const numericMax = typeof maxVal === 'number' ? maxVal : 1;
+      const range = (numericMax - numericMin) || 1;
 
       for (let y = 0; y < canvas.height; y++) {
         for (let x = 0; x < canvas.width; x++) {
@@ -68,16 +78,16 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
           const idx = (y * canvas.width + x) * 4;
 
           if (val === null || val === undefined || isNaN(val) || val === georaster.noDataValue) {
-            imgData.data[idx] = 11;
-            imgData.data[idx + 1] = 15;
-            imgData.data[idx + 2] = 25;
-            imgData.data[idx + 3] = 0;
+            imgData.data[idx] = 16;
+            imgData.data[idx + 1] = 23;
+            imgData.data[idx + 2] = 20;
+            imgData.data[idx + 3] = 0; // Transparent
           } else {
-            const norm = Math.max(0, Math.min(1, (val - minVal) / range));
-            // Technical viridis-inspired telemetry palette
-            imgData.data[idx] = Math.round(56 + norm * 199);
-            imgData.data[idx + 1] = Math.round(189 + norm * (240 - 189));
-            imgData.data[idx + 2] = Math.round(248 - norm * 100);
+            const norm = Math.max(0, Math.min(1, (val - numericMin) / range));
+            // Viridis-inspired color ramp for clear scientific contrast
+            imgData.data[idx] = Math.round(15 + norm * 200);
+            imgData.data[idx + 1] = Math.round(118 + norm * 90);
+            imgData.data[idx + 2] = Math.round(110 + (1 - norm) * 110);
             imgData.data[idx + 3] = 255;
           }
         }
@@ -91,50 +101,112 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
     }
   };
 
+  const handleImageLoad = (e) => {
+    const img = e.target;
+    setMetadata({
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      bands: 'RGB / RGBA',
+      min: '0',
+      max: '255',
+      projection: 'Visual Map Render (Original Resolution)',
+      nodata: 'N/A'
+    });
+  };
+
   if (!previewTarget) return null;
 
   return html`
-    <div className="modal-backdrop" onClick=${onClose} role="dialog" aria-modal="true">
+    <div className="modal-backdrop" onClick=${onClose} role="dialog" aria-modal="true" aria-label="Deliverable Inspector">
       <div className="modal-content-card" onClick=${(e) => e.stopPropagation()}>
+        <!-- Header -->
         <div className="modal-header">
-          <div className="modal-title">
-            <div className="modal-icon-badge">
-              ${previewTarget.type === 'tif' ? html`<${IconLayers} size=${16} />` : html`<${IconImage} size=${16} />`}
-            </div>
-            <div className="modal-title-text">
-              <span className="modal-main-title">
-                ${previewTarget.type === 'tif' ? 'GeoTIFF Raster Inspector' : 'Map Deliverable Preview'}
-              </span>
-              <span className="modal-sub-title">${previewTarget.name}</span>
-            </div>
+          <div className="modal-title-group">
+            <span className="modal-type-badge ${isTif ? 'tif' : 'img'}">
+              ${isTif ? html`<${IconLayers} size=${13} />` : html`<${IconImage} size=${13} />`}
+              ${isTif ? 'GeoTIFF' : 'PNG Map'}
+            </span>
+            <span className="modal-filename mono" title=${previewTarget.name}>
+              ${previewTarget.name}
+            </span>
           </div>
 
-          <button
-            className="btn btn-secondary btn-xs btn-modal-close"
-            onClick=${onClose}
-            aria-label="Close modal (Esc)"
-            type="button"
-          >
-            <${IconX} size=${14} />
-          </button>
+          <div className="modal-actions-toolbar">
+            <div className="modal-zoom-controls">
+              <button
+                type="button"
+                className="btn s"
+                onClick=${() => setZoom(prev => Math.max(0.5, prev - 0.25))}
+                title="Zoom out"
+              >
+                −
+              </button>
+              <button
+                type="button"
+                className="btn s"
+                onClick=${() => setZoom(1)}
+                title="Reset zoom (100%)"
+                style=${{ minWidth: '44px' }}
+              >
+                ${Math.round(zoom * 100)}%
+              </button>
+              <button
+                type="button"
+                className="btn s"
+                onClick=${() => setZoom(prev => Math.min(3, prev + 0.25))}
+                title="Zoom in"
+              >
+                +
+              </button>
+            </div>
+
+            <a
+              href=${previewTarget.url}
+              download=${previewTarget.name}
+              className="btn s p"
+              style=${{ height: '30px', padding: '0 12px', textDecoration: 'none' }}
+              title="Download file"
+            >
+              <${IconDownload} size=${12} />
+              <span>Download</span>
+            </a>
+
+            <button
+              className="modal-close-icon-btn"
+              onClick=${onClose}
+              aria-label="Close dialog"
+              type="button"
+              title="Close (Esc)"
+            >
+              <${IconX} size=${16} />
+            </button>
+          </div>
         </div>
 
-        <div className="modal-body">
-          <div className="canvas-preview-container">
-            ${loading ? html`
-              <div className="modal-loading-box">
-                <span className="spinner-icon-md"></span>
-                <span>Parsing raster bands and spatial headers...</span>
-              </div>
-            ` : null}
+        <!-- Main Viewport -->
+        <div className="modal-viewport">
+          ${loading ? html`
+            <div className="modal-status-box">
+              <span className="spinner-icon-md"></span>
+              <span>Parsing raster bands & spatial metadata...</span>
+            </div>
+          ` : null}
 
-            ${error ? html`
-              <div className="modal-error-box">
-                <span>${error}</span>
-              </div>
-            ` : null}
+          ${error ? html`
+            <div className="modal-status-box error">
+              <span>${error}</span>
+            </div>
+          ` : null}
 
-            ${previewTarget.type === 'tif' ? html`
+          <div
+            className="modal-canvas-wrapper"
+            style=${{
+              transform: `scale(${zoom})`,
+              transformOrigin: 'center center',
+              transition: 'transform 0.15s ease'
+            }}
+          >
+            ${isTif ? html`
               <canvas
                 ref=${canvasRef}
                 style=${{ display: loading || error ? 'none' : 'block' }}
@@ -144,46 +216,42 @@ export function TiffPreviewModal({ previewTarget, onClose }) {
               <img
                 src=${previewTarget.url}
                 alt=${previewTarget.name}
-                className="modal-deliverable-image"
+                onLoad=${handleImageLoad}
+                className="modal-preview-image"
+                style=${{ display: loading || error ? 'none' : 'block' }}
               />
             `}
           </div>
+        </div>
 
-          ${metadata ? html`
-            <div className="modal-metadata-strip">
-              <div className="metadata-box">
-                <span className="metadata-label">Dimensions</span>
-                <span className="metadata-val">${metadata.width} × ${metadata.height} px</span>
-              </div>
-              <div className="metadata-box">
-                <span className="metadata-label">Bands</span>
-                <span className="metadata-val">${metadata.bands} band${metadata.bands > 1 ? 's' : ''}</span>
-              </div>
-              <div className="metadata-box">
-                <span className="metadata-label">Value Dynamic Range</span>
-                <span className="metadata-val">
-                  ${typeof metadata.min === 'number' ? metadata.min.toFixed(2) : metadata.min} to ${typeof metadata.max === 'number' ? metadata.max.toFixed(2) : metadata.max}
-                </span>
-              </div>
-              <div className="metadata-box">
-                <span className="metadata-label">Spatial Reference</span>
-                <span className="metadata-val">${metadata.projection}</span>
-              </div>
-            </div>
-          ` : null}
+        <!-- Metadata Strip Footer -->
+        <div className="modal-meta-strip">
+          <div className="meta-cell">
+            <span className="meta-lbl">Dimensions</span>
+            <span className="meta-val mono">
+              ${metadata ? `${metadata.width} × ${metadata.height} px` : 'Detecting...'}
+            </span>
+          </div>
 
-          <div className="modal-footer-actions">
-            <button className="btn btn-secondary btn-sm" onClick=${onClose} type="button">
-              Close Inspector
-            </button>
-            <a
-              href=${previewTarget.url}
-              download=${previewTarget.name}
-              className="btn btn-primary btn-sm btn-modal-download"
-            >
-              <${IconDownload} size=${13} />
-              <span>Download Deliverable</span>
-            </a>
+          <div className="meta-cell">
+            <span className="meta-lbl">Spatial Reference</span>
+            <span className="meta-val mono" title=${metadata?.projection}>
+              ${metadata ? metadata.projection : 'EPSG:32640 / UTM'}
+            </span>
+          </div>
+
+          <div className="meta-cell">
+            <span className="meta-lbl">Bands</span>
+            <span className="meta-val mono">
+              ${metadata ? metadata.bands : (isTif ? '1 band' : 'RGB')}
+            </span>
+          </div>
+
+          <div className="meta-cell">
+            <span className="meta-lbl">${isTif ? 'Dynamic Range' : 'Format'}</span>
+            <span className="meta-val mono">
+              ${metadata ? (isTif ? `${metadata.min} to ${metadata.max}` : '24-bit PNG') : 'N/A'}
+            </span>
           </div>
         </div>
       </div>

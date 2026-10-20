@@ -2,13 +2,13 @@
 import { html, React } from '/static/js/html.js';
 const { useState, useEffect, useRef } = React;
 
-import { Navbar } from '/static/js/components/Navbar.js';
-import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js';
-import { QueryConsole } from '/static/js/components/QueryConsole.js';
-import { WorkerSlots } from '/static/js/components/WorkerSlots.js';
-import { UnifiedChat } from '/static/js/components/UnifiedChat.js';
-import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js';
-import { ToastContainer } from '/static/js/components/Toast.js';
+import { Navbar } from '/static/js/components/Navbar.js?v=20261020_3';
+import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js?v=20261020_3';
+import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261020_3';
+import { WorkerSlots } from '/static/js/components/WorkerSlots.js?v=20261020_3';
+import { UnifiedChat } from '/static/js/components/UnifiedChat.js?v=20261020_3';
+import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js?v=20261020_3';
+import { ToastContainer } from '/static/js/components/Toast.js?v=20261020_3';
 
 export function App() {
   const [toasts, setToasts] = useState([]);
@@ -432,7 +432,9 @@ export function App() {
               image: msg.image,
               state: msg.state,
               verdict: msg.verdict,
-              text: msg.text
+              text: msg.text,
+              index: msg.index,
+              total: msg.total
             }
           ]);
         } else if (t === 'plan_ready') {
