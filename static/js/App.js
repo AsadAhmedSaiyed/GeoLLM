@@ -338,6 +338,8 @@ export function App() {
               toolName: msg.toolName,
               args: msg.args,
               attempt: msg.attempt,
+              code_attempt: msg.code_attempt,
+              max_attempts: msg.max_attempts,
               running: true
             });
             return {
@@ -345,6 +347,8 @@ export function App() {
               [taskId]: {
                 ...task,
                 attempt: msg.attempt || task.attempt,
+                code_attempt: msg.code_attempt || task.code_attempt,
+                max_attempts: msg.max_attempts || task.max_attempts,
                 step: `Tool: ${msg.toolName}`,
                 activities: acts
               }

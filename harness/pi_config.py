@@ -45,8 +45,8 @@ def load_config() -> Config:
         total_timeout_s=_f("GEOLLM_PI_TOTAL_TIMEOUT_S", 1800.0),
         max_tool_calls=_f("GEOLLM_MAX_TOOL_CALLS", 8),
         sandbox_timeout_s=_f("GEOLLM_SANDBOX_TIMEOUT_S", 180),
-        sandbox_memory=os.environ.get("GEOLLM_SANDBOX_MEMORY", "2g"),
-        sandbox_cpus=_f("GEOLLM_SANDBOX_CPUS", 2.0),
+        sandbox_memory=os.environ.get("GEOLLM_SANDBOX_MEMORY", "4g"),
+        sandbox_cpus=_f("GEOLLM_SANDBOX_CPUS", 4.0),
         runs_dir=Path(os.environ.get("GEOLLM_RUNS_DIR", ROOT / "runs")),
         required_result_keys=tuple(keys),
         result_contract=os.environ.get(

@@ -157,30 +157,52 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             tool_name = ev.get("toolName") or ev.get("name") or "tool"
             args_payload = ev.get("args") or ev.get("input") or {}
             tool_id = ev.get("toolCallId") or f"call_{state['tool_calls']}"
+            state[f"t_start_{tool_id}"] = time.time()
+            if tool_name == "run_geospatial_code":
+                state["code_attempts"] = state.get("code_attempts", 0) + 1
+            code_attempt = state.get("code_attempts", state["tool_calls"])
+            max_code_attempts = getattr(cfg, "max_tool_calls", 4)
             step({
                 "type": "tool_start",
                 "toolCallId": tool_id,
                 "toolName": tool_name,
                 "args": args_payload,
                 "attempt": state["tool_calls"],
+                "code_attempt": code_attempt,
+                "max_attempts": max_code_attempts,
             })
             if cfg.verbose:
                 print(f"\n[pi] running tool: {tool_name}", flush=True)
         elif t == "tool_execution_end":
             tool_id = ev.get("toolCallId") or f"call_{state.get('tool_calls', 1)}"
+            t_start = state.pop(f"t_start_{tool_id}", None)
+            wall_s = round(time.time() - t_start, 2) if t_start else 0.0
             is_err = ev.get("isError", False)
             res = ev.get("result") or {}
             details = res.get("details") or {} if isinstance(res, dict) else {}
             ok = details.get("ok", not is_err)
             exit_code = details.get("exit_code", -1 if is_err else 0)
-            attempt = details.get("attempt", state.get("tool_calls", 1))
-            duration_s = details.get("duration", 0.0)
-            err_tail = (details.get("error") or details.get("message") or "")[-500:]
+            code_attempt = state.get("code_attempts", state.get("tool_calls", 1))
+            attempt = details.get("attempt", code_attempt)
+            dur_val = details.get("duration_s")
+            if dur_val is None or dur_val == 0.0:
+                dur_val = details.get("duration", wall_s)
+            duration_s = dur_val if (dur_val is not None and dur_val > 0) else wall_s
+
+            raw_err = details.get("error") or ""
+            if not raw_err and details.get("message"):
+                msg = str(details["message"])
+                if "SANDBOX PATH CONTRACT:" in msg:
+                    raw_err = msg.split("SANDBOX PATH CONTRACT:")[0].strip()
+                else:
+                    raw_err = msg
+            err_tail = (raw_err or "")[:1200]
+
             stdout_tail = ""
             if isinstance(res, dict) and res.get("content"):
                 for item in res["content"]:
                     if isinstance(item, dict) and item.get("text"):
-                        stdout_tail = item["text"][:300]
+                        stdout_tail = item["text"][:600]
                         break
             step({
                 "type": "tool_end",
@@ -191,6 +213,8 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 "error": err_tail,
                 "stdout": stdout_tail,
                 "attempt": attempt,
+                "code_attempt": code_attempt,
+                "max_attempts": getattr(cfg, "max_tool_calls", 4),
             })
             if cfg.verbose:
                 print(f"[pi] tool finished (isError={is_err})", flush=True)

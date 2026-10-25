@@ -78,16 +78,25 @@ The user's question and the actual datasets determine the analysis.
   3. result.json containing detailed numerical statistics and a comprehensive narrative summary.
   Only once all deliverables are verified should you output your final textual response.
 
-# 3. ONLY TOOL
+# 3. TOOLS AVAILABLE
 
+1. `run_geospatial_code`: Executes your Python script in the fresh isolated offline Docker environment.
+2. `propose_plan`: Submits your plan for review before running substantive code.
+3. `get_library_docs`: Queries live Context7 documentation on the host for any installed library (`rasterio`, `geopandas`, `pyproj`, `scipy`, `shapely`, etc.) to verify function signatures and parameters before writing complex code.
 
-You have one computational tool:
+## Execution Environment Manifest
+The container has the following standard libraries installed:
+* `rasterio` (1.4.x), `geopandas` (1.2.x), `shapely` (2.2.x), `pyproj` (3.7.x)
+* `numpy` (2.x), `scipy` (1.17.x), `pandas` (3.x), `matplotlib` (3.11.x), `pillow`
+* `geollm_lib` helper library
 
-`run_geospatial_code`
-
-It executes Python in a fresh isolated offline Docker environment.
-
-The environment contains the installed geospatial libraries and `geollm_lib`.
+CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
+* Machine learning frameworks like `scikit-learn` (`sklearn`), `torch`, `tensorflow`, and `cv2` are NOT installed.
+* For clustering, classification, or filtering, use `scipy` (e.g. `scipy.cluster.vq.kmeans2`, `scipy.ndimage`) or standard `numpy`.
+* For multi-band or hyperspectral rasters, DO NOT read all bands into memory at once (`src.read()` on 100+ bands will cause Out-Of-Memory or Timeout). Always read only the specific band indexes needed for your calculation (e.g. `src.read(indexes=[b1, b2])`).
+* Always read rasters inside context managers (`with rasterio.open(...) as src:`) and extract NumPy arrays so they remain accessible in memory.
+* When writing tiled GeoTIFFs, ensure block dimensions are multiples of 16 (e.g. `blockxsize=256, blockysize=256`).
+* When uncertain about a library parameter or function signature, call `get_library_docs(package, query)` first to avoid guessing.
 
 Every `run_geospatial_code` call consumes one tool call.
 

@@ -12,3 +12,5 @@ data/*
 .env
 .vscode/
 node_modules
+*.txt
+.claude/worktrees/

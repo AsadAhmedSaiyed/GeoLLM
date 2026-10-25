@@ -101,9 +101,10 @@ export function UnifiedChat({
             if (item.type === 'tool_start') {
               eventText = `Tool invocation: ${item.toolName} (attempt ${item.attempt || 1})`;
             } else if (item.type === 'tool_end') {
+              const durText = item.duration_s != null ? `${item.duration_s}s` : '0s';
               eventText = item.ok
-                ? `Tool ${item.toolName || 'task'} finished (exit ${item.exit_code}, ${item.duration_s || 0}s)`
-                : `Tool ${item.toolName || 'task'} failed (exit ${item.exit_code}, ${item.duration_s || 0}s)`;
+                ? `Tool ${item.toolName || 'task'} finished (exit ${item.exit_code}, ${durText})`
+                : `Tool ${item.toolName || 'task'} failed (exit ${item.exit_code}, ${durText})`;
             } else if (item.type === 'plan_ready') {
               eventText = 'Analysis plan proposed — review required.';
             } else if (item.type === 'finish') {

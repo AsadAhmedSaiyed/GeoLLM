@@ -195,4 +195,57 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+
+  // ---- Safe Context7 Documentation Lookup Tool ----
+  pi.registerTool({
+    name: "get_library_docs",
+    label: "Get Library Documentation",
+    description:
+      "Query live Context7 documentation for installed geospatial and scientific libraries. " +
+      "Only packages installed in the Docker execution environment are allowed: " +
+      "rasterio, geopandas, shapely, pyproj, scipy, numpy, matplotlib, pandas, pillow, affine. " +
+      "Uninstalled packages (such as scikit-learn, torch, cv2) will be blocked. " +
+      "Use this to check method signatures, parameters, or functions before writing complex code.",
+    parameters: Type.Object({
+      package: Type.String({
+        description: "Library name (e.g. 'rasterio', 'pyproj', 'geopandas', 'scipy', 'shapely').",
+      }),
+      query: Type.String({
+        description: "Specific function, class, or method (e.g. 'Transformer from_crs', 'reproject Resampling', 'kmeans2').",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      return await new Promise((resolve) => {
+        const path = require("node:path");
+        const docLookupScript = path.resolve(__dirname, "..", "doc_lookup.py");
+        const child = spawn(python, [docLookupScript, params.package, params.query], {
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let output = "";
+        child.stdout.on("data", (d: Buffer) => {
+          output += d.toString();
+        });
+        child.stderr.on("data", (d: Buffer) => {
+          output += d.toString();
+        });
+        child.on("close", () => {
+          const text = output.trim() || `No documentation found for ${params.package}.${params.query}`;
+          resolve({
+            content: [{ type: "text", text }],
+            details: { package: params.package, query: params.query },
+            isError: text.startsWith("BLOCKED"),
+          });
+        });
+        child.on("error", (err: Error) => {
+          resolve({
+            content: [{ type: "text", text: `Doc lookup error: ${err.message}` }],
+            details: { error: err.message },
+            isError: true,
+          });
+        });
+      });
+    },
+  });
 }

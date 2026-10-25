@@ -213,7 +213,7 @@ export function WorkerSlots({
             </div>
 
             <div className="meta">
-              ${task.attempt ? html`<span>Attempt ${task.attempt} of 15</span>` : null}
+              ${task.attempt ? html`<span>Attempt ${task.code_attempt || task.attempt} of ${task.max_attempts || 4}</span>` : null}
               ${task.status === 'idle' ? html`<span>Waiting for assignment</span>` : null}
               ${task.step && task.status !== 'idle' ? html`<span style=${{ wordBreak: 'break-word' }}>${task.step}</span>` : null}
               ${uniqueArtifacts.length > 0 ? html`<span><b>${uniqueArtifacts.length}</b> deliverables ready</span>` : null}
