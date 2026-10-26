@@ -2,15 +2,21 @@
 import { html, React } from '/static/js/html.js';
 const { useState, useEffect, useRef } = React;
 
-import { Navbar } from '/static/js/components/Navbar.js?v=20261020_3';
-import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js?v=20261020_3';
-import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261020_3';
-import { WorkerSlots } from '/static/js/components/WorkerSlots.js?v=20261020_3';
-import { UnifiedChat } from '/static/js/components/UnifiedChat.js?v=20261020_3';
-import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js?v=20261020_3';
-import { ToastContainer } from '/static/js/components/Toast.js?v=20261020_3';
+import { TaskTabs } from '/static/js/components/TaskTabs.js?v=20261025_3';
+import { GlobeView } from '/static/js/components/GlobeView.js?v=20261025_3';
+import { SingleWorkerSlot } from '/static/js/components/SingleWorkerSlot.js?v=20261025_3';
+import { StacModal } from '/static/js/components/StacModal.js?v=20261025_4';
+import { SupervisorDrawer } from '/static/js/components/SupervisorDrawer.js?v=20261025_3';
+import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js?v=20261025_2';
+import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261025_2';
+import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js?v=20261025_2';
+import { ToastContainer } from '/static/js/components/Toast.js?v=20261025_2';
 
 export function App() {
+  const [activeTab, setActiveTab] = useState('globe'); // 'globe', 'task_1', 'task_2', 'task_3'
+  const [supervisorOpen, setSupervisorOpen] = useState(false);
+  const [stacModalOpen, setStacModalOpen] = useState(false);
+  const [activeAoiBbox, setActiveAoiBbox] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [files, setFiles] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -471,15 +477,24 @@ export function App() {
             }
           }));
         } else if (t === 'finish') {
-          setTasks(prev => ({
-            ...prev,
-            [taskId]: {
-              ...prev[taskId],
-              status: msg.status,
-              error: msg.error,
-              step: msg.status === 'done' ? 'Completed' : (msg.error || msg.status)
-            }
-          }));
+          // Collect full narrative from text activities before clearing
+          setTasks(prev => {
+            const task = prev[taskId];
+            const textActivities = (task.activities || [])
+              .filter(a => a.type === 'text' && a.text && a.text.trim())
+              .map(a => a.text);
+            const answer = textActivities.length > 0 ? textActivities.join('') : null;
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                status: msg.status,
+                error: msg.error,
+                answer: answer,
+                step: msg.status === 'done' ? 'Completed' : (msg.error || msg.status)
+              }
+            };
+          });
 
           setFeedItems(prev => [
             ...prev,
@@ -597,58 +612,112 @@ export function App() {
     setChatHistory([]);
   };
 
-  const activeWorkerCount = Object.values(tasks).filter(t => t.status === 'running' || t.status === 'pending_approval').length;
+  const handleOpenStacWithAoi = (bbox) => {
+    setActiveAoiBbox(bbox);
+    setStacModalOpen(true);
+  };
+
+  const handleSendAoiToTask = (bbox, targetTaskId) => {
+    const slot = targetTaskId && targetTaskId.startsWith('task_') ? targetTaskId : 'task_1';
+    setActiveTab(slot);
+    showToast(`Attached AOI coordinates [${bbox.map(n => n.toFixed(2)).join(', ')}] to Task #${slot.slice(-1)}`, 'info');
+  };
+
+  const handleAssetStaged = (stagedData) => {
+    showToast(`Staged ${stagedData.filename} (${stagedData.size_mb} MB) into data/`, 'success');
+    loadFiles();
+  };
+
+  const activeWorkerSlotId = activeTab.startsWith('task_') ? activeTab : 'task_1';
 
   return html`
-    <div className="app-shell">
-      <${Navbar}
-        activeWorkerCount=${activeWorkerCount}
-        isClusterBusy=${activeWorkerCount > 0}
+    <div className="app-shell" style=${{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+      <!-- Browser-Style Task Tabs Navigation -->
+      <${TaskTabs}
+        activeTab=${activeTab}
+        onSelectTab=${(tab) => setActiveTab(tab)}
+        tasks=${tasks}
+        supervisorOpen=${supervisorOpen}
+        onToggleSupervisor=${() => setSupervisorOpen(!supervisorOpen)}
+        onOpenStacSearch=${() => setStacModalOpen(true)}
       />
 
-      <div className="main">
-        <${DatasetSidebar}
-          files=${files}
-          selectedFiles=${selectedFiles}
-          setSelectedFiles=${setSelectedFiles}
-          onUploadFiles=${handleUploadFiles}
-          onNotify=${showToast}
-        />
-
-        <main className="ctr">
-          <${QueryConsole}
-            files=${files}
-            selectedFiles=${selectedFiles}
-            setSelectedFiles=${setSelectedFiles}
-            onSubmitTask=${handleSubmitTask}
-            isSubmitting=${isSubmitting}
-            onNotify=${showToast}
-          />
-
-          <${WorkerSlots}
+      <!-- Main Body Viewport -->
+      <div style=${{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex' }}>
+        ${activeTab === 'globe' ? html`
+          <!-- 3D Interactive Globe Fullscreen View -->
+          <${GlobeView}
             tasks=${tasks}
-            onApprovePlan=${handleApprovePlan}
-            onRevisePlan=${handleRevisePlan}
-            onCancelTask=${handleCancelTask}
-            onPreviewFile=${(url, name, type) => setPreviewTarget({ url, name, type })}
-            onNotify=${showToast}
+            activeTaskId=${activeWorkerSlotId}
+            onOpenStacSearchWithAoi=${handleOpenStacWithAoi}
+            onSendAoiToTask=${handleSendAoiToTask}
           />
-        </main>
+        ` : html`
+          <!-- Focused Tabbed Task Sandbox View -->
+          <div style=${{ display: 'flex', width: '100%', height: '100%', overflow: 'hidden' }}>
+            <${DatasetSidebar}
+              files=${files}
+              selectedFiles=${selectedFiles}
+              setSelectedFiles=${setSelectedFiles}
+              onUploadFiles=${handleUploadFiles}
+              onNotify=${showToast}
+            />
 
-        <${UnifiedChat}
+            <main style=${{ flex: 1, overflowY: 'auto', background: '#F3F4F1' }}>
+              <div style=${{ padding: '16px 16px 0 16px', maxWidth: '1200px', margin: '0 auto' }}>
+                <${QueryConsole}
+                  files=${files}
+                  selectedFiles=${selectedFiles}
+                  setSelectedFiles=${setSelectedFiles}
+                  onSubmitTask=${(q, f) => handleSubmitTask(q, f)}
+                  isSubmitting=${isSubmitting}
+                  onNotify=${showToast}
+                />
+              </div>
+
+              <${SingleWorkerSlot}
+                taskId=${activeWorkerSlotId}
+                task=${tasks[activeWorkerSlotId]}
+                onApprovePlan=${handleApprovePlan}
+                onRevisePlan=${handleRevisePlan}
+                onCancelTask=${handleCancelTask}
+                onPreviewFile=${(art) => {
+                  // art.url already contains the full server-relative path from find_artifacts
+                  const url = typeof art === 'string' ? `/runs/${art}` : (art.url || `/runs/${art.name}`);
+                  const name = typeof art === 'string' ? art : art.name;
+                  setPreviewTarget({ url, name, type: (name.endsWith('.tif') || name.endsWith('.tiff')) ? 'tif' : 'img' });
+                }}
+                onSwitchToGlobe=${() => setActiveTab('globe')}
+                onNotify=${showToast}
+              />
+            </main>
+          </div>
+        `}
+
+        <!-- Floating Supervisor AI Assistant Drawer -->
+        <${SupervisorDrawer}
+          isOpen=${supervisorOpen}
+          onClose=${() => setSupervisorOpen(false)}
           feedItems=${feedItems}
-          onSendMessage=${handleSendMessage}
-          onDispatchProposedJob=${(jobPrompt) => handleSubmitTask(jobPrompt, selectedFiles)}
-          onClearChat=${handleClearChat}
-          onNotify=${showToast}
+          onDispatchTask=${(proposedPrompt) => handleSubmitTask(proposedPrompt, selectedFiles)}
         />
       </div>
 
+      <!-- Microsoft Planetary Computer STAC Search Modal -->
+      <${StacModal}
+        isOpen=${stacModalOpen}
+        onClose=${() => setStacModalOpen(false)}
+        initialBbox=${activeAoiBbox}
+        onAssetStaged=${handleAssetStaged}
+      />
+
+      <!-- GeoTIFF Preview Modal -->
       <${TiffPreviewModal}
         previewTarget=${previewTarget}
         onClose=${() => setPreviewTarget(null)}
       />
 
+      <!-- Toast Alerts -->
       <${ToastContainer}
         toasts=${toasts}
         onDismiss=${dismissToast}

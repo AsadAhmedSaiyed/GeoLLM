@@ -99,26 +99,37 @@ export function UnifiedChat({
             let isMarkdownEvent = false;
 
             if (item.type === 'tool_start') {
-              eventText = `Tool invocation: ${item.toolName} (attempt ${item.attempt || 1})`;
+              eventText = `⚙️ Tool: ${item.toolName} (attempt ${item.attempt || 1})`;
             } else if (item.type === 'tool_end') {
               const durText = item.duration_s != null ? `${item.duration_s}s` : '0s';
               eventText = item.ok
-                ? `Tool ${item.toolName || 'task'} finished (exit ${item.exit_code}, ${durText})`
-                : `Tool ${item.toolName || 'task'} failed (exit ${item.exit_code}, ${durText})`;
+                ? `✅ ${item.toolName || 'Tool'} finished (exit ${item.exit_code}, ${durText})`
+                : `❌ ${item.toolName || 'Tool'} failed (exit ${item.exit_code}, ${durText})`;
             } else if (item.type === 'plan_ready') {
-              eventText = 'Analysis plan proposed — review required.';
+              eventText = '📋 Analysis plan proposed — review required.';
             } else if (item.type === 'finish') {
-              eventText = `Task finished (${item.status}): ${item.error || 'All deliverables ready'}`;
+              eventText = item.status === 'done'
+                ? `🏁 Task completed — all deliverables ready`
+                : `🔴 Task ended (${item.status}): ${item.error || 'see execution log'}`;
+            } else if (item.type === 'thinking') {
+              eventText = '🧠 Reasoning…';
+            } else if (item.type === 'progress' || item.type === 'milestone') {
+              eventText = item.text || '';
+            } else if (item.type === 'artifacts') {
+              const count = (item.artifacts || []).length;
+              eventText = `📦 ${count} deliverable${count !== 1 ? 's' : ''} produced`;
+            } else if (item.type === 'status') {
+              eventText = item.text || item.step || '';
             } else if (item.type === 'vision_check') {
               const imgName = cleanPath(item.image) || 'map image';
               const progressStr = (item.index && item.total) ? ` (${item.index}/${item.total})` : '';
 
               if (item.state === 'started') {
-                eventText = `Visual check started: inspecting ${imgName}${progressStr}...`;
+                eventText = `👁️ Visual check started: ${imgName}${progressStr}`;
               } else {
                 const verdict = item.verdict || (item.text === 'ok' ? 'ok' : 'checked');
                 if (verdict === 'ok') {
-                  eventText = `Visual check passed: ${imgName}${progressStr} (ok)`;
+                  eventText = `✅ Visual check passed: ${imgName}${progressStr}`;
                 } else if (verdict === 'needs_revision') {
                   const rawText = item.text || 'Revision required';
                   const bulletPoints = rawText.includes(';')
@@ -127,17 +138,13 @@ export function UnifiedChat({
                   eventText = `**Visual check flagged issues for \`${imgName}\`${progressStr}:**${bulletPoints}`;
                   isMarkdownEvent = true;
                 } else if (verdict === 'skipped') {
-                  eventText = `Visual check skipped for ${imgName}${progressStr}: ${item.text || 'skipped'}`;
+                  eventText = `⏭️ Visual check skipped: ${imgName}${progressStr}`;
                 } else {
-                  eventText = `Visual check [${imgName}${progressStr}]: ${verdict}${item.text && item.text !== verdict ? ` — ${item.text}` : ''}`;
-                  if (eventText.includes(';') || eventText.includes('\n')) {
-                    isMarkdownEvent = true;
-                  }
+                  eventText = `👁️ Visual check [${imgName}${progressStr}]: ${verdict}`;
                 }
               }
             } else {
               eventText = item.text || '';
-              // Detect markdown elements like headers, tables, bold, lists
               if (eventText.includes('#') || eventText.includes('|') || eventText.includes('**') || eventText.includes('\n- ') || eventText.includes('`')) {
                 isMarkdownEvent = true;
               }

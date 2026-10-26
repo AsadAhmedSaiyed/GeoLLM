@@ -65,5 +65,11 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
                 "verdict": "skipped",
                 "text": f"vision call failed: {e}"
             })
-    (Path(feedback_dir) / "visual.json").write_text(json.dumps(verdicts, indent=2))
+    feedback_path = Path(feedback_dir) / "visual.json"
+    try:
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        feedback_path.write_text(json.dumps(verdicts, indent=2), encoding="utf-8")
+    except Exception as exc:
+        import sys
+        print(f"[visual_check] WARNING: could not write {feedback_path}: {exc}", file=sys.stderr)
     return verdicts

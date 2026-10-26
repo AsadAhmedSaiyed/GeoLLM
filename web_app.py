@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -237,6 +237,114 @@ async def revise_task(task_id: str, payload: RevisionPayload):
     if not task_manager.revise_task(task_id, payload.feedback):
         return JSONResponse({"error": "Task not awaiting approval."}, status_code=400)
     return JSONResponse({"task_id": task_id, "status": "revision_sent"})
+
+
+@app.get("/api/stac/collections")
+async def get_stac_collections():
+    from harness.stac_service import get_curated_collections
+    return JSONResponse({"collections": get_curated_collections()})
+
+
+class StacSearchPayload(BaseModel):
+    bbox: List[float]
+    start_date: str
+    end_date: str
+    collections: List[str] = ["sentinel-2-l2a", "sentinel-1-rtc"]
+    max_cloud_cover: Optional[float] = 30.0
+    limit: int = 12
+
+
+@app.post("/api/stac/search")
+async def search_stac(payload: StacSearchPayload):
+    from harness.stac_service import search_stac_items
+    res = await search_stac_items(
+        bbox=payload.bbox,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        collections=payload.collections,
+        max_cloud_cover=payload.max_cloud_cover,
+        limit=payload.limit,
+    )
+    return JSONResponse(res)
+
+
+class StacStagePayload(BaseModel):
+    collection: str
+    item_id: str
+    asset_key: str
+    custom_filename: Optional[str] = None
+
+
+@app.post("/api/stac/stage")
+async def stage_stac(payload: StacStagePayload):
+    from harness.stac_service import stage_stac_asset
+    stage_id = f"{payload.item_id}_{payload.asset_key}"
+    asyncio.create_task(
+        stage_stac_asset(
+            collection=payload.collection,
+            item_id=payload.item_id,
+            asset_key=payload.asset_key,
+            output_dir=DATA_DIR,
+            custom_filename=payload.custom_filename,
+        )
+    )
+    return JSONResponse({"ok": True, "stage_id": stage_id, "status": "started"})
+
+
+@app.get("/api/stac/downloads")
+async def get_stac_download_progress():
+    from harness.stac_service import get_active_downloads
+    return JSONResponse({"downloads": get_active_downloads()})
+
+
+@app.get("/api/raster/bounds")
+async def get_raster_bounds(path: str):
+    """
+    Computes real-world WGS84 geographic bounding box and 4 corners
+    for any GeoTIFF raster so MapLibre GL can accurately overlay it on the 3D globe.
+    """
+    try:
+        import rasterio
+        from rasterio.warp import transform_bounds
+        p = Path(path)
+        if not p.is_absolute():
+            # Check runs or data
+            if (DATA_DIR / path).exists():
+                p = DATA_DIR / path
+            elif (RUNS_DIR / path).exists():
+                p = RUNS_DIR / path
+            else:
+                p = Path(path).resolve()
+
+        if not p.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
+
+        with rasterio.open(p) as src:
+            bounds = src.bounds
+            crs = src.crs
+            wgs84_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
+            min_lon, min_lat, max_lon, max_lat = wgs84_bounds
+
+            # MapLibre image coordinate order: [top-left, top-right, bottom-right, bottom-left]
+            coordinates = [
+                [min_lon, max_lat], # top-left
+                [max_lon, max_lat], # top-right
+                [max_lon, min_lat], # bottom-right
+                [min_lon, min_lat], # bottom-left
+            ]
+
+            return JSONResponse({
+                "ok": True,
+                "bbox": [min_lon, min_lat, max_lon, max_lat],
+                "coordinates": coordinates,
+                "crs": str(crs),
+                "width": src.width,
+                "height": src.height,
+                "count": src.count,
+                "path": str(p),
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.post("/api/chat")

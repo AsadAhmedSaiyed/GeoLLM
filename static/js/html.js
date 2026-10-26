@@ -2,6 +2,10 @@
 import React from 'https://esm.sh/react@18.2.0';
 import htm from 'https://esm.sh/htm';
 
+if (typeof window !== 'undefined') {
+  window.React = React;
+}
+
 export const html = htm.bind(React.createElement);
 export default React;
 export { React };
