@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, File, UploadFile, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -297,6 +297,177 @@ async def get_stac_download_progress():
     return JSONResponse({"downloads": get_active_downloads()})
 
 
+def resolve_raster_path(path_str: str) -> Optional[Path]:
+    if not path_str:
+        return None
+    path_clean = path_str.split("?")[0].strip()
+    cleaned = path_clean.lstrip("/\\")
+
+    # 1. Direct check from CWD
+    cand = (Path.cwd() / cleaned).resolve()
+    if cand.exists() and cand.is_file():
+        return cand
+
+    # 2. Direct relative path
+    cand = Path(cleaned)
+    if cand.exists() and cand.is_file():
+        return cand.resolve()
+
+    # 3. If prefixed with runs/ or data/
+    stripped_runs = cleaned
+    if stripped_runs.lower().startswith("runs/"):
+        stripped_runs = stripped_runs[5:]
+    elif stripped_runs.lower().startswith("runs\\"):
+        stripped_runs = stripped_runs[5:]
+    cand = (RUNS_DIR / stripped_runs).resolve()
+    if cand.exists() and cand.is_file():
+        return cand
+
+    stripped_data = cleaned
+    if stripped_data.lower().startswith("data/"):
+        stripped_data = stripped_data[5:]
+    elif stripped_data.lower().startswith("data\\"):
+        stripped_data = stripped_data[5:]
+    cand = (DATA_DIR / stripped_data).resolve()
+    if cand.exists() and cand.is_file():
+        return cand
+
+    # 4. Check under RUNS_DIR and DATA_DIR directly
+    cand = (RUNS_DIR / cleaned).resolve()
+    if cand.exists() and cand.is_file():
+        return cand
+    cand = (DATA_DIR / cleaned).resolve()
+    if cand.exists() and cand.is_file():
+        return cand
+
+    # 5. Fallback: match by filename in RUNS_DIR or DATA_DIR
+    fname = Path(cleaned).name
+    matches = list(RUNS_DIR.glob(f"**/{fname}"))
+    if matches:
+        return matches[-1].resolve()
+    matches_data = list(DATA_DIR.glob(f"**/{fname}"))
+    if matches_data:
+        return matches_data[-1].resolve()
+
+    return None
+
+
+_RASTER_PNG_CACHE: Dict[tuple, bytes] = {}
+
+
+def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
+    mtime = os.path.getmtime(tif_path)
+    cache_key = (str(tif_path.resolve()), mtime)
+    if cache_key in _RASTER_PNG_CACHE:
+        return _RASTER_PNG_CACHE[cache_key]
+
+    import io
+    import numpy as np
+    from PIL import Image
+    import rasterio
+    from rasterio.enums import Resampling
+
+    with rasterio.open(tif_path) as src:
+        src_h, src_w = src.height, src.width
+        if max(src_h, src_w) > max_dim:
+            scale = max_dim / max(src_h, src_w)
+            out_shape = (max(1, int(src_h * scale)), max(1, int(src_w * scale)))
+        else:
+            out_shape = (src_h, src_w)
+
+        nodata = src.nodata
+
+        if src.count >= 3:
+            rgb_data = src.read([1, 2, 3], out_shape=out_shape, resampling=Resampling.bilinear)
+            rgba = np.zeros((out_shape[0], out_shape[1], 4), dtype=np.uint8)
+            mask = np.ones(out_shape, dtype=bool)
+            for i in range(3):
+                b = rgb_data[i].astype(np.float32)
+                if nodata is not None:
+                    mask &= (b != nodata)
+                valid = b[mask] if np.any(mask) else b
+                if len(valid) > 0:
+                    b_min, b_max = np.nanpercentile(valid, 2), np.nanpercentile(valid, 98)
+                else:
+                    b_min, b_max = 0, 1
+                if b_max > b_min:
+                    norm = np.clip((b - b_min) / (b_max - b_min) * 255.0, 0, 255).astype(np.uint8)
+                else:
+                    norm = np.zeros(out_shape, dtype=np.uint8)
+                rgba[:, :, i] = norm
+            rgba[:, :, 3] = np.where(mask, 255, 0).astype(np.uint8)
+            img = Image.fromarray(rgba, "RGBA")
+        else:
+            is_int = np.issubdtype(src.dtypes[0], np.integer)
+            b = src.read(1, out_shape=out_shape, resampling=Resampling.nearest if is_int else Resampling.bilinear)
+            mask = np.ones(out_shape, dtype=bool)
+            if nodata is not None:
+                mask &= (b != nodata)
+
+            # Check colormap
+            cmap = None
+            try:
+                cmap = src.colormap(1)
+            except (ValueError, IndexError):
+                pass
+
+            if cmap:
+                rgba = np.zeros((out_shape[0], out_shape[1], 4), dtype=np.uint8)
+                for val, col in cmap.items():
+                    val_mask = (b == val)
+                    rgba[val_mask, 0] = col[0]
+                    rgba[val_mask, 1] = col[1]
+                    rgba[val_mask, 2] = col[2]
+                    rgba[val_mask, 3] = 0 if (nodata is not None and val == nodata) else (col[3] if len(col) > 3 else 255)
+                img = Image.fromarray(rgba, "RGBA")
+            else:
+                valid_b = b[mask] if np.any(mask) else np.array([])
+                unique_vals = np.unique(valid_b) if len(valid_b) > 0 else np.array([])
+                if is_int and len(unique_vals) <= 25:
+                    palette = [
+                        [46, 204, 113, 230],   # Emerald green
+                        [52, 152, 219, 230],   # Blue
+                        [241, 196, 15, 230],   # Yellow
+                        [231, 76, 60, 230],    # Red
+                        [155, 89, 182, 230],   # Purple
+                        [230, 126, 34, 230],   # Orange
+                        [26, 188, 156, 230],   # Turquoise
+                        [243, 156, 18, 230],   # Gold
+                        [149, 165, 166, 230],  # Gray
+                        [52, 73, 94, 230],     # Navy
+                    ]
+                    rgba = np.zeros((out_shape[0], out_shape[1], 4), dtype=np.uint8)
+                    for idx, val in enumerate(unique_vals):
+                        if nodata is not None and val == nodata:
+                            continue
+                        col = palette[idx % len(palette)]
+                        val_mask = (b == val) & mask
+                        rgba[val_mask] = col
+                    img = Image.fromarray(rgba, "RGBA")
+                else:
+                    import matplotlib.cm as cm
+                    b_float = b.astype(np.float32)
+                    valid_pixels = b_float[mask] if np.any(mask) else b_float.flatten()
+                    if len(valid_pixels) > 0:
+                        vmin, vmax = np.nanpercentile(valid_pixels, 2), np.nanpercentile(valid_pixels, 98)
+                    else:
+                        vmin, vmax = 0, 1
+                    if vmax > vmin:
+                        norm = np.clip((b_float - vmin) / (vmax - vmin), 0.0, 1.0)
+                    else:
+                        norm = np.zeros_like(b_float)
+                    colored = cm.viridis(norm)
+                    rgba = (colored * 255.0).astype(np.uint8)
+                    rgba[:, :, 3] = np.where(mask, 230, 0).astype(np.uint8)
+                    img = Image.fromarray(rgba, "RGBA")
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        result = buf.getvalue()
+        _RASTER_PNG_CACHE[cache_key] = result
+        return result
+
+
 @app.get("/api/raster/bounds")
 async def get_raster_bounds(path: str):
     """
@@ -306,17 +477,9 @@ async def get_raster_bounds(path: str):
     try:
         import rasterio
         from rasterio.warp import transform_bounds
-        p = Path(path)
-        if not p.is_absolute():
-            # Check runs or data
-            if (DATA_DIR / path).exists():
-                p = DATA_DIR / path
-            elif (RUNS_DIR / path).exists():
-                p = RUNS_DIR / path
-            else:
-                p = Path(path).resolve()
+        p = resolve_raster_path(path)
 
-        if not p.exists():
+        if not p or not p.exists():
             return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
 
         with rasterio.open(p) as src:
@@ -333,6 +496,7 @@ async def get_raster_bounds(path: str):
                 [min_lon, min_lat], # bottom-left
             ]
 
+            from urllib.parse import quote
             return JSONResponse({
                 "ok": True,
                 "bbox": [min_lon, min_lat, max_lon, max_lat],
@@ -342,7 +506,25 @@ async def get_raster_bounds(path: str):
                 "height": src.height,
                 "count": src.count,
                 "path": str(p),
+                "png_url": f"/api/raster/png?path={quote(str(path))}",
             })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/raster/png")
+async def get_raster_png(path: str):
+    """
+    Renders any GeoTIFF as a high-performance in-memory PNG with transparent nodata
+    and accurate georeferencing for 3D Globe overlay in MapLibre GL.
+    """
+    try:
+        p = resolve_raster_path(path)
+        if not p or not p.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
+
+        png_bytes = await asyncio.to_thread(geotiff_to_png_bytes, p)
+        return Response(content=png_bytes, media_type="image/png")
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

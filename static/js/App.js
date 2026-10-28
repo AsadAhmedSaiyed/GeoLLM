@@ -3,9 +3,9 @@ import { html, React } from '/static/js/html.js';
 const { useState, useEffect, useRef } = React;
 
 import { TaskTabs } from '/static/js/components/TaskTabs.js?v=20261025_3';
-import { GlobeView } from '/static/js/components/GlobeView.js?v=20261025_3';
-import { SingleWorkerSlot } from '/static/js/components/SingleWorkerSlot.js?v=20261025_3';
-import { StacModal } from '/static/js/components/StacModal.js?v=20261025_4';
+import { GlobeView } from '/static/js/components/GlobeView.js?v=20261026_3';
+import { SingleWorkerSlot } from '/static/js/components/SingleWorkerSlot.js?v=20261026_1';
+import { StacModal } from '/static/js/components/StacModal.js?v=20261026_2';
 import { SupervisorDrawer } from '/static/js/components/SupervisorDrawer.js?v=20261025_3';
 import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js?v=20261025_2';
 import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261025_2';
@@ -36,6 +36,7 @@ export function App() {
   const [chatHistory, setChatHistory] = useState([]);
   const [previewTarget, setPreviewTarget] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingGlobeArtifact, setPendingGlobeArtifact] = useState(null);
 
   const streamsRef = useRef({});
   const timerIntervalRef = useRef(null);
@@ -651,6 +652,8 @@ export function App() {
             activeTaskId=${activeWorkerSlotId}
             onOpenStacSearchWithAoi=${handleOpenStacWithAoi}
             onSendAoiToTask=${handleSendAoiToTask}
+            pendingOverlay=${pendingGlobeArtifact}
+            onPendingOverlayConsumed=${() => setPendingGlobeArtifact(null)}
           />
         ` : html`
           <!-- Focused Tabbed Task Sandbox View -->
@@ -687,7 +690,10 @@ export function App() {
                   const name = typeof art === 'string' ? art : art.name;
                   setPreviewTarget({ url, name, type: (name.endsWith('.tif') || name.endsWith('.tiff')) ? 'tif' : 'img' });
                 }}
-                onSwitchToGlobe=${() => setActiveTab('globe')}
+                onSwitchToGlobe=${(art) => {
+                  if (art) setPendingGlobeArtifact(art);
+                  setActiveTab('globe');
+                }}
                 onNotify=${showToast}
               />
             </main>

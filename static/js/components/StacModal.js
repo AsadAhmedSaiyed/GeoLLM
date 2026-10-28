@@ -1,6 +1,6 @@
 import { html, React } from '../html.js';
 
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 export function StacModal({
   isOpen,
@@ -8,8 +8,7 @@ export function StacModal({
   initialBbox,
   onAssetStaged,
 }) {
-  if (!isOpen) return null;
-
+  // ALL hooks must be called unconditionally before any early return (Rules of Hooks)
   const [collections, setCollections] = useState([]);
   const [selectedCollections, setSelectedCollections] = useState(['sentinel-2-l2a', 'sentinel-1-rtc']);
   const [selectedModality, setSelectedModality] = useState('all');
@@ -26,11 +25,13 @@ export function StacModal({
   const [searchResults, setSearchResults] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
   const [stagingKeys, setStagingKeys] = useState({});
-  const [stagedKeys, setStagedKeys] = useState({});
+  // useRef so mutations don't trigger re-renders — prevents infinite toast loop
+  const stagedKeysRef = useRef({});
   const [activeDownloads, setActiveDownloads] = useState({});
 
-  // Poll real-time download progress from backend every 500ms
+  // Poll real-time download progress from backend every 500ms (only while modal is open)
   useEffect(() => {
+    if (!isOpen) return; // don't poll when modal is closed — avoids disrupting globe AOI drawing
     let timer = null;
     const fetchProgress = async () => {
       try {
@@ -41,8 +42,8 @@ export function StacModal({
             setActiveDownloads(data.downloads);
             // Check completed downloads and trigger onAssetStaged
             Object.values(data.downloads).forEach((dl) => {
-              if (dl.status === 'completed' && !stagedKeys[dl.stage_id]) {
-                setStagedKeys((prev) => ({ ...prev, [dl.stage_id]: true }));
+              if (dl.status === 'completed' && !stagedKeysRef.current[dl.stage_id]) {
+                stagedKeysRef.current[dl.stage_id] = true;
                 if (onAssetStaged) {
                   onAssetStaged({
                     ok: true,
@@ -66,7 +67,7 @@ export function StacModal({
     fetchProgress();
     timer = setInterval(fetchProgress, 500);
     return () => clearInterval(timer);
-  }, [stagedKeys]);
+  }, [isOpen]);
 
   // Load collections dynamically from backend
   useEffect(() => {
@@ -86,6 +87,9 @@ export function StacModal({
       setBboxInput(initialBbox.map((n) => parseFloat(n).toFixed(4)).join(', '));
     }
   }, [initialBbox]);
+
+  // Guard AFTER all hooks — ref survives close/reopen cycles (Rules of Hooks compliance)
+  if (!isOpen) return null;
 
   const handleSearch = async () => {
     setErrorMsg(null);
@@ -416,7 +420,7 @@ export function StacModal({
                               const stageId = `${item.id}_${a.key}`;
                               const dlInfo = activeDownloads[stageId];
                               const isDownloading = (dlInfo && (dlInfo.status === 'downloading' || dlInfo.status === 'starting' || dlInfo.status === 'fetching_metadata')) || !!stagingKeys[stageId];
-                              const isStaged = (dlInfo && dlInfo.status === 'completed') || !!stagedKeys[stageId];
+                              const isStaged = (dlInfo && dlInfo.status === 'completed') || !!stagedKeysRef.current[stageId];
                               const pctText = dlInfo && dlInfo.percent != null && dlInfo.percent > 0 ? `${Math.round(dlInfo.percent)}%` : 'Staging…';
 
                               return html`

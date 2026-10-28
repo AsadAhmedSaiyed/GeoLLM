@@ -171,25 +171,43 @@ export function SingleWorkerSlot({
           <div className="deliverables-grid">
             ${artifacts.map((art, idx) => {
               const fname = typeof art === 'string' ? art : art.name || 'file';
-              const isTif = fname.toLowerCase().endsWith('.tif') || fname.toLowerCase().endsWith('.tiff');
-              const isPng = fname.toLowerCase().endsWith('.png');
+              const artUrl = typeof art === 'string' ? null : art.url;
+              const ext = fname.toLowerCase().split('.').pop();
+              const isTif = ext === 'tif' || ext === 'tiff';
+              const isPng = ext === 'png';
+              const isPreviewable = isTif || isPng;
+              // Non-previewable: json, geojson, csv, txt → trigger download
+              const downloadUrl = artUrl || `/runs/${fname}`;
               return html`
                 <div key=${idx} className="deliverable-chip">
                   <span className="file-icon">${isTif ? '\ud83d\uddfa\ufe0f' : isPng ? '\ud83d\uddbc\ufe0f' : '\ud83d\udcc4'}</span>
-                  <span className="file-name mono" title=${fname}>${fname.split(/[/\\]/).pop()}</span>
-                  <div style=${{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
-                    <button
-                      type="button"
-                      className="preview-btn"
-                      onClick=${() => onPreviewFile && onPreviewFile(art)}
-                    >
-                      Preview
-                    </button>
+                  <span className="file-name mono" title=${fname} style=${{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${fname.split(/[/\\]/).pop()}</span>
+                  <div style=${{ flexShrink: 0, display: 'flex', gap: '4px' }}>
+                    ${isPreviewable ? html`
+                      <button
+                        type="button"
+                        className="preview-btn"
+                        onClick=${() => onPreviewFile && onPreviewFile(art)}
+                      >
+                        Preview
+                      </button>
+                    ` : html`
+                      <a
+                        href=${downloadUrl}
+                        download=${fname.split(/[/\\]/).pop()}
+                        className="preview-btn"
+                        style=${{ textDecoration: 'none', display: 'inline-block' }}
+                      >
+                        Download
+                      </a>
+                    `}
                     ${isTif ? html`
                       <button
                         type="button"
                         className="globe-overlay-btn"
-                        onClick=${() => onSwitchToGlobe && onSwitchToGlobe()}
+                        onClick=${() => {
+                          if (onSwitchToGlobe) onSwitchToGlobe(art);
+                        }}
                         title="Overlay on 3D Globe"
                       >
                         \ud83c\udf0d

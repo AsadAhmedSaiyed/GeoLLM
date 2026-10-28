@@ -7,6 +7,8 @@ export function GlobeView({
   activeTaskId,
   onOpenStacSearchWithAoi,
   onSendAoiToTask,
+  pendingOverlay,
+  onPendingOverlayConsumed,
 }) {
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -220,11 +222,12 @@ export function GlobeView({
     Object.entries(tasks || {}).forEach(([tid, tdata]) => {
       (tdata.artifacts || []).forEach((art) => {
         const filename = typeof art === 'string' ? art : art.name || '';
+        const artUrl = typeof art === 'string' ? null : art.url;
         if (filename.toLowerCase().endsWith('.tif') || filename.toLowerCase().endsWith('.tiff')) {
           tiffArtifacts.push({
             taskId: tid,
-            filename: filename.split(/[\\/]/).pop(),
-            fullPath: filename,
+            filename: filename.split(/[/\\]/).pop(),
+            fullPath: artUrl || filename,
           });
         }
       });
@@ -243,11 +246,10 @@ export function GlobeView({
         const data = await resp.json();
         if (!data.ok || !data.coordinates) return;
 
-        // Add Image Source with true georeferenced coordinates
+        // Add Image Source with true georeferenced coordinates and rendered PNG
         const sourceId = `src-${layerId}`;
         if (!map.getSource(sourceId)) {
-          // Serve raster preview via existing thumbnail or canvas url
-          const imgUrl = `/runs/${encodeURIComponent(art.fullPath)}`;
+          const imgUrl = data.png_url || `/api/raster/png?path=${encodeURIComponent(art.fullPath)}`;
           map.addSource(sourceId, {
             type: 'image',
             url: imgUrl,
@@ -265,7 +267,7 @@ export function GlobeView({
           });
 
           setActiveLayers((prev) => [
-            ...prev,
+            ...prev.filter(l => l.id !== layerId),
             {
               id: layerId,
               title: art.filename,
@@ -280,6 +282,105 @@ export function GlobeView({
       }
     });
   }, [tasks, layerOpacity]);
+
+  // Handle explicit artifact overlay request from globe icon button
+  useEffect(() => {
+    if (!pendingOverlay) return;
+
+    let cancelled = false;
+    let timerId = null;
+
+    const execute = () => {
+      if (cancelled) return;
+      const map = mapInstanceRef.current;
+      if (!map) {
+        // Map is still mounting, retry in 100ms
+        timerId = setTimeout(execute, 100);
+        return;
+      }
+
+      const art = pendingOverlay;
+      const fname = typeof art === 'string' ? art : art.name || '';
+      const artUrl = typeof art === 'string' ? null : art.url;
+      if (!artUrl && !fname) {
+        if (onPendingOverlayConsumed) onPendingOverlayConsumed();
+        return;
+      }
+
+      const fullPath = artUrl || fname;
+      const filename = fname.split(/[/\\]/).pop();
+      const layerId = `overlay-${filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+      const loadOverlay = async () => {
+        try {
+          const resp = await fetch(`/api/raster/bounds?path=${encodeURIComponent(fullPath)}`);
+          if (!resp.ok) {
+            console.warn('Raster bounds failed with HTTP', resp.status);
+            return;
+          }
+          const data = await resp.json();
+          if (!data.ok || !data.coordinates) {
+            console.warn('Raster bounds data invalid:', data);
+            return;
+          }
+
+          const sourceId = `src-${layerId}`;
+          const pngUrl = data.png_url || `/api/raster/png?path=${encodeURIComponent(fullPath)}`;
+
+          if (!map.getSource(sourceId)) {
+            map.addSource(sourceId, {
+              type: 'image',
+              url: pngUrl,
+              coordinates: data.coordinates,
+            });
+            map.addLayer({
+              id: layerId,
+              type: 'raster',
+              source: sourceId,
+              paint: { 'raster-opacity': layerOpacity, 'raster-fade-duration': 300 },
+            });
+            setActiveLayers(prev => [
+              ...prev.filter(l => l.id !== layerId),
+              { id: layerId, title: filename, bbox: data.bbox, crs: data.crs },
+            ]);
+          }
+
+          // Smoothly zoom globe to raster extent
+          if (data.bbox) {
+            map.fitBounds(
+              [[data.bbox[0], data.bbox[1]], [data.bbox[2], data.bbox[3]]],
+              { padding: 80, duration: 1800 }
+            );
+          }
+        } catch (err) {
+          console.warn('Globe overlay failed:', filename, err);
+        } finally {
+          if (onPendingOverlayConsumed) onPendingOverlayConsumed();
+        }
+      };
+
+      let called = false;
+      const safeLoadOverlay = () => {
+        if (called || cancelled) return;
+        called = true;
+        loadOverlay();
+      };
+
+      if (map.isStyleLoaded()) {
+        safeLoadOverlay();
+      } else {
+        map.once('load', safeLoadOverlay);
+        map.once('style.load', safeLoadOverlay);
+      }
+    };
+
+    execute();
+
+    return () => {
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  }, [pendingOverlay]);
 
   // Zoom to BBOX or Layer
   const zoomToExtent = (bbox) => {
