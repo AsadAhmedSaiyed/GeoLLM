@@ -87,7 +87,7 @@ def find_artifacts(run_dir) -> list:
     if not outputs_dir.exists():
         return []
 
-    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".csv", ".json"}
+    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".csv", ".json", ".gif"}
     excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", ".flag"}
 
     candidate_paths = []

@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -53,8 +54,10 @@ def _safe_inputs(requested, allowed_originals):
 def _call_executor(code, files, attempt_dir, cfg):
     params = inspect.signature(run_code).parameters
     task_id = os.environ.get("GEOLLM_TASK_ID", "")
-    wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id}
-    return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params})
+    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "sklearn", "statsmodels", "ruptures"))
+    custom_image = os.environ.get("GEOLLM_IMAGE_TS", "geollm-runtime-ts") if needs_ts else os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
+    wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id, "image": custom_image}
+    return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params and v is not None})
 
 
 
@@ -180,9 +183,7 @@ def _message(ok, attempt, res, errors, artifacts, cfg):
 
     # Universal diagnostic hints for common library runtime traps (Query-Agnostic)
     combined_err = (str(res.get("error") or "") + "\n" + str(res.get("stderr") or "")).lower()
-    if "no module named 'sklearn'" in combined_err or "modulenotfounderror: no module named 'sklearn'" in combined_err:
-        parts.append("DIAGNOSTIC HINT: 'scikit-learn' is not installed in the container. Use scipy (e.g. scipy.cluster.vq.kmeans2) or numpy instead.")
-    elif "rasterblockerror" in combined_err:
+    if "rasterblockerror" in combined_err:
         parts.append("DIAGNOSTIC HINT: Tiled TIFF block dimensions must be multiples of 16. Update profile with `blockxsize=256, blockysize=256`.")
     elif "dataset is closed" in combined_err:
         parts.append("DIAGNOSTIC HINT: Do not access dataset after the `with rasterio.open(...) as src:` block. Read arrays into memory inside the context manager (`arr = src.read(...)`).")
@@ -230,7 +231,7 @@ def main():
         attempt, attempt_dir = _next_attempt(run_dir)
         out["attempt"] = attempt
 
-                # 1. Cancel check
+        # 1. Cancel check
         if (run_dir / "cancelled.flag").exists():
             out["message"] = "Execution aborted: task was cancelled by user."
             sys.stdout.write(json.dumps(out, default=str) + "\n")

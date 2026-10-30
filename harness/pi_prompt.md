@@ -76,6 +76,14 @@ The user's question and the actual datasets determine the analysis.
   1. Georeferenced spatial files (.tif) saved in /workspace/output (if spatial results requested)
   2. Visualization map figures (.png) saved in /workspace/output (if maps/visualizations requested)
   3. result.json containing detailed numerical statistics and a comprehensive narrative summary.
+  4. If an animation, timeline, or multi-date change sequence is requested:
+     - 1 FRAME = 1 DISTINCT OBSERVATION DATE (minimum 3 dates required for a valid time series; never treat multiple bands of 1 date as an animation).
+     - MANDATORY EXPLICIT TIME-SERIES CALL SEQUENCE:
+       1. For each date, calculate the spatial index or classification map GeoTIFF.
+       2. Call `geollm_lib.viz_ts.generate_downsampled_frame(src_tif, frame_png, date_text=..., title=..., cmap=..., metric_label=...)` to create a full colored map with burned-in date banner and legend.
+       3. Assemble all per-date PNGs into an animated GIF using `geollm_lib.viz_ts.make_animated_gif(frame_pngs, 'animation.gif')`.
+       4. Export `timeline.json` using `geollm_lib.viz_ts.make_timeline_json(dates, frame_pngs, series_values, metric_name=..., unit=...)`! This activates the user's interactive time slider, play/pause controls, and synchronized sparkline graph in the web interface.
+     - TRUE TIME-LAPSE FRAMES: Each animation frame must show the full-screen satellite image or index map for that specific date (Frame 0 = Date 1, Frame 1 = Date 2, etc.), so the user sees the landscape physically transform over time. Never create a static multi-panel storyboard where only text labels or arrows change.
   Only once all deliverables are verified should you output your final textual response.
 
 # 3. TOOLS AVAILABLE
@@ -91,8 +99,23 @@ The container has the following standard libraries installed:
 * `geollm_lib` helper library
 
 CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
-* Machine learning frameworks like `scikit-learn` (`sklearn`), `torch`, `tensorflow`, and `cv2` are NOT installed.
-* For clustering, classification, or filtering, use `scipy` (e.g. `scipy.cluster.vq.kmeans2`, `scipy.ndimage`) or standard `numpy`.
+* Machine learning frameworks like `scikit-learn` (`sklearn`), `statsmodels`, and `ruptures` are installed and supported via `geollm_lib.classify` and `geollm_lib.series`.
+* SENTINEL-2 RGB BAND ORDER RULE: Sentinel-2 visible band files are named B02 (Blue), B03 (Green), and B04 (Red). When creating an RGB composite or passing an array to `classify_with_pretrained()`, you MUST stack them in RED, GREEN, BLUE order:
+  ```python
+  # B04 is Red (channel 0), B03 is Green (channel 1), B02 is Blue (channel 2)
+  rgb = np.stack([b04_red, b03_green, b02_blue], axis=-1)
+  ```
+  NEVER stack them in alphabetical order [B02, B03, B04] as that creates a BGR array (Blue in channel 0, Red in channel 2), which inverts physical reflectance and causes terrestrial surfaces/sand to be falsely predicted as water!
+* PHYSICAL SPECTRAL SIGNATURES & CLASSIFICATION:
+  - Deep and coastal water strongly absorbs Red light, so water has Green > Red. Naive Green-Red difference ratios are positive over water; NEVER use (Green - Red) as a substitute for NDVI when NIR is missing, as it will misclassify water bodies as vegetation.
+  - WATER VS FLAT LAND / DESERT SEPARATION RULES:
+    * SAR (Sentinel-1 VV/VH): In arid, desert, or flat terrain, calm open water and smooth flat dry sand/soil/runways are BOTH specular reflectors with very low radar backscatter (<-15 dB). NEVER run a single-image Otsu or low-value threshold on SAR to classify water in desert/flat areas, as it will lump the entire desert and the sea together!
+      For flood/water detection across dates, ALWAYS use TEMPORAL CHANGE DETECTION:
+      `diff_db = 10 * np.log10(post / (pre + 1e-6))`
+      Flooding is detected where backscatter dropped significantly (`diff_db < -3.0 dB` or `post < 0.5 * pre`) AND pre was not already dark water/sand. Static desert sand is dark in BOTH dates (`diff_db ~ 0 dB`), completely preventing flat land from being confused with water.
+    * Optical (Sentinel-2 / Landsat): Water absorbs Red (r < 0.16), NIR, and SWIR. Desert sand and bare soil have high Red (r > 0.22) and very high NIR/SWIR (> 0.25). When NIR/SWIR bands are available, use `NDWI = (Green - NIR) / (Green + NIR) > 0` or `MNDWI = (Green - SWIR1) / (Green + SWIR1) > 0`. Desert and bare soil have strongly negative NDWI (-0.3 to -0.6). In RGB composites, bright pixels (brightness > 0.25, r > 0.20, or r > 1.2 * b) are physically terrestrial bare ground or urban, NEVER water.
+  - When using `classify_with_pretrained('eurosat', rgb)` or `classify_with_pretrained('global_landcover', rgb)`, ensure the input is normalized float [0, 1] in [Red, Green, Blue] order. If visual review requests changes, inspect channel order, stretch, and thresholds — DO NOT discard the ML model to write ad-hoc heuristic Green-Red thresholds.
+  - Sub-Class Directives: The global model provides a unified `BuiltUp_Urban` class. If the user asks to distinguish residential vs. industrial, report both under the built-up category or explain that 20m visible RGB does not resolve building sub-types without spatial roof cadastre data.
 * For multi-band or hyperspectral rasters, DO NOT read all bands into memory at once (`src.read()` on 100+ bands will cause Out-Of-Memory or Timeout). Always read only the specific band indexes needed for your calculation (e.g. `src.read(indexes=[b1, b2])`).
 * Always read rasters inside context managers (`with rasterio.open(...) as src:`) and extract NumPy arrays so they remain accessible in memory.
 * When writing tiled GeoTIFFs, ensure block dimensions are multiples of 16 (e.g. `blockxsize=256, blockysize=256`).

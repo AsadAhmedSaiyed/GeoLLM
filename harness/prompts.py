@@ -90,6 +90,27 @@ IMPORTANT SCIENTIFIC GUIDANCE
   offsets depending on the product/version.
   Verify metadata and helper behavior before interpreting absolute values.
 
+- Time Series & Classification:
+  For multi-temporal analysis, align rasters using `geollm_lib.series.load_series()` or verify matching grids.
+  For classification tasks:
+  * Supervised ML (`fit_classifier`, `spatial_train_test_split`, `classification_metrics`):
+    Requires ground-truth training labels (vector polygons/points or labeled coordinates).
+    If the user asks for classification and accuracy but provided NO reference labels, state clearly in your plan:
+    "To train a supervised ML classifier and measure true accuracy, ground-truth reference labels (e.g. a GeoJSON with sample areas) are required. In their absence, I will compute a physically-grounded spectral classification using explicit thresholds."
+  * Physical Rule-Based Mapping & Spectral Signatures (when no training labels are provided):
+    - Sentinel-2 Band Order: B04 = Red (ch 0), B03 = Green (ch 1), B02 = Blue (ch 2). When creating RGB composites or passing to `classify_with_pretrained()`, ALWAYS stack as `[B04, B03, B02]`. Alphabetical order [B02, B03, B04] produces inverted BGR, falsely turning desert into water!
+    - Water absorbs Red strongly, so water has Green > Red. Without NIR bands, NEVER use `(Green - Red) / (Green + Red)` as an NDVI substitute, as it will misclassify water as vegetation.
+    - Water vs Flat Land / Desert Separation:
+      * In Sentinel-1 SAR: Smooth flat sand, playas, and calm water are BOTH specular reflectors (<-15 dB). NEVER use a single-date backscatter threshold to extract water over arid/flat scenes as it will mix desert and water. For flood/water detection, ALWAYS use temporal difference: `diff_dB = 10 * np.log10(post / (pre + 1e-6)) < -3.0 dB`. Static desert is dark in both dates (diff ~ 0), eliminating false positives.
+      * In Optical: Water absorbs Red (r < 0.16) and NIR/SWIR. Desert sand and bare soil have high Red (r > 0.22) and high NIR/SWIR. Use `NDWI = (Green - NIR) / (Green + NIR) > 0` or `MNDWI = (Green - SWIR1) / (Green + SWIR1) > 0`. Desert has strongly negative NDWI (-0.3 to -0.6). Never classify bright pixels (brightness > 0.25, r > 0.20, or r > 1.2 * b) as water.
+    - Never blindly label unsupervised mathematical clusters as 'trees' or 'vegetation' if their NDVI is low (< 0.3). In arid or desert scenes, low-NDVI surfaces (< 0.2) are bare sand, rock, or urban cover, NEVER trees.
+  * For large scenes, use `predict_in_chunks()` to bound memory consumption.
+  * For frontend animations and time-series (minimum 3 dates required):
+    - 1 frame = 1 distinct date (never treat different bands from 1 date as an animation).
+    - Use `geollm_lib.viz_ts.generate_downsampled_frame(src_tif, frame_png, date_text=...)` for each date.
+    - Assemble frames into GIF using `geollm_lib.viz_ts.make_animated_gif(frame_pngs, 'animation.gif')`.
+    - Export timeline metadata using `geollm_lib.viz_ts.make_timeline_json(dates, frame_pngs, series_values, metric_name=..., unit=...)`.
+
 - Never invent measurements, observations, thresholds, locations, dates,
   percentages or other numerical results. Everything reported must be
   computed from the available data or explicitly identified as an assumption
@@ -482,6 +503,16 @@ or:
 
 and explain why in "summary".
 
+TIME SERIES & ANIMATION DELIVERABLE DIRECTIVE:
+Whenever the user question involves a timeline, animation, or multi-date change over time:
+1. 1 FRAME = 1 DISTINCT OBSERVATION DATE (minimum 3 dates required for a valid time series; never treat multiple bands of 1 date as animation frames).
+2. MANDATORY TIME-SERIES PIPELINE:
+   a. For each date, calculate the spatial index or classification map GeoTIFF.
+   b. Call `geollm_lib.viz_ts.generate_downsampled_frame(src_tif, frame_png, date_text=..., title=..., cmap=..., metric_label=...)` to create a full colored map with burned-in date banner and legend.
+   c. Assemble all per-date PNGs into an animated GIF using `geollm_lib.viz_ts.make_animated_gif(frame_pngs, 'animation.gif')`.
+   d. Call `geollm_lib.viz_ts.make_timeline_json(dates, frame_pngs, series_values, metric_name=..., unit=...)` to save `timeline.json`!
+      This is mandatory because `timeline.json` automatically activates the user's interactive time slider, play/pause controls, and synchronized graph in the web interface.
+
 Maps must include an appropriate legend.
 
 Reply with exactly one ```python block and nothing else.
@@ -634,15 +665,10 @@ Judge only what is visible and what can be compared against the task:
 - visually obvious mismatch between the requested analysis and displayed
   result
 
-Do not infer scientific correctness from appearance alone.
+- SEMANTIC PLAUSIBILITY MISMATCH: Compare the raw satellite composite against the classification overlay. If the raw image visually shows dry barren desert sand, bare rock, or dense urban buildings, but the classification map colors it predominantly as green vegetation/forest (or vice-versa), flag this as an obvious semantic error.
+- Do not nitpick subtle border pixels, but flag severe landscape contradictions where the classification contradicts what is clearly visible on the ground.
 
-Numerical and deterministic validation are authoritative for numerical
-correctness.
-
-Use visual feedback only to identify visible problems that should be inspected
-or corrected.
-
-If there is a concrete visible problem, return needs_revision.
+If there is a concrete visible problem or semantic plausibility mismatch, return needs_revision.
 
 Otherwise return ok.
 

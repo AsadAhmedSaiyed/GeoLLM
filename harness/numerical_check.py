@@ -97,7 +97,9 @@ def check_outputs(output_dir, artifacts, result, facts):
                     if primary and (src.width, src.height) != (primary["width"], primary["height"]):
                         out.append(_issue("warning", "shape_differs", rel, f"'{rel}' is {src.width}x{src.height}, input is {primary['width']}x{primary['height']}"))
                 vals = np.ma.filled(arr, 255 if arr.dtype.kind in "ui" else np.nan)
-                is_mask = arr.dtype.kind in "uib" and (set(np.unique(vals).tolist()) <= {0, 1, 255} or "mask" in name)
+                uniq_vals = set(np.unique(vals).tolist())
+                is_multi_class = len(uniq_vals - {255}) > 2 or "class" in name
+                is_mask = arr.dtype.kind in "uib" and not is_multi_class and (uniq_vals <= {0, 1, 255} or "mask" in name)
                 if is_mask:
                     valid, sel = int((vals != 255).sum()), int((vals == 1).sum())
                     evidence = _mask_evidence(raw, nodata, valid, sel)

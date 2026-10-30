@@ -40,7 +40,7 @@ def _size_mb(path):
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
 
-def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None, prior=None, task_id=""):
+def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None, prior=None, task_id="", image=None):
     """Run `code` once. prior={task_id: host_dir} mounts earlier task outputs read-only at /workspace/prior/<task_id>.
     Everything is saved under run_dir: code.py, stdout.txt, stderr.txt, outputs/."""
     client = docker.from_env()
@@ -65,11 +65,15 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
         os.chmod(d, 0o755)
     os.chmod(out_dir, 0o777)
 
+    lib_dir = Path(__file__).resolve().parent.parent / "lib"
     volumes = {
         str(in_dir): {"bind": "/workspace/input", "mode": "ro"},
         str(code_dir): {"bind": "/workspace/code", "mode": "ro"},
         str(out_dir): {"bind": "/workspace/output", "mode": "rw"},
     }
+    if lib_dir.exists():
+        _open_perms(str(lib_dir))
+        volumes[str(lib_dir)] = {"bind": "/opt/geollm", "mode": "ro"}
     for tid, host in (prior or {}).items():
         if Path(host).exists():
             _open_perms(host)
@@ -79,10 +83,17 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
     exit_code, stdout, stderr = -1, "", ""
     t0 = time.time()
     startup = duration = 0.0
+    default_image = os.environ.get("GEOLLM_IMAGE", IMAGE)
+    container_image = image or default_image
+    if container_image != default_image:
+        try:
+            client.images.get(container_image)
+        except Exception:
+            container_image = default_image
     try:
         cname = f"geollm_{task_id}_{int(time.time())}" if task_id else None
         container = client.containers.create(
-            IMAGE, command=["python", "/workspace/code/script.py"], working_dir="/workspace/output",
+            container_image, command=["python", "/workspace/code/script.py"], working_dir="/workspace/output",
             name=cname,
             environment={"MPLCONFIGDIR": "/tmp/mpl", "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
             network_mode="none", mem_limit=memory, memswap_limit=memory, nano_cpus=int(cpus * 1e9),

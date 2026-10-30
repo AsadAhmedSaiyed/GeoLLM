@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, File, UploadFile, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
+from fastapi import FastAPI, File, UploadFile, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -216,6 +216,41 @@ async def cancel_task(task_id: str):
     return JSONResponse({"task_id": task_id, "status": "cancelled"})
 
 
+@app.get("/api/runs/{task_id}/timeline.json")
+async def get_timeline(task_id: str):
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    if not run_dir:
+        return JSONResponse({"error": "No run_dir"}, status_code=404)
+    p = Path(run_dir)
+    cands = list(p.rglob("timeline.json"))
+    if cands and cands[0].exists():
+        try:
+            data = json.loads(cands[0].read_text(encoding="utf-8"))
+            timeline_dir = cands[0].parent
+            try:
+                rel_base = timeline_dir.relative_to(Path.cwd()).as_posix()
+            except ValueError:
+                parts = timeline_dir.parts
+                idx = parts.index("runs") if "runs" in parts else 0
+                rel_base = "/".join(parts[idx:])
+
+            # Dynamically resolve png_url so frontend gets direct HTTP 200 URLs
+            for frame in data.get("frames", []):
+                fname = frame.get("file") or ""
+                frame_fname = Path(fname).name
+                if (timeline_dir / frame_fname).exists():
+                    frame["png_url"] = f"/{rel_base}/{frame_fname}"
+                elif not frame.get("png_url"):
+                    frame["png_url"] = f"/api/tasks/{task_id}/artifacts/{frame_fname}"
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid timeline.json: {e}"}, status_code=500)
+    return JSONResponse({"error": "timeline.json not found"}, status_code=404)
+
+
 @app.get("/api/tasks/{task_id}/artifacts")
 async def get_task_artifacts(task_id: str):
     ts = task_manager.get_task(task_id)
@@ -223,6 +258,34 @@ async def get_task_artifacts(task_id: str):
         return JSONResponse({"artifacts": []})
     run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
     return JSONResponse({"artifacts": find_artifacts(run_dir)})
+
+
+@app.get("/api/tasks/{task_id}/artifacts/{artifact_path:path}")
+async def get_task_artifact_file(task_id: str, artifact_path: str):
+    """Serve any task deliverable or generated frame directly by filename or relative path."""
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Task not found")
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    if not run_dir:
+        raise HTTPException(status_code=404, detail="No run_dir for task")
+    rd = Path(run_dir)
+    fname = Path(artifact_path).name
+    # Search run_dir recursively for this artifact file
+    cands = list(rd.rglob(fname))
+    if cands:
+        # Prefer latest attempt outputs
+        chosen = sorted(cands, key=lambda p: str(p), reverse=True)[0]
+        ext = chosen.suffix.lower()
+        media_type = (
+            "image/png" if ext == ".png"
+            else "image/gif" if ext == ".gif"
+            else "image/tiff" if ext in (".tif", ".tiff")
+            else "application/json" if ext == ".json"
+            else "application/octet-stream"
+        )
+        return FileResponse(chosen, media_type=media_type)
+    raise HTTPException(status_code=404, detail=f"Artifact '{fname}' not found in task run")
 
 
 @app.post("/api/tasks/{task_id}/approve")
@@ -277,9 +340,9 @@ class StacStagePayload(BaseModel):
 
 @app.post("/api/stac/stage")
 async def stage_stac(payload: StacStagePayload):
-    from harness.stac_service import stage_stac_asset
+    from harness.stac_service import stage_stac_asset, register_download_task
     stage_id = f"{payload.item_id}_{payload.asset_key}"
-    asyncio.create_task(
+    task = asyncio.create_task(
         stage_stac_asset(
             collection=payload.collection,
             item_id=payload.item_id,
@@ -288,7 +351,19 @@ async def stage_stac(payload: StacStagePayload):
             custom_filename=payload.custom_filename,
         )
     )
+    register_download_task(stage_id, task)
     return JSONResponse({"ok": True, "stage_id": stage_id, "status": "started"})
+
+
+class StacCancelPayload(BaseModel):
+    stage_id: str
+
+
+@app.post("/api/stac/cancel")
+async def cancel_stac_download_endpoint(payload: StacCancelPayload):
+    from harness.stac_service import cancel_stac_download
+    ok = cancel_stac_download(payload.stage_id)
+    return JSONResponse({"ok": ok, "stage_id": payload.stage_id, "status": "cancelled"})
 
 
 @app.get("/api/stac/downloads")

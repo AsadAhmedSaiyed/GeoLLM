@@ -1,7 +1,10 @@
 import { html, React } from '../html.js';
 import { MarkdownView } from './MarkdownView.js';
+import { TimeSeriesPanel } from './TimeSeriesPanel.js';
 
 const { useState, useRef, useEffect } = React;
+
+const getBasename = (p) => (p || '').replace(/\\/g, '/').split('/').pop();
 
 export function SingleWorkerSlot({
   taskId,
@@ -15,6 +18,7 @@ export function SingleWorkerSlot({
 }) {
   const [revisionFeedback, setRevisionFeedback] = useState('');
   const [showLogs, setShowLogs] = useState(true);
+  const [timelineFrame, setTimelineFrame] = useState(null);
   const activityRef = useRef(null);
 
   // Auto-scroll activity feed to bottom as new events arrive
@@ -42,6 +46,10 @@ export function SingleWorkerSlot({
     task.status === 'failed' ? (task.error || 'Failed') : 'Idle';
 
   const artifacts = task.artifacts || [];
+  const hasTimeline = artifacts.some(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return name.toLowerCase().includes('timeline.json');
+  });
   const isDone = task.status === 'done';
   const isFailed = task.status === 'failed';
 
@@ -151,6 +159,74 @@ export function SingleWorkerSlot({
         </div>
       ` : null}
 
+      <!-- Time Series Animation & Synchronized Frame Viewer -->
+      ${hasTimeline ? html`
+        <div className="time-series-viewer-card" style=${{
+          background: '#0F172A',
+          borderRadius: '8px',
+          padding: '12px',
+          marginBottom: '14px',
+          border: '1px solid #1E293B',
+          boxShadow: '0 4px 14px rgba(0,0,0,0.3)'
+        }}>
+          ${timelineFrame && timelineFrame.file ? (() => {
+            const frameFname = getBasename(timelineFrame.file);
+            const matchingArt = (artifacts || []).find((a) => getBasename(typeof a === 'string' ? a : a.name) === frameFname);
+            const initialSrc = (matchingArt && matchingArt.url)
+              ? matchingArt.url
+              : (timelineFrame.png_url || `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`);
+
+            return html`
+            <div style=${{ textAlign: 'center', marginBottom: '10px' }}>
+              <div style=${{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
+                <img
+                  src=${initialSrc}
+                  alt="Time Series Frame"
+                  style=${{
+                    maxHeight: '440px',
+                    maxWidth: '100%',
+                    height: 'auto',
+                    margin: '0 auto',
+                    borderRadius: '6px',
+                    border: '1px solid #334155',
+                    display: 'block',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.6)'
+                  }}
+                  onError=${(e) => {
+                    if (e.target.dataset.triedFallback) return;
+                    e.target.dataset.triedFallback = 'true';
+                    const fbUrl = `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`;
+                    if (e.target.src !== fbUrl) e.target.src = fbUrl;
+                  }}
+                />
+                <div style=${{
+                  position: 'absolute',
+                  bottom: '10px',
+                  left: '12px',
+                  background: 'rgba(15, 23, 42, 0.85)',
+                  backdropFilter: 'blur(4px)',
+                  color: '#38BDF8',
+                  padding: '4px 10px',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  fontFamily: 'monospace',
+                  border: '1px solid rgba(56, 189, 248, 0.3)'
+                }}>
+                  ${timelineFrame.label || timelineFrame.date || ''}
+                </div>
+              </div>
+            </div>
+            `;
+          })() : null}
+          <${TimeSeriesPanel}
+            taskId=${taskId || task.id}
+            runDir=${task.run_dir}
+            onFrameChange=${(frame) => setTimelineFrame(frame)}
+          />
+        </div>
+      ` : null}
+
       <!-- Deliverables Section -->
       ${artifacts.length > 0 ? html`
         <div className="task-deliverables-card">
@@ -174,13 +250,13 @@ export function SingleWorkerSlot({
               const artUrl = typeof art === 'string' ? null : art.url;
               const ext = fname.toLowerCase().split('.').pop();
               const isTif = ext === 'tif' || ext === 'tiff';
-              const isPng = ext === 'png';
-              const isPreviewable = isTif || isPng;
+              const isImg = ext === 'png' || ext === 'gif' || ext === 'webp';
+              const isPreviewable = isTif || isImg;
               // Non-previewable: json, geojson, csv, txt → trigger download
               const downloadUrl = artUrl || `/runs/${fname}`;
               return html`
                 <div key=${idx} className="deliverable-chip">
-                  <span className="file-icon">${isTif ? '\ud83d\uddfa\ufe0f' : isPng ? '\ud83d\uddbc\ufe0f' : '\ud83d\udcc4'}</span>
+                  <span className="file-icon">${isTif ? '\ud83d\uddfa\ufe0f' : isImg ? '\ud83d\uddbc\ufe0f' : '\ud83d\udcc4'}</span>
                   <span className="file-name mono" title=${fname} style=${{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${fname.split(/[/\\]/).pop()}</span>
                   <div style=${{ flexShrink: 0, display: 'flex', gap: '4px' }}>
                     ${isPreviewable ? html`

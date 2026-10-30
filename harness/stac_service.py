@@ -8,12 +8,14 @@ Supports all remote sensing modalities:
 - Land Cover (ESA WorldCover, Dynamic World, io-lulc)
 """
 import os
+import re
 import json
 import logging
 import asyncio
 import time
 import urllib.request
 import urllib.error
+from datetime import date
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -29,6 +31,34 @@ STAC_API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 SAS_API_URL = "https://planetarycomputer.microsoft.com/api/sas/v1"
 
 ACTIVE_DOWNLOADS: Dict[str, Dict[str, Any]] = {}
+DOWNLOAD_TASKS: Dict[str, asyncio.Task] = {}
+CANCELLATION_FLAGS: Dict[str, bool] = {}
+
+def register_download_task(stage_id: str, task: asyncio.Task):
+    """Register active asyncio.Task for cancellation handling."""
+    DOWNLOAD_TASKS[stage_id] = task
+
+def cancel_stac_download(stage_id: str) -> bool:
+    """Cancels an in-progress STAC download, deletes partial files, and updates status."""
+    CANCELLATION_FLAGS[stage_id] = True
+    task = DOWNLOAD_TASKS.get(stage_id)
+    if task and not task.done():
+        task.cancel()
+
+    if stage_id in ACTIVE_DOWNLOADS:
+        dl = ACTIVE_DOWNLOADS[stage_id]
+        dl["status"] = "cancelled"
+        dl["error"] = "Cancelled by user"
+        dl["updated_at"] = time.time()
+        dest_path_str = dl.get("path")
+        if dest_path_str:
+            try:
+                p = Path(dest_path_str)
+                if p.exists():
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
+    return True
 
 def get_active_downloads() -> Dict[str, Dict[str, Any]]:
     now = time.time()
@@ -53,7 +83,7 @@ def _sync_post_json(url: str, payload: dict, timeout: float = 30.0) -> Dict[str,
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
-def _sync_download(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None):
+def _sync_download(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None, cancel_check=None):
     req = urllib.request.Request(url, headers={"User-Agent": "GeoLLM/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as response, open(dest_path, "wb") as out_f:
         cl = response.headers.get("Content-Length")
@@ -61,6 +91,8 @@ def _sync_download(url: str, dest_path: Path, timeout: float = 300.0, progress_c
         downloaded = 0
         last_cb = 0.0
         while True:
+            if cancel_check and cancel_check():
+                raise asyncio.CancelledError("Download cancelled by user")
             chunk = response.read(65536)
             if not chunk:
                 break
@@ -84,12 +116,17 @@ async def http_get_json(url: str, timeout: float = 30.0) -> Dict[str, Any]:
 async def http_post_json(url: str, payload: dict, timeout: float = 30.0) -> Dict[str, Any]:
     if HAS_HTTPX:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+            try:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                err_body = e.response.text
+                logger.error(f"HTTP {e.response.status_code} from {url}: {err_body}")
+                raise RuntimeError(f"Planetary Computer error ({e.response.status_code}): {err_body}") from e
     return await asyncio.to_thread(_sync_post_json, url, payload, timeout)
 
-async def http_download_file(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None):
+async def http_download_file(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None, cancel_check=None):
     if HAS_HTTPX:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("GET", url) as stream_resp:
@@ -100,6 +137,8 @@ async def http_download_file(url: str, dest_path: Path, timeout: float = 300.0, 
                 last_cb = 0.0
                 with open(dest_path, "wb") as f:
                     async for chunk in stream_resp.aiter_bytes(chunk_size=65536):
+                        if cancel_check and cancel_check():
+                            raise asyncio.CancelledError("Download cancelled by user")
                         f.write(chunk)
                         downloaded += len(chunk)
                         now = time.time()
@@ -109,7 +148,7 @@ async def http_download_file(url: str, dest_path: Path, timeout: float = 300.0, 
                 if progress_callback:
                     progress_callback(downloaded, total or downloaded)
                 return
-    await asyncio.to_thread(_sync_download, url, dest_path, timeout, progress_callback)
+    await asyncio.to_thread(_sync_download, url, dest_path, timeout, progress_callback, cancel_check)
 
 
 # Curated catalog categories for UI discovery (dynamic query targets)
@@ -173,6 +212,50 @@ def get_curated_collections() -> List[Dict[str, Any]]:
     return out
 
 
+def normalize_stac_date(val: Any, default: str) -> str:
+    """
+    Normalizes any date string (YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, etc.)
+    into standard ISO-8601 'YYYY-MM-DD' for STAC API compliance.
+    """
+    if not val:
+        return default
+    s = str(val).strip()
+
+    # Match YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
+    m_iso = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
+    if m_iso:
+        y, m, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        try:
+            return date(y, m, d).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    # Match DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, MM/DD/YYYY
+    m_dmy = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", s)
+    if m_dmy:
+        p1, p2, y = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
+        if p1 > 12 >= p2:
+            d, m = p1, p2
+        elif p2 > 12 >= p1:
+            d, m = p2, p1
+        else:
+            d, m = p1, p2
+        try:
+            return date(y, m, d).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    # Fallback to python-dateutil if installed
+    try:
+        from dateutil import parser
+        dt = parser.parse(s, dayfirst=True)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    return default
+
+
 async def search_stac_items(
     bbox: List[float],
     start_date: str,
@@ -186,25 +269,49 @@ async def search_stac_items(
     BBOX format: [min_lon, min_lat, max_lon, max_lat]
     Dates: ISO format YYYY-MM-DD
     """
+    # 1. Sanitize & Normalize BBox [min_lon, min_lat, max_lon, max_lat]
+    if not bbox or len(bbox) != 4:
+        bbox = [55.15, 25.05, 55.45, 25.35]
+    p1_x, p1_y, p2_x, p2_y = [float(x) for x in bbox]
+    min_lon = max(-180.0, min(180.0, min(p1_x, p2_x)))
+    max_lon = max(-180.0, min(180.0, max(p1_x, p2_x)))
+    min_lat = max(-90.0, min(90.0, min(p1_y, p2_y)))
+    max_lat = max(-90.0, min(90.0, max(p1_y, p2_y)))
+    if min_lon == max_lon:
+        min_lon -= 0.01; max_lon += 0.01
+    if min_lat == max_lat:
+        min_lat -= 0.01; max_lat += 0.01
+    clean_bbox = [round(min_lon, 5), round(min_lat, 5), round(max_lon, 5), round(max_lat, 5)]
+
+    # 2. Sanitize & Normalize Dates (handles DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD)
+    s_clean = normalize_stac_date(start_date, '2024-04-10')
+    e_clean = normalize_stac_date(end_date, '2024-05-20')
+    if s_clean > e_clean:
+        s_clean, e_clean = e_clean, s_clean
+    datetime_param = f"{s_clean}T00:00:00Z/{e_clean}T23:59:59Z"
+
+    # 3. Sanitize Collections & Limit
     if not collections:
         collections = ["sentinel-2-l2a", "sentinel-1-rtc"]
-
-    datetime_param = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
+    clean_collections = [str(c).strip() for c in collections if c]
+    clean_limit = max(1, min(100, int(limit or 12)))
 
     search_payload: Dict[str, Any] = {
-        "bbox": bbox,
+        "bbox": clean_bbox,
         "datetime": datetime_param,
-        "collections": collections,
-        "limit": limit,
+        "collections": clean_collections,
+        "limit": clean_limit,
     }
 
-    # Add cloud cover filter for optical if requested
-    query_filters: Dict[str, Any] = {}
-    if max_cloud_cover is not None and any(c in ["sentinel-2-l2a", "landsat-c2-l2"] for c in collections):
-        query_filters["eo:cloud_cover"] = {"lte": float(max_cloud_cover)}
-
-    if query_filters:
-        search_payload["query"] = query_filters
+    # 4. Optional Cloud Cover Filter (only if < 100% and optical collection queried)
+    if max_cloud_cover is not None:
+        try:
+            cloud_val = float(max_cloud_cover)
+            if 0.0 <= cloud_val < 100.0:
+                if any(c in ["sentinel-2-l2a", "landsat-c2-l2"] for c in clean_collections):
+                    search_payload["query"] = {"eo:cloud_cover": {"lte": cloud_val}}
+        except (ValueError, TypeError):
+            pass
 
     try:
         data = await http_post_json(f"{STAC_API_URL}/search", search_payload, timeout=30.0)
@@ -331,8 +438,10 @@ async def stage_stac_asset(
         filename = f"{collection}_{dt_str}_{asset_key}{ext}"
 
     dest_path = output_dir / filename
+    CANCELLATION_FLAGS[stage_id] = False
     ACTIVE_DOWNLOADS[stage_id].update({
         "filename": filename,
+        "path": str(dest_path),
         "status": "downloading",
         "updated_at": time.time(),
     })
@@ -353,8 +462,16 @@ async def stage_stac_asset(
             "updated_at": now,
         })
 
+    def is_cancelled() -> bool:
+        return CANCELLATION_FLAGS.get(stage_id, False)
+
     try:
-        await http_download_file(signed_href, dest_path, timeout=300.0, progress_callback=on_progress)
+        if is_cancelled():
+            raise asyncio.CancelledError("Download cancelled by user")
+        await http_download_file(signed_href, dest_path, timeout=300.0, progress_callback=on_progress, cancel_check=is_cancelled)
+        if is_cancelled():
+            raise asyncio.CancelledError("Download cancelled by user")
+
         size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
         ACTIVE_DOWNLOADS[stage_id].update({
             "status": "completed",
@@ -374,6 +491,15 @@ async def stage_stac_asset(
             "item_id": item_id,
             "asset_key": asset_key,
         }
+    except asyncio.CancelledError:
+        if dest_path.exists():
+            dest_path.unlink(missing_ok=True)
+        ACTIVE_DOWNLOADS[stage_id].update({
+            "status": "cancelled",
+            "error": "Cancelled by user",
+            "updated_at": time.time(),
+        })
+        return {"ok": False, "cancelled": True, "error": "Cancelled by user"}
     except Exception as e:
         if dest_path.exists():
             dest_path.unlink(missing_ok=True)

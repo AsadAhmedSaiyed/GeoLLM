@@ -27,6 +27,7 @@ export function StacModal({
   const [stagingKeys, setStagingKeys] = useState({});
   // useRef so mutations don't trigger re-renders — prevents infinite toast loop
   const stagedKeysRef = useRef({});
+  const searchAbortRef = useRef(null);
   const [activeDownloads, setActiveDownloads] = useState({});
 
   // Poll real-time download progress from backend every 500ms (only while modal is open)
@@ -96,19 +97,68 @@ export function StacModal({
     setLoading(true);
     setSearchResults([]);
 
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     try {
-      const parsedBbox = bboxInput.split(',').map((s) => parseFloat(s.trim()));
-      if (parsedBbox.length !== 4 || parsedBbox.some(isNaN)) {
+      const raw = bboxInput.split(',').map((s) => parseFloat(s.trim()));
+      if (raw.length !== 4 || raw.some(isNaN)) {
         throw new Error('Bounding box must contain 4 numbers: min_lon, min_lat, max_lon, max_lat');
       }
+      const minX = Math.min(raw[0], raw[2]);
+      const maxX = Math.max(raw[0], raw[2]);
+      const minY = Math.min(raw[1], raw[3]);
+      const maxY = Math.max(raw[1], raw[3]);
+      const parsedBbox = [minX, minY, maxX, maxY];
+
+      const toIsoDate = (val, fallback) => {
+        if (!val) return fallback;
+        const s = String(val).trim();
+        const isoMatch = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (isoMatch) {
+          const y = isoMatch[1];
+          const m = isoMatch[2].padStart(2, '0');
+          const d = isoMatch[3].padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        }
+        const dmyMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyMatch) {
+          const p1 = parseInt(dmyMatch[1], 10);
+          const p2 = parseInt(dmyMatch[2], 10);
+          const y = dmyMatch[3];
+          let d = p1;
+          let m = p2;
+          if (p1 > 12 && p2 <= 12) {
+            d = p1; m = p2;
+          } else if (p2 > 12 && p1 <= 12) {
+            d = p2; m = p1;
+          }
+          return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+        return s.slice(0, 10);
+      };
+
+      let sDate = toIsoDate(startDate, '2024-04-10');
+      let eDate = toIsoDate(endDate, '2024-05-20');
+      if (sDate && eDate && sDate > eDate) {
+        const tmp = sDate;
+        sDate = eDate;
+        eDate = tmp;
+      }
+      setStartDate(sDate);
+      setEndDate(eDate);
 
       const resp = await fetch('/api/stac/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           bbox: parsedBbox,
-          start_date: startDate,
-          end_date: endDate,
+          start_date: sDate,
+          end_date: eDate,
           collections: selectedCollections,
           max_cloud_cover: maxCloud,
           limit: 12,
@@ -125,10 +175,23 @@ export function StacModal({
         setErrorMsg('No satellite scenes found matching this AOI, date range, and cloud threshold.');
       }
     } catch (err) {
-      setErrorMsg(err.message);
+      if (err.name === 'AbortError') {
+        setErrorMsg('Search request cancelled.');
+      } else {
+        setErrorMsg(err.message);
+      }
     } finally {
       setLoading(false);
+      searchAbortRef.current = null;
     }
+  };
+
+  const handleCancelSearch = () => {
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+      searchAbortRef.current = null;
+    }
+    setLoading(false);
   };
 
   const handleStageAsset = async (item, assetKey) => {
@@ -157,6 +220,37 @@ export function StacModal({
         return next;
       });
     }
+  };
+
+  const handleCancelDownload = async (stageId) => {
+    try {
+      await fetch('/api/stac/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage_id: stageId }),
+      });
+      setStagingKeys((prev) => {
+        const next = { ...prev };
+        delete next[stageId];
+        return next;
+      });
+    } catch (err) {
+      console.error('Failed to cancel download:', err);
+    }
+  };
+
+  const handleCancelAllDownloads = async () => {
+    const active = Object.values(activeDownloads).filter(
+      (d) => d.status === 'downloading' || d.status === 'starting' || d.status === 'fetching_metadata'
+    );
+    await Promise.all(active.map((d) => handleCancelDownload(d.stage_id)));
+  };
+
+  const handleCancelItemDownloads = async (item) => {
+    const activeItemDls = Object.values(activeDownloads).filter(
+      (d) => d.item_id === item.id && (d.status === 'downloading' || d.status === 'starting' || d.status === 'fetching_metadata')
+    );
+    await Promise.all(activeItemDls.map((d) => handleCancelDownload(d.stage_id)));
   };
 
   const handleDownloadAllCore = async (item) => {
@@ -309,7 +403,18 @@ export function StacModal({
           </div>
 
           <!-- Search Action -->
-          <div style=${{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+          <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
+            ${loading ? html`
+              <button
+                type="button"
+                className="stac-download-cancel-btn"
+                onClick=${handleCancelSearch}
+                style=${{ padding: '6px 12px', fontSize: '12px' }}
+                title="Abort in-flight search"
+              >
+                ✕ Cancel Search
+              </button>
+            ` : null}
             <button
               type="button"
               className="stac-search-btn"
@@ -328,40 +433,63 @@ export function StacModal({
           <!-- Active Downloads Real-time Progress Bar Panel -->
           ${Object.keys(activeDownloads).length > 0 ? html`
             <div className="stac-downloads-panel">
-              <div className="stac-downloads-header">
+              <div className="stac-downloads-header" style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>📥 Active Satellite Downloads</span>
+                  <span>📥 Satellite Downloads</span>
                   <span style=${{ fontSize: '11px', color: '#5B6B64', fontWeight: 'normal' }}>
                     (${Object.values(activeDownloads).filter((d) => d.status === 'downloading' || d.status === 'starting' || d.status === 'fetching_metadata').length} in progress)
                   </span>
                 </div>
+                ${Object.values(activeDownloads).some((d) => d.status === 'downloading' || d.status === 'starting' || d.status === 'fetching_metadata') ? html`
+                  <button
+                    type="button"
+                    className="stac-download-cancel-btn"
+                    onClick=${handleCancelAllDownloads}
+                    title="Cancel all active downloads"
+                    style=${{ padding: '2px 8px', fontSize: '10.5px' }}
+                  >
+                    ✕ Cancel All
+                  </button>
+                ` : null}
               </div>
               <div className="stac-downloads-list">
                 ${Object.values(activeDownloads).map((dl) => {
                   const isDone = dl.status === 'completed';
                   const isFail = dl.status === 'failed';
+                  const isCancelled = dl.status === 'cancelled';
+                  const isInProgress = dl.status === 'downloading' || dl.status === 'starting' || dl.status === 'fetching_metadata';
                   const pct = isDone ? 100 : (dl.percent || 0);
 
                   return html`
                     <div key=${dl.stage_id} className="stac-download-item">
                       <div className="stac-download-meta">
                         <span className="stac-download-filename" title=${dl.filename}>
-                          ${isDone ? '✓ ' : (isFail ? '✗ ' : '⏳ ')}${dl.filename}
+                          ${isDone ? '✓ ' : (isFail ? '✗ ' : (isCancelled ? '⊘ ' : '⏳ '))}${dl.filename}
                         </span>
                         <div className="stac-download-stats">
                           ${isDone ? html`
                             <span style=${{ color: '#16A34A', fontWeight: 600 }}>Staged (${dl.total_mb || dl.downloaded_mb} MB)</span>
+                          ` : isCancelled ? html`
+                            <span style=${{ color: '#D97706', fontWeight: 600 }}>Cancelled</span>
                           ` : isFail ? html`
                             <span style=${{ color: '#DC2626' }}>Failed: ${dl.error || 'Network error'}</span>
                           ` : html`
                             <span>${dl.downloaded_mb || 0} / ${dl.total_mb ? `${dl.total_mb} MB` : 'calc…'} (${Math.round(pct)}%)</span>
                             ${dl.speed_mbps ? html`<span style=${{ opacity: 0.7 }}>• ${dl.speed_mbps} MB/s</span>` : null}
+                            <button
+                              type="button"
+                              className="stac-download-cancel-btn"
+                              onClick=${() => handleCancelDownload(dl.stage_id)}
+                              title="Cancel this download"
+                            >
+                              ✕ Cancel
+                            </button>
                           `}
                         </div>
                       </div>
                       <div className="stac-progress-track">
                         <div
-                          className="stac-progress-fill ${isDone ? 'completed' : ''} ${isFail ? 'failed' : ''}"
+                          className="stac-progress-fill ${isDone ? 'completed' : ''} ${isFail ? 'failed' : ''} ${isCancelled ? 'cancelled' : ''}"
                           style=${{ width: `${Math.max(pct, isDone ? 100 : 4)}%` }}
                         ></div>
                       </div>
@@ -406,20 +534,35 @@ export function StacModal({
                         <div className="assets-drawer">
                           <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                             <span className="assets-label" style=${{ margin: 0 }}>Available Bands / Assets:</span>
-                            <button
-                              type="button"
-                              className="stage-asset-chip core-btn"
-                              onClick=${() => handleDownloadAllCore(item)}
-                              title="Download essential bands together"
-                            >
-                              ⚡ Download Core Bands (${item.collection.includes('sentinel-1') ? 'VV+VH' : 'RGB+NIR'})
-                            </button>
+                            <div style=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <button
+                                type="button"
+                                className="stage-asset-chip core-btn"
+                                onClick=${() => handleDownloadAllCore(item)}
+                                title="Download essential bands together"
+                              >
+                                ⚡ Download Core Bands (${item.collection.includes('sentinel-1') ? 'VV+VH' : 'RGB+NIR'})
+                              </button>
+                              ${Object.values(activeDownloads).some(
+                                (d) => d.item_id === item.id && (d.status === 'downloading' || d.status === 'starting' || d.status === 'fetching_metadata')
+                              ) ? html`
+                                <button
+                                  type="button"
+                                  className="stac-download-cancel-btn"
+                                  onClick=${() => handleCancelItemDownloads(item)}
+                                  title="Cancel all downloads for this scene"
+                                >
+                                  ✕ Cancel
+                                </button>
+                              ` : null}
+                            </div>
                           </div>
                           <div className="asset-buttons-row" style=${{ flexWrap: 'wrap', gap: '4px' }}>
                             ${(item.assets || []).map((a) => {
                               const stageId = `${item.id}_${a.key}`;
                               const dlInfo = activeDownloads[stageId];
-                              const isDownloading = (dlInfo && (dlInfo.status === 'downloading' || dlInfo.status === 'starting' || dlInfo.status === 'fetching_metadata')) || !!stagingKeys[stageId];
+                              const isCancelled = dlInfo && dlInfo.status === 'cancelled';
+                              const isDownloading = !isCancelled && ((dlInfo && (dlInfo.status === 'downloading' || dlInfo.status === 'starting' || dlInfo.status === 'fetching_metadata')) || !!stagingKeys[stageId]);
                               const isStaged = (dlInfo && dlInfo.status === 'completed') || !!stagedKeysRef.current[stageId];
                               const pctText = dlInfo && dlInfo.percent != null && dlInfo.percent > 0 ? `${Math.round(dlInfo.percent)}%` : 'Staging…';
 
@@ -427,12 +570,17 @@ export function StacModal({
                                 <button
                                   key=${a.key}
                                   type="button"
-                                  className="stage-asset-chip ${isStaged ? 'staged' : ''}"
-                                  disabled=${isDownloading}
-                                  onClick=${() => handleStageAsset(item, a.key)}
-                                  title=${a.description || a.title}
+                                  className="stage-asset-chip ${isStaged ? 'staged' : ''} ${isDownloading ? 'downloading' : ''}"
+                                  onClick=${() => {
+                                    if (isDownloading) {
+                                      handleCancelDownload(stageId);
+                                    } else {
+                                      handleStageAsset(item, a.key);
+                                    }
+                                  }}
+                                  title=${isDownloading ? 'Click to cancel download' : (a.description || a.title)}
                                 >
-                                  ${isDownloading ? `⏳ ${pctText}` : (isStaged ? `✓ ${a.key}` : `⬇ ${a.key}`)}
+                                  ${isDownloading ? html`<span>⏳ ${pctText} <span style=${{ color: '#EF4444', marginLeft: '3px', fontWeight: 'bold' }}>✕</span></span>` : (isStaged ? `✓ ${a.key}` : `⬇ ${a.key}`)}
                                 </button>
                               `;
                             })}

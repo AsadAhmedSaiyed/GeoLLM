@@ -2,7 +2,7 @@
 
 Ensures that:
 1. Lookups are strictly whitelisted to match the Docker container's installed packages.
-2. Uninstalled packages (like sklearn, torch, cv2) are blocked immediately with suggestions.
+2. Uninstalled packages are blocked immediately with suggestions.
 3. Live, version-accurate documentation is retrieved from Context7.
 4. Responses are cached locally to ensure 0ms latency on repeated queries.
 """
@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# EXACT WHITELIST OF PACKAGES INSTALLED IN DOCKER (geollm-runtime)
+# EXACT WHITELIST OF PACKAGES INSTALLED IN DOCKER (geollm-runtime / geollm-runtime-ts)
 DOCKER_INSTALLED_PACKAGES = {
     "affine": {"version": "3.0.1", "context7_id": "/rasterio/affine"},
     "contourpy": {"version": "1.3.3", "context7_id": "/matplotlib/contourpy"},
@@ -28,6 +28,10 @@ DOCKER_INSTALLED_PACKAGES = {
     "rasterio": {"version": "1.4.4", "context7_id": "/rasterio/rasterio"},
     "scipy": {"version": "1.17.1", "context7_id": "/scipy/scipy"},
     "shapely": {"version": "2.2.0", "context7_id": "/shapely/shapely"},
+    "scikit-learn": {"version": "1.5.2", "context7_id": "/scikit-learn/scikit-learn"},
+    "sklearn": {"version": "1.5.2", "context7_id": "/scikit-learn/scikit-learn"},
+    "statsmodels": {"version": "0.14.4", "context7_id": "/statsmodels/statsmodels"},
+    "ruptures": {"version": "1.1.9", "context7_id": "/deepcharles/ruptures"},
 }
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "runs" / ".context7_cache"
@@ -47,6 +51,8 @@ def lookup_docs(package: str, query: str) -> str:
     # Aliases
     if pkg in ("pil", "image"):
         pkg = "pillow"
+    elif pkg == "scikit-learn":
+        pkg = "sklearn"
 
     # 1. WHITELIST SECURITY CHECK: Block uninstalled packages
     if pkg not in DOCKER_INSTALLED_PACKAGES:
@@ -54,7 +60,7 @@ def lookup_docs(package: str, query: str) -> str:
         return (
             f"BLOCKED: Library '{package}' is NOT installed in the Docker execution container.\n"
             f"Installed libraries: {allowed_list}.\n"
-            f"If you need machine learning, clustering, or filtering, use 'scipy' (e.g. scipy.cluster.vq.kmeans2) or 'numpy'."
+            f"If you need machine learning, clustering, or filtering, use 'geollm_lib.classify', 'geollm_lib.series', or 'scipy'."
         )
 
     pkg_info = DOCKER_INSTALLED_PACKAGES[pkg]

@@ -4,8 +4,10 @@ from functools import lru_cache
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parent.parent / "lib" / "geollm_lib"
-MODULES = ("io", "bands", "indices", "masks", "vector", "align", "change", "viz", "stats", "result",
-           "sar", "hyperspectral", "temporal")
+MODULES = (
+    "io", "bands", "indices", "masks", "vector", "align", "change", "viz", "stats", "result",
+    "sar", "hyperspectral", "temporal", "series", "classify", "viz_ts",
+)
 
 
 def _returns(fn):
