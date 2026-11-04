@@ -173,6 +173,60 @@ def test_evaluate_quality_gate(tmp_path):
     assert gate_bad.verdict == "insufficient_data"
 
 
+def test_input_gate_blocks_all_nodata_raster(tmp_path):
+    """An all-nodata GeoTIFF must block the gate (return None) and emit
+    vision_input_gate + vision_insufficient_data with zero model calls."""
+    from harness.validation.input_gate import run_input_gate
+
+    p = tmp_path / "nodata.tif"
+    _create_synthetic_geotiff(p, np.zeros((30, 30), dtype="float32"), nodata=0.0)
+
+    events = []
+    result = run_input_gate([str(p)], on_step=events.append)
+
+    assert result is None
+    types = [e["type"] for e in events]
+    assert "vision_input_gate" in types
+    assert "vision_insufficient_data" in types
+    ins = [e for e in events if e["type"] == "vision_insufficient_data"][0]
+    assert ins["area_verified_pct"] == 0.0
+    assert any("nodata" in r["issues"][0].lower() for r in ins["reports"])
+
+
+def test_input_gate_approves_clean_raster(tmp_path):
+    """A clean GeoTIFF must pass the gate and return a QualityGateResult."""
+    from harness.validation.input_gate import run_input_gate
+
+    p = tmp_path / "good.tif"
+    _create_synthetic_geotiff(p, np.ones((30, 30), dtype="float32") * 0.3)
+
+    events = []
+    result = run_input_gate([str(p)], on_step=events.append)
+
+    assert result is not None
+    assert result.is_approved is True
+    assert result.verdict == "valid"
+    types = [e["type"] for e in events]
+    assert types.count("vision_input_gate") == 2  # started + done
+    assert "vision_insufficient_data" not in types
+
+
+def test_input_gate_ignores_non_raster_inputs(tmp_path):
+    """PNG/map outputs are not rasters — the gate must not block on them."""
+    from harness.validation.input_gate import run_input_gate
+
+    png = tmp_path / "map.png"
+    Image.new("RGB", (64, 64), color=(100, 150, 200)).save(str(png))
+
+    events = []
+    result = run_input_gate([str(png)], on_step=events.append)
+
+    # No rasters → evaluate_quality_gate returns not_valid (no rasters), which
+    # is NOT "insufficient_data", so the gate does not block.
+    assert result is not None
+    assert "vision_insufficient_data" not in [e["type"] for e in events]
+
+
 def test_extract_crop_and_side_by_side(tmp_path):
     """Crop extraction and side-by-side comparison rendering must generate correct outputs."""
     p_input = tmp_path / "input.tif"

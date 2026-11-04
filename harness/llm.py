@@ -105,72 +105,45 @@ def _openrouter(messages, show, model=None, stream=True):
     )
 
     if not stream:
-        try:
-            r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
-            if r.status_code == 429:
-                raise RuntimeError("OpenRouter rate limit reached (429). Wait briefly and try again.")
-            if r.status_code != 200:
-                raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:500]}")
-            res_json = r.json()
-            if "error" in res_json:
-                err = res_json["error"]
-                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                raise RuntimeError(f"OpenRouter error: {msg}")
-            choices = res_json.get("choices") or []
-            if not choices:
-                raise RuntimeError("OpenRouter returned no choices.")
-            msg = choices[0].get("message") or {}
-            text = msg.get("content") or msg.get("reasoning") or ""
-            if show and text:
-                print(text)
-            if not text:
-                if _DEBUG_VISION:
-                    import json as _json
-                    _finish = choices[0].get("finish_reason") if choices else "N/A"
-                    _usage = res_json.get("usage", {})
-                    _msg_keys = list(msg.keys()) if msg else []
-                    _raw_snippet = _json.dumps(res_json)[:2000]
-                    _dv(
-                        "[LLM empty-response] status=%s finish_reason=%r usage=%s model=%r provider=%r msg_keys=%s raw(2000)=%s",
-                        r.status_code,
-                        _finish,
-                        _usage,
-                        res_json.get("model"),
-                        res_json.get("provider"),
-                        _msg_keys,
-                        _raw_snippet,
-                    )
-                raise RuntimeError("OpenRouter returned an empty response.")
-            print(f"[GeoLLM] OpenRouter ← response received ({len(text)} characters)", flush=True)
+        r = _post_with_retries(OPENROUTER_URL, headers, payload, stream=False, timeout=120)
+        if r.status_code != 200:
+            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:500]}")
+        res_json = r.json()
+        if "error" in res_json:
+            err = res_json["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"OpenRouter error: {msg}")
+        choices = res_json.get("choices") or []
+        if not choices:
+            raise RuntimeError("OpenRouter returned no choices.")
+        msg = choices[0].get("message") or {}
+        text = msg.get("content") or msg.get("reasoning") or ""
+        if show and text:
+            print(text)
+        if not text:
             if _DEBUG_VISION:
-                _dv("[LLM response] chars=%d preview=%r", len(text), text[:200])
-            return text
-        except requests.RequestException as e:
-            raise RuntimeError(f"OpenRouter non-streaming connection failed: {e}")
+                import json as _json
+                _finish = choices[0].get("finish_reason") if choices else "N/A"
+                _usage = res_json.get("usage", {})
+                _msg_keys = list(msg.keys()) if msg else []
+                _raw_snippet = _json.dumps(res_json)[:2000]
+                _dv(
+                    "[LLM empty-response] status=%s finish_reason=%r usage=%s model=%r provider=%r msg_keys=%s raw(2000)=%s",
+                    r.status_code,
+                    _finish,
+                    _usage,
+                    res_json.get("model"),
+                    res_json.get("provider"),
+                    _msg_keys,
+                    _raw_snippet,
+                )
+            raise RuntimeError("OpenRouter returned an empty response.")
+        print(f"[GeoLLM] OpenRouter ← response received ({len(text)} characters)", flush=True)
+        if _DEBUG_VISION:
+            _dv("[LLM response] chars=%d preview=%r", len(text), text[:200])
+        return text
 
-    try:
-        r = requests.post(
-            OPENROUTER_URL,
-            headers=headers,
-            json=payload,
-            timeout=120,
-            stream=True,
-        )
-    except requests.Timeout:
-        raise RuntimeError("OpenRouter request timed out after 120 seconds.")
-    except requests.RequestException as e:
-        raise RuntimeError(f"OpenRouter connection failed: {e}")
-
-    if r.status_code == 429:
-        raise RuntimeError(
-            "OpenRouter rate limit reached (429). "
-            "Wait briefly and try again."
-        )
-
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"OpenRouter error {r.status_code}: {r.text[:500]}"
-        )
+    r = _post_with_retries(OPENROUTER_URL, headers, payload, stream=True, timeout=120)
 
     parts = []
 
@@ -239,6 +212,85 @@ def _openrouter(messages, show, model=None, stream=True):
 
     return text
 
+
+
+def _post_with_retries(url, headers, payload, stream, timeout):
+    """POST to OpenRouter with 429/backoff retry.
+
+    OpenRouter rate-limits aggressively (38 HTTP 429s were observed in a
+    single validation run).  Retrying with exponential backoff lets a
+    transient burst clear instead of failing the whole image.  After the
+    final retry the caller is responsible for turning the failure into a
+    ``not_verified`` verdict — this helper raises ``RuntimeError`` so the
+    agentic loop can catch it.
+    """
+    import time as _time
+
+    max_attempts = int(os.environ.get("GEOLLM_VISION_429_RETRIES", "3"))
+    base_delay = float(os.environ.get("GEOLLM_VISION_429_BACKOFF_S", "2.0"))
+
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout, stream=stream)
+        except requests.Timeout:
+            raise RuntimeError("OpenRouter request timed out after 120 seconds.")
+        except requests.RequestException as e:
+            raise RuntimeError(f"OpenRouter connection failed: {e}")
+
+        if r.status_code == 429:
+            last_exc = RuntimeError(
+                "OpenRouter rate limit reached (429). "
+                "Wait briefly and try again."
+            )
+            if attempt < max_attempts:
+                delay = base_delay * (2 ** (attempt - 1))
+                print(f"[GeoLLM] 429 rate limited; retrying in {delay:.0f}s "
+                      f"(attempt {attempt}/{max_attempts})", flush=True)
+                _time.sleep(delay)
+                continue
+            raise last_exc
+
+        if r.status_code != 200:
+            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:500]}")
+
+        return r
+
+    raise last_exc or RuntimeError("OpenRouter request failed after retries.")
+
+
+def chat_vision_multi(messages, images, model=None, show=False):
+    """Multi-turn vision chat.
+
+    ``messages`` is the FULL alternating conversation history
+    (``{"role": "user"|"assistant", "content": ...}``).  ``images`` is a list
+    of absolute image paths; they are attached to the **last** user message
+    only, so the model sees a real multi-turn conversation with images on
+    the turns that actually need them.
+
+    This replaces the one-shot ``chat_vision(prompt, image_paths)`` call the
+    agentic loop was using, which threw away every previous turn.
+    """
+    if not vision_available():
+        raise RuntimeError("No vision model configured (set GEOLLM_VISION_MODEL).")
+
+    if not messages:
+        raise RuntimeError("chat_vision_multi: no messages provided.")
+
+    prepared = list(messages)
+    last = dict(prepared[-1])
+    if images:
+        content = [{"type": "text", "text": last.get("content", "") or ""}]
+        for p in images:
+            b64 = base64.b64encode(open(p, "rb").read()).decode()
+            content.append(
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{b64}"}}
+            )
+        last["content"] = content
+    prepared[-1] = last
+
+    return _openrouter(prepared, show, model=model or VISION_MODEL, stream=False)
 
 
 def chat(messages, fmt=None, show=True):

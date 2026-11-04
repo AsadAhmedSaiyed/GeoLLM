@@ -269,12 +269,12 @@ class TestConsensusIntegration:
         ]
         turn_iter = iter(turns)
 
-        def mock_llm(prompt: str, images: list[str]) -> str:
+        def mock_llm(conversation, images):
             return next(turn_iter)
 
         events = []
         with mock.patch("harness.llm.vision_available", return_value=True), \
-             mock.patch("harness.llm.chat_vision", side_effect=mock_llm), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=mock_llm), \
              mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic", "GEOLLM_CONSENSUS_ENABLED": "1"}):
             verdicts = validate_artifacts(task, tmp_path, ["map.png"], tmp_path / "feedback", on_step=events.append)
 
@@ -303,12 +303,12 @@ class TestConsensusIntegration:
         ]
         turn_iter = iter(turns)
 
-        def mock_llm(prompt: str, images: list[str]) -> str:
+        def mock_llm(conversation, images):
             return next(turn_iter)
 
         events = []
         with mock.patch("harness.llm.vision_available", return_value=True), \
-             mock.patch("harness.llm.chat_vision", side_effect=mock_llm), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=mock_llm), \
              mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic", "GEOLLM_CONSENSUS_ENABLED": "0"}):
             verdicts = validate_artifacts(task, tmp_path, ["map.png"], tmp_path / "feedback", on_step=events.append)
 

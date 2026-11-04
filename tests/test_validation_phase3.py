@@ -153,13 +153,14 @@ class TestAgenticLoop:
 
         responses = iter(scripted_responses)
 
-        def mock_llm(prompt, images):
+        def mock_llm(conversation, images):
+            # New signature: chat_vision_multi(conversation, images)
             return next(responses)
 
         events = []
         env = {"GEOLLM_VALIDATION_MODE": "agentic", **(env_extra or {})}
         with mock.patch("harness.llm.vision_available", return_value=True), \
-             mock.patch("harness.llm.chat_vision", side_effect=mock_llm), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=mock_llm), \
              mock.patch.dict(os.environ, env):
             result = validate_artifacts(task, tmp_path, ["map.png"], feedback,
                                         on_step=events.append)
@@ -201,22 +202,23 @@ class TestAgenticLoop:
         assert result[0]["status"] == "insufficient_data"
         assert "Cloud cover" in result[0]["issues"][0]
 
-    def test_llm_failure_returns_skipped(self, tmp_path):
+    def test_llm_failure_returns_not_verified(self, tmp_path):
         from harness.validation.agent import validate_artifacts
 
         png = _make_png(tmp_path / "map.png")
         task = _task()
 
-        def failing_llm(prompt, images):
+        def failing_llm(conversation, images):
             raise RuntimeError("Network error")
 
         with mock.patch("harness.llm.vision_available", return_value=True), \
-             mock.patch("harness.llm.chat_vision", side_effect=failing_llm), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=failing_llm), \
              mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
             result = validate_artifacts(task, tmp_path, ["map.png"],
                                         tmp_path / "feedback")
-        assert result[0]["status"] == "skipped"
-        assert "failed" in result[0]["issues"][0].lower()
+        # A provider failure that survives retries must NOT be "ok" or "skipped"
+        assert result[0]["status"] == "not_verified"
+        assert "LLM call failed" in result[0]["issues"][0]
 
     def test_no_vision_model_returns_skipped(self, tmp_path):
         from harness.validation.agent import validate_artifacts
@@ -230,15 +232,19 @@ class TestAgenticLoop:
                                         tmp_path / "feedback")
         assert result[0]["status"] == "skipped"
 
-    def test_malformed_response_gets_nudged_then_finish(self, tmp_path):
-        """If the model returns garbage, the loop sends a nudge and tries again."""
+    def test_malformed_response_gets_nudged_then_not_verified(self, tmp_path):
+        """If the model returns garbage twice, the loop ends as not_verified.
+
+        Old behaviour: one nudge, then finish() with no marks → "ok".
+        New behaviour: one nudge, second failure → not_verified.
+        """
         responses = [
             "Sorry, I cannot help.",                          # garbage turn 1
-            _json_block("finish", {"summary": "done"}),       # valid after nudge
+            "Still no tool call.",                            # garbage turn 2
         ]
         result, _ = self._call(tmp_path, responses)
-        # finish without any marks → budget not exhausted, tiles=0, no wrong → ok
-        assert result[0]["status"] == "ok"
+        assert result[0]["status"] == "not_verified"
+        assert "parseable tool call" in result[0]["issues"][0]
 
     def test_budget_exhaustion_returns_verdict(self, tmp_path):
         """Loop terminates when step budget is hit; result is never None."""
@@ -246,8 +252,10 @@ class TestAgenticLoop:
         responses = [_json_block("make_grid", {"rows": 1, "cols": 1})] * 30
         result, _ = self._call(tmp_path, responses,
                                env_extra={"GEOLLM_VALIDATION_STEP_BUDGET": "3"})
+        # Budget exhaustion auto-calls finish() with no tiles inspected, so
+        # 0% verified → not_verified (never "ok").
         assert result[0]["status"] in ("ok", "skipped", "needs_revision",
-                                       "insufficient_data")
+                                       "insufficient_data", "not_verified")
 
     def test_multi_png_capped_at_3(self, tmp_path):
         """Only first 3 PNGs are validated (mirrors legacy behaviour)."""
@@ -262,13 +270,13 @@ class TestAgenticLoop:
         task = _task()
         call_count = 0
 
-        def counting_llm(prompt, images):
+        def counting_llm(conversation, images):
             nonlocal call_count
             call_count += 1
             return _json_block("finish", {"summary": "done"})
 
         with mock.patch("harness.llm.vision_available", return_value=True), \
-             mock.patch("harness.llm.chat_vision", side_effect=counting_llm), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=counting_llm), \
              mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
             result = validate_artifacts(task, tmp_path, pngs, tmp_path / "feedback")
         assert len(result) == 3
@@ -282,6 +290,43 @@ class TestAgenticLoop:
             result = validate_artifacts(task, tmp_path, ["does_not_exist.png"],
                                         tmp_path / "feedback")
         assert result[0]["status"] == "skipped"
+
+    def test_conversation_grows_and_images_only_on_crop_turns(self, tmp_path):
+        """n_messages must grow across turns; image_count is 1 on overview & crop turns."""
+        from harness.validation.agent import validate_artifacts
+
+        png = _make_png(tmp_path / "map.png")
+        _make_tif(tmp_path / "map.tif")   # crop() needs a raster to extract from
+        feedback = tmp_path / "feedback"
+        task = _task()
+
+        calls = []  # list of (n_messages, image_count)
+
+        def tracking_llm(conversation, images):
+            calls.append((len(conversation), len(images)))
+            # Turn 0 (overview): make_grid
+            if len(calls) == 1:
+                return _json_block("make_grid", {"rows": 1, "cols": 1})
+            # Turn 1 (post make_grid): crop tile T0_0
+            if len(calls) == 2:
+                return _json_block("crop", {"tile_id": "T0_0"})
+            # Turn 2 (post crop): finish
+            return _json_block("finish", {"summary": "done"})
+
+        with mock.patch("harness.llm.vision_available", return_value=True), \
+             mock.patch("harness.llm.chat_vision_multi", side_effect=tracking_llm), \
+             mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
+            validate_artifacts(task, tmp_path, ["map.png"], feedback)
+
+        # Conversation must grow monotonically across turns.
+        msg_counts = [c[0] for c in calls]
+        assert all(b > a for a, b in zip(msg_counts, msg_counts[1:])), msg_counts
+        # Turn 0: overview attached (image_count == 1).
+        # Turn 1: after make_grid, no image attached (image_count == 0).
+        # Turn 2: after crop, the crop image is attached (image_count == 1).
+        assert calls[0][1] == 1   # overview
+        assert calls[1][1] == 0   # make_grid result (no image)
+        assert calls[2][1] == 1   # crop result (crop image attached)
 
     def test_sse_events_emitted(self, tmp_path):
         """vision_check started/done events must be forwarded."""

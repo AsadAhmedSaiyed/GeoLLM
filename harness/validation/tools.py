@@ -101,6 +101,14 @@ class InspectionSession:
     finish_called: bool = False
     finish_summary: str = ""
 
+    # True when the loop bailed out because the model could not emit a
+    # parseable tool call (prose, a hallucinated ``call_tool``, a
+    # ``tool_code`` reply...).  ``finish()`` cannot express this on its own,
+    # so the session carries it and ``_session_to_verdict`` maps it to
+    # ``not_verified`` — which must never be reported as ``ok``.
+    not_verified: bool = False
+    not_verified_reason: str = ""
+
     # SSE event queue – caller drains this after each tool call
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -374,6 +382,11 @@ def crop(
             "tile_id": resolved_tid,
             "zoom_level": zoom_level,
             "thumb_url": rel_url,
+            # The image PATH is the contract the agentic loop uses: the loop
+            # attaches this file to the next user message as a real image
+            # attachment instead of embedding image_b64 as text inside the
+            # JSON tool result (which the model could never actually see).
+            "image_path": str(saved),
             "image_b64": b64,
             "bbox_norm": list(resolved_bbox_norm),
             "message": (

@@ -234,6 +234,31 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
     try:
         prompt = _build_prompt(cfg, question, files, facts, overrides, explain)
         step({"type": "status", "status": "running"})
+
+        # ---- Preflight input quality gate (Phase 1e) ---------------------------
+        # Runs on the real uploaded paths before ANY model call.  If the
+        # inputs are unusable (nodata / cloud / multi-date intersection below
+        # thresholds) the gate emits vision_input_gate + vision_insufficient_data
+        # and stops here — the Pi agent is never invoked.
+        try:
+            from harness.validation.input_gate import run_input_gate
+            gate = run_input_gate(files, on_step=step)
+            if gate is None:
+                warnings.append(
+                    "Input quality gate blocked execution: insufficient data in "
+                    "the uploaded rasters. No model call was made."
+                )
+                return _result(
+                    "failed",
+                    "Input quality gate blocked execution: insufficient data in the "
+                    "uploaded rasters.",
+                    run_dir,
+                    warnings=warnings,
+                )
+        except Exception as exc:
+            warnings.append(f"Input quality gate error: {exc}")
+        # ------------------------------------------------------------------------
+
         stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
                               cfg.max_tool_calls, on_event)
         answer = pi.last_assistant_text()
@@ -336,17 +361,32 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 bad = [v for v in verdicts if v.get("status") == "needs_revision"]
                 skipped = [v for v in verdicts if v.get("status") == "skipped"]
                 passed = [v for v in verdicts if v.get("status") == "ok"]
+                # not_verified / insufficient_data are NOT "ok" — they mean the
+                # model could not confirm the output, or the input was unusable.
+                failed = [v for v in verdicts
+                          if v.get("status") in ("not_verified", "insufficient_data")]
 
                 vision_log.append({
                     "round": attempt + 1,
                     "checked": len(verdicts),
                     "bad": [{"file": v["file"], "issues": v.get("issues", [])} for v in bad],
+                    "failed": [{"file": v["file"], "status": v.get("status"),
+                                "issues": v.get("issues", [])} for v in failed],
                     "skipped": [{"file": v["file"], "reason": v.get("recommended_action", "")} for v in skipped]
                 })
 
                 if skipped:
                     reason = skipped[0].get("recommended_action", "unknown vision error")
                     warnings.append(f"Vision check warning: {reason}")
+
+                if failed:
+                    for v in failed:
+                        warnings.append(
+                            f"Vision check failed for {v['file']}: "
+                            f"{v.get('status')} — {'; '.join(map(str, v.get('issues', [])))}"
+                        )
+                    session_problem = True
+                    break
 
                 if not bad:
                     break

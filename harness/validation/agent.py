@@ -61,6 +61,12 @@ _DEFAULT_MAX_TURNS: int = 20
 _DEFAULT_OVERVIEW_MAX_PX: int = 768
 _MAX_PNGS_PER_RUN: int = 3   # mirrors legacy visual_check.py cap
 
+# The single allowed nudge when the model replies without a tool call.
+NUDGE_PROMPT = (
+    "Your previous response did not contain a valid ```json ...``` tool call block. "
+    "Reply ONLY with a JSON block: {\"tool\": \"<name>\", \"args\": {...}}"
+)
+
 
 # ---------------------------------------------------------------------------
 # Raster discovery
@@ -269,6 +275,16 @@ def _build_system_prompt(task_name: str, task_description: str, image_name: str)
 
 def _session_to_verdict(session: InspectionSession, rel: str) -> Dict[str, Any]:
     """Convert a finished InspectionSession to the legacy check_images() dict."""
+    # Model could not emit a parseable tool call (prose, call_tool, tool_code).
+    # This must never be reported as "ok".
+    if session.not_verified:
+        return {
+            "file": rel,
+            "status": "not_verified",
+            "issues": [session.not_verified_reason or "Model did not emit a parseable tool call."],
+            "recommended_action": "Re-run validation; check model provider and prompt.",
+        }
+
     if session.aborted:
         return {
             "file": rel,
@@ -309,11 +325,18 @@ def _session_to_verdict(session: InspectionSession, rel: str) -> Dict[str, Any]:
         issues = [f"Tile {t.tile_id}: {t.rationale} ({t.verdict})" for t in review]
         recommended = f"{len(review)} tile(s) require manual review ({', '.join(set(t.verdict for t in review))})."
     else:
-        status = "ok"
-        issues = []
-        recommended = (
-            f"Validation passed. {session.verified_area_pct():.0f}% of area verified."
-        )
+        # 0% verified MUST NOT be "ok".  This happens when the model calls
+        # finish() without ever marking any tile (e.g. finish() on turn 1).
+        if session.verified_area_pct() == 0.0:
+            status = "not_verified"
+            issues = ["No tiles were inspected before finish() was called."]
+            recommended = "Re-run validation; the model completed without inspecting any region."
+        else:
+            status = "ok"
+            issues = []
+            recommended = (
+                f"Validation passed. {session.verified_area_pct():.0f}% of area verified."
+            )
 
     return {
         "file": rel,
@@ -335,7 +358,7 @@ def _run_agentic_loop(
     task: Any,
     on_step: Callable,
     cfg: ValidationConfig,
-    llm_call: Callable[[str, List[str]], str],
+    llm_call: Callable[[List[Dict[str, Any]], List[str]], str],
     max_turns: int,
 ) -> Dict[str, Any]:
     """Run the multi-turn tool-call loop for one PNG.
@@ -343,8 +366,11 @@ def _run_agentic_loop(
     Parameters
     ----------
     llm_call:
-        Callable with signature ``(prompt, image_paths) -> str``.
-        Injected so tests can mock without touching the network.
+        Callable with signature ``(conversation, image_paths) -> str``.
+        ``conversation`` is a list of {"role": "user"|"assistant", "content": ...}
+        messages (the full history).  ``image_paths`` are attached to the
+        last user message.  Injected so tests can mock without touching
+        the network.
 
     Returns
     -------
@@ -373,10 +399,24 @@ def _run_agentic_loop(
         image_name=rel,
     )
 
-    # First turn includes the overview image; subsequent turns are text-only
-    turn_prompt = system_prompt
+    # The conversation is the REAL multi-turn history.  It is sent in full on
+    # every turn so the model remembers make_grid / crop / mark_result from
+    # earlier turns.  (The previous implementation built this list and then
+    # never sent it — each turn was a one-shot chat_vision call.)
+    conversation: List[Dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": (
+            f"Image under inspection: {rel}\n"
+            "Begin by calling make_grid() to plan your inspection."
+        )},
+    ]
+    # Images attach only to the turn that needs them: the overview on turn
+    # 0, and a crop after the crop() tool returns.  The overview is NOT
+    # re-attached on every turn — that burned ~300 KB of image payload per
+    # turn and was one cause of the 429 storm.
     image_paths_for_turn: List[str] = [str(overview_path)]
-    conversation: List[Dict[str, str]] = []
+    nudges_used = 0
+    max_nudges = 1
 
     for turn_idx in range(max_turns):
         if session.finish_called or session.aborted:
@@ -388,19 +428,18 @@ def _run_agentic_loop(
         _t0 = time.time()
         if _DEBUG_VISION_AGENT:
             _dva(
-                "[agent turn %d] frame=%r prompt_len=%d image_count=%d prompt_preview=%r",
-                turn_idx, rel, len(turn_prompt), len(image_paths_for_turn), turn_prompt[:200],
+                "[agent turn %d] frame=%r n_messages=%d image_count=%d",
+                turn_idx, rel, len(conversation), len(image_paths_for_turn),
             )
         try:
-            raw_response = llm_call(turn_prompt, image_paths_for_turn)
+            raw_response = llm_call(conversation, image_paths_for_turn)
         except Exception as exc:  # noqa: BLE001
+            # A 429 that survived retry, or any other provider failure, must
+            # NOT be reported as "ok".  Surface it as not_verified.
             logger.warning("agent: LLM call failed on turn %d for %s: %s", turn_idx, rel, exc)
-            return {
-                "file": rel,
-                "status": "skipped",
-                "issues": [f"Vision model call failed: {exc}"],
-                "recommended_action": "Check GEOLLM_VISION_MODEL and OPENROUTER_API_KEY.",
-            }
+            session.not_verified = True
+            session.not_verified_reason = f"LLM call failed: {exc}"
+            break
 
         if _DEBUG_VISION_AGENT:
             _elapsed = time.time() - _t0
@@ -416,24 +455,49 @@ def _run_agentic_loop(
                 _dva("[agent turn %d] frame=%r tool_call=%r args=%r", turn_idx, rel, parsed.get("tool"), parsed.get("args"))
             else:
                 _dva("[agent turn %d] frame=%r no tool call parsed", turn_idx, rel)
+
+        # ---- Unparseable reply: at most ONE nudge, then not_verified ----
         if parsed is None:
+            if nudges_used < max_nudges:
+                nudges_used += 1
+                logger.warning(
+                    "agent: turn %d — no tool call found for %s; nudging once.",
+                    turn_idx, rel,
+                )
+                conversation.append({"role": "user", "content": NUDGE_PROMPT})
+                image_paths_for_turn = []
+                continue
+            # Second parse failure: bail out as not_verified rather than
+            # burning the remaining 20-turn budget on a hallucinated
+            # ``call_tool`` / ``tool_code`` loop.
             logger.warning(
-                "agent: turn %d — no tool call found in response for %s; finishing.",
-                turn_idx,
-                rel,
+                "agent: turn %d — still no tool call for %s; marking not_verified.",
+                turn_idx, rel,
             )
-            # Give the model one more chance with an explicit nudge
-            turn_prompt = (
-                "Your previous response did not contain a valid ```json ...``` tool call block. "
-                "Reply ONLY with a JSON block: {\"tool\": \"<name>\", \"args\": {...}}"
+            session.not_verified = True
+            session.not_verified_reason = (
+                "Model did not emit a parseable tool call after a nudge."
             )
-            image_paths_for_turn = []
-            continue
+            break
 
         tool_name = parsed.get("tool", "")
         tool_args = parsed.get("args", {})
         if not isinstance(tool_args, dict):
             tool_args = {}
+
+        # Reject hallucinated tools (e.g. gemini's ``call_tool`` /
+        # ``tool_code`` replies) explicitly instead of silently dispatching
+        # them and feeding the "Unknown tool" error back as a new turn.
+        if tool_name not in TOOL_REGISTRY:
+            logger.warning(
+                "agent: turn %d — unknown tool %r requested for %s; marking not_verified.",
+                turn_idx, tool_name, rel,
+            )
+            session.not_verified = True
+            session.not_verified_reason = (
+                f"Model requested unknown tool {tool_name!r}."
+            )
+            break
 
         result = dispatch_tool(session, tool_name, tool_args)
 
@@ -441,10 +505,17 @@ def _run_agentic_loop(
         for ev in session.drain_events():
             on_step(ev)
 
-        # Build next turn: show the tool result as user context
-        turn_prompt = f"Tool result for {tool_name!r}:\n```json\n{json.dumps(result, default=str)}\n```\nContinue inspection. Reply with the next tool call."
-        # Keep overview image attached so vision model doesn't lose visual context on multi-turn tool calls
-        image_paths_for_turn = [str(overview_path)]
+        # Build next turn: show the tool result as user context.
+        # If crop() produced an image, attach it as a REAL image to this
+        # message (the model then actually sees the comparison panels).
+        crop_image = result.get("image_path") if isinstance(result, dict) else None
+        image_paths_for_turn = [crop_image] if crop_image else []
+
+        conversation.append({"role": "user", "content": (
+            f"Tool result for {tool_name!r}:\n```json\n"
+            f"{json.dumps(result, default=str)}\n```\n"
+            "Continue inspection. Reply with the next tool call."
+        )})
 
     # Ensure session is terminated even if loop exhausted without finish/abort
     if not session.finish_called and not session.aborted:
@@ -601,7 +672,7 @@ def validate_artifacts(
                 task=task,
                 on_step=_on_step,
                 cfg=_cfg,
-                llm_call=_llm.chat_vision,
+                llm_call=_llm.chat_vision_multi,
                 max_turns=max_turns,
             )
 
