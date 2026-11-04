@@ -28,7 +28,10 @@ class Config:
     verbose: bool
     vision_max_retries: int
     max_concurrent_tasks: int
-
+    # Phase 3 — agentic validation settings
+    validation_mode: str             # "legacy" | "agentic"
+    validation_step_budget: int      # max tool-call steps per image
+    validation_cost_limit_usd: float # per-run cost ceiling in USD
 
     @property
     def tool_timeout_s(self) -> int:
@@ -58,4 +61,8 @@ def load_config() -> Config:
         verbose=os.environ.get("GEOLLM_PI_VERBOSE", "1") != "0",
         vision_max_retries=_f("GEOLLM_VISION_MAX_RETRIES", 2),
         max_concurrent_tasks=_f("GEOLLM_MAX_CONCURRENT_TASKS", 3),
+        # Phase 3
+        validation_mode=os.environ.get("GEOLLM_VALIDATION_MODE", "legacy"),
+        validation_step_budget=_f("GEOLLM_VALIDATION_STEP_BUDGET", 12),
+        validation_cost_limit_usd=_f("GEOLLM_VALIDATION_COST_LIMIT_USD", 0.20),
     )

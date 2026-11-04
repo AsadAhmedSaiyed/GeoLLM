@@ -1,6 +1,8 @@
 import { html, React } from '../html.js';
 import { MarkdownView } from './MarkdownView.js';
 import { TimeSeriesPanel } from './TimeSeriesPanel.js';
+import { Terrain3DViewer } from './Terrain3DViewer.js?v=20261102_lidar_fix';
+import { ValidationViewer } from './ValidationViewer.js';
 
 const { useState, useRef, useEffect } = React;
 
@@ -19,6 +21,7 @@ export function SingleWorkerSlot({
   const [revisionFeedback, setRevisionFeedback] = useState('');
   const [showLogs, setShowLogs] = useState(true);
   const [timelineFrame, setTimelineFrame] = useState(null);
+  const [showTerrain3D, setShowTerrain3D] = useState(false);
   const activityRef = useRef(null);
 
   // Auto-scroll activity feed to bottom as new events arrive
@@ -49,6 +52,32 @@ export function SingleWorkerSlot({
   const hasTimeline = artifacts.some(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
     return name.toLowerCase().includes('timeline.json');
+  });
+  const terrain3dArt = artifacts.find(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return name.toLowerCase().includes('terrain_3d.json');
+  });
+  const isLidar = artifacts.some(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return ['lidar', 'chm', 'las', 'laz', 'canopy', 'above_ground', 'height_classes', 'vegetation_height', 'flat_ground'].some(k => name.toLowerCase().includes(k));
+  }) || (task.files || []).some(f => ['lidar', 'chm', 'las', 'laz', 'canopy', 'above_ground', 'autzen'].some(k => (f || '').toLowerCase().includes(k)))
+  || (task.prompt || '').toLowerCase().includes('lidar')
+  || (task.prompt || '').toLowerCase().includes('canopy')
+  || (task.prompt || '').toLowerCase().includes('height audit')
+  || (task.prompt || '').toLowerCase().includes('tallest structures')
+  || (task.prompt || '').toLowerCase().includes('flat ground')
+  || (task.prompt || '').toLowerCase().includes('vegetation')
+  || (task.prompt || '').toLowerCase().includes('buildings')
+  || (task.prompt || '').toLowerCase().includes('stadium');
+
+  const hasRaster = artifacts.some(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return name.toLowerCase().endsWith('.tif');
+  }) || (task.files || []).some(f => (f || '').toLowerCase().endsWith('.tif') || (f || '').toLowerCase().endsWith('.laz') || (f || '').toLowerCase().endsWith('.las'));
+  const canShow3D = !!terrain3dArt || hasRaster || (artifacts.length > 0);
+  const profileSvgArt = artifacts.find(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return name.toLowerCase().includes('profile.svg') || (name.toLowerCase().includes('profile') && name.toLowerCase().endsWith('.svg'));
   });
   const isDone = task.status === 'done';
   const isFailed = task.status === 'failed';
@@ -230,33 +259,58 @@ export function SingleWorkerSlot({
       <!-- Deliverables Section -->
       ${artifacts.length > 0 ? html`
         <div className="task-deliverables-card">
-          <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
             <span style=${{ fontWeight: 600, fontSize: '13px' }}>
               Generated Deliverables (${artifacts.length} files)
             </span>
-            <button
-              type="button"
-              className="btn s primary"
-              style=${{ fontSize: '11px', backgroundColor: '#0F766E', color: '#FFFFFF' }}
-              onClick=${() => onSwitchToGlobe && onSwitchToGlobe()}
-              title="View all outputs overlaid on the 3D Globe"
-            >
-              \ud83c\udf0d View on 3D Globe
-            </button>
+            <div style=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              ${canShow3D ? html`
+                <button
+                  type="button"
+                  className="btn s"
+                  style=${{ fontSize: '11px', backgroundColor: isLidar ? '#047857' : '#0284C7', color: '#FFFFFF', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick=${() => setShowTerrain3D(true)}
+                  title=${isLidar ? "Open interactive 3D LiDAR Canopy & Structures Inspector" : "Open interactive 3D terrain viewer"}
+                >
+                  ${isLidar ? '🌲 View 3D LiDAR & Canopy' : '🏔️ View 3D Terrain'}
+                </button>
+              ` : null}
+              <button
+                type="button"
+                className="btn s primary"
+                style=${{ fontSize: '11px', backgroundColor: '#0F766E', color: '#FFFFFF' }}
+                onClick=${() => onSwitchToGlobe && onSwitchToGlobe()}
+                title="View all outputs overlaid on the 3D Globe"
+              >
+                🌍 View on 3D Globe
+              </button>
+            </div>
           </div>
+
+          <!-- Embedded Elevation Cross-Section Chart if available -->
+          ${profileSvgArt ? html`
+            <div style=${{ marginBottom: '12px', background: '#0F172A', borderRadius: '8px', padding: '10px', border: '1px solid #1E293B', textAlign: 'center' }}>
+              <img
+                src=${profileSvgArt.url || `/api/tasks/${taskId || task.id}/artifacts/${getBasename(typeof profileSvgArt === 'string' ? profileSvgArt : profileSvgArt.name)}`}
+                alt="Elevation Cross-Section Profile"
+                style=${{ maxWidth: '100%', height: 'auto', display: 'block', margin: '0 auto', borderRadius: '6px' }}
+              />
+            </div>
+          ` : null}
+
           <div className="deliverables-grid">
             ${artifacts.map((art, idx) => {
               const fname = typeof art === 'string' ? art : art.name || 'file';
               const artUrl = typeof art === 'string' ? null : art.url;
               const ext = fname.toLowerCase().split('.').pop();
               const isTif = ext === 'tif' || ext === 'tiff';
-              const isImg = ext === 'png' || ext === 'gif' || ext === 'webp';
+              const isImg = ext === 'png' || ext === 'gif' || ext === 'webp' || ext === 'svg';
               const isPreviewable = isTif || isImg;
               // Non-previewable: json, geojson, csv, txt → trigger download
               const downloadUrl = artUrl || `/runs/${fname}`;
               return html`
                 <div key=${idx} className="deliverable-chip">
-                  <span className="file-icon">${isTif ? '\ud83d\uddfa\ufe0f' : isImg ? '\ud83d\uddbc\ufe0f' : '\ud83d\udcc4'}</span>
+                  <span className="file-icon">${isTif ? '🗺️' : isImg ? '🖼️' : '📄'}</span>
                   <span className="file-name mono" title=${fname} style=${{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${fname.split(/[/\\]/).pop()}</span>
                   <div style=${{ flexShrink: 0, display: 'flex', gap: '4px' }}>
                     ${isPreviewable ? html`
@@ -286,7 +340,7 @@ export function SingleWorkerSlot({
                         }}
                         title="Overlay on 3D Globe"
                       >
-                        \ud83c\udf0d
+                        🌍
                       </button>
                     ` : null}
                   </div>
@@ -295,6 +349,20 @@ export function SingleWorkerSlot({
             })}
           </div>
         </div>
+      ` : null}
+
+      <!-- Interactive 3D Terrain Viewer Modal -->
+      ${canShow3D ? html`
+        <${Terrain3DViewer}
+          isOpen=${showTerrain3D}
+          onClose=${() => setShowTerrain3D(false)}
+          payloadUrl=${terrain3dArt ? (terrain3dArt.url || `/api/tasks/${taskId || task.id}/artifacts/${getBasename(typeof terrain3dArt === 'string' ? terrain3dArt : terrain3dArt.name)}`) : `/api/runs/${taskId || task.id}/terrain_3d.json`}
+          availableTextures=${artifacts.filter(a => {
+            const n = (typeof a === 'string' ? a : a.name || '').toLowerCase();
+            return (n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.tif')) && !n.includes('profile.svg') && !n.includes('terrain_3d');
+          })}
+          title=${isLidar ? "Interactive 3D LiDAR Canopy & Structures" : "Interactive 3D Digital Elevation Model"}
+        />
       ` : null}
 
       <!-- Collapsible Execution Activity Feed -->
@@ -416,6 +484,8 @@ export function SingleWorkerSlot({
                       ` : null}
                     </div>
                   `;
+                } else if (act.type && act.type.startsWith('vision_')) {
+                  return html`<${ValidationViewer} key=${i} activity=${act} />`;
                 }
                 return null;
               })}

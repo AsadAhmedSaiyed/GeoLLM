@@ -6,6 +6,17 @@ import time
 
 import requests
 
+import logging as _logging
+_dvlog = _logging.getLogger("geollm.debug_vision")
+_DEBUG_VISION = os.environ.get("GEOLLM_DEBUG_VISION", "") == "1"
+
+
+def _dv(msg: str, *args) -> None:
+    """Emit a debug-vision log line only when GEOLLM_DEBUG_VISION=1."""
+    if _DEBUG_VISION:
+        _dvlog.debug(msg, *args)
+
+
 PROVIDER = os.environ.get("LLM_PROVIDER", "ollama")          # ollama | openrouter | pi
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -34,31 +45,108 @@ def _ollama(messages, fmt, show):
         print()
     return "".join(parts)
 
-def _openrouter(messages, show, model=None):
+def _openrouter(messages, show, model=None, stream=True):
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError(
             "Set OPENROUTER_API_KEY in your environment (never commit it)."
         )
 
-    payload = {
-        "model": model or MODEL,
-        "messages": messages,
-        "temperature": 0.1,
-        "max_tokens": 4096,
-        "stream": True,
-    }
-
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
+    payload = {
+        "model": model or MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "stream": stream,
+    }
+
+    if _DEBUG_VISION:
+        import json as _json
+        _safe_messages = []
+        _total_payload_chars = 0
+        for _m in messages:
+            _role = _m.get("role", "?")
+            _content = _m.get("content", "")
+            if isinstance(_content, list):
+                _types = [_p.get("type", "?") for _p in _content]
+                _img_count = sum(1 for _p in _content if _p.get("type") == "image_url")
+                _img_bytes = sum(
+                    len(_p.get("image_url", {}).get("url", "")) * 3 // 4
+                    for _p in _content
+                    if _p.get("type") == "image_url"
+                )
+                _safe_messages.append({
+                    "role": _role,
+                    "content_types": _types,
+                    "image_count": _img_count,
+                    "image_approx_bytes": _img_bytes,
+                })
+            else:
+                _safe_messages.append({"role": _role, "content_type": "text", "text_len": len(_content or "")})
+            _total_payload_chars += len(_json.dumps(_m))
+        _dv(
+            "[LLM request] model=%r max_tokens=%s stream=%s n_messages=%d messages=%s total_payload_bytes~=%d",
+            model or MODEL,
+            payload.get("max_tokens"),
+            stream,
+            len(messages),
+            _safe_messages,
+            _total_payload_chars,
+        )
     print(
         f"[GeoLLM] OpenRouter → model={model or MODEL}, "
-        f"timeout=120s, streaming=True",
+        f"timeout=120s, streaming={stream}",
         flush=True,
     )
+
+    if not stream:
+        try:
+            r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
+            if r.status_code == 429:
+                raise RuntimeError("OpenRouter rate limit reached (429). Wait briefly and try again.")
+            if r.status_code != 200:
+                raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:500]}")
+            res_json = r.json()
+            if "error" in res_json:
+                err = res_json["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                raise RuntimeError(f"OpenRouter error: {msg}")
+            choices = res_json.get("choices") or []
+            if not choices:
+                raise RuntimeError("OpenRouter returned no choices.")
+            msg = choices[0].get("message") or {}
+            text = msg.get("content") or msg.get("reasoning") or ""
+            if show and text:
+                print(text)
+            if not text:
+                if _DEBUG_VISION:
+                    import json as _json
+                    _finish = choices[0].get("finish_reason") if choices else "N/A"
+                    _usage = res_json.get("usage", {})
+                    _msg_keys = list(msg.keys()) if msg else []
+                    _raw_snippet = _json.dumps(res_json)[:2000]
+                    _dv(
+                        "[LLM empty-response] status=%s finish_reason=%r usage=%s model=%r provider=%r msg_keys=%s raw(2000)=%s",
+                        r.status_code,
+                        _finish,
+                        _usage,
+                        res_json.get("model"),
+                        res_json.get("provider"),
+                        _msg_keys,
+                        _raw_snippet,
+                    )
+                raise RuntimeError("OpenRouter returned an empty response.")
+            print(f"[GeoLLM] OpenRouter ← response received ({len(text)} characters)", flush=True)
+            if _DEBUG_VISION:
+                _dv("[LLM response] chars=%d preview=%r", len(text), text[:200])
+            return text
+        except requests.RequestException as e:
+            raise RuntimeError(f"OpenRouter non-streaming connection failed: {e}")
 
     try:
         r = requests.post(
@@ -106,12 +194,23 @@ def _openrouter(messages, show, model=None):
             except json.JSONDecodeError:
                 continue
 
+            # Log errors from the payload itself if they appear in the stream
+            if "error" in event:
+                err = event["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                raise RuntimeError(f"OpenRouter stream error: {msg}")
+
             choices = event.get("choices") or []
             if not choices:
                 continue
 
-            delta = choices[0].get("delta") or {}
-            piece = delta.get("content") or ""
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason")
+            if finish_reason and finish_reason in ("content_filter", "refusal"):
+                 raise RuntimeError(f"OpenRouter blocked response: {finish_reason}")
+
+            delta = choice.get("delta") or choice.get("message") or {}
+            piece = delta.get("content") or delta.get("reasoning") or delta.get("text") or ""
 
             if piece:
                 parts.append(piece)
@@ -129,7 +228,8 @@ def _openrouter(messages, show, model=None):
         print()
 
     if not text:
-        raise RuntimeError("OpenRouter returned an empty response.")
+        print("[GeoLLM] Streaming returned empty response; falling back to non-streaming OpenRouter request...", flush=True)
+        return _openrouter(messages, show, model=model, stream=False)
 
     print(
         f"[GeoLLM] OpenRouter ← response received "
@@ -181,7 +281,8 @@ def chat_vision(prompt, image_paths):
         content = [{"type": "text", "text": prompt}] + [
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in b64
         ]
-        return _openrouter([{"role": "user", "content": content}], False, model=VISION_MODEL)
+        # Force stream=False to avoid empty stream responses for vision models
+        return _openrouter([{"role": "user", "content": content}], show=False, model=VISION_MODEL, stream=False)
 
     # Fallback to local Ollama only for local models without '/'
     r = requests.post(

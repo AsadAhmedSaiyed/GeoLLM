@@ -82,7 +82,7 @@ async def index():
 
 @app.get("/api/files")
 async def list_data_files():
-    valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5"}
+    valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5", ".laz", ".png", ".jpg", ".jpeg", ".csv", ".zip"}
     files = [
         {"name": f.name, "size_mb": round(f.stat().st_size / (1024 * 1024), 2)}
         for f in sorted(DATA_DIR.glob("*"))
@@ -238,17 +238,188 @@ async def get_timeline(task_id: str):
                 rel_base = "/".join(parts[idx:])
 
             # Dynamically resolve png_url so frontend gets direct HTTP 200 URLs
-            for frame in data.get("frames", []):
-                fname = frame.get("file") or ""
-                frame_fname = Path(fname).name
-                if (timeline_dir / frame_fname).exists():
-                    frame["png_url"] = f"/{rel_base}/{frame_fname}"
-                elif not frame.get("png_url"):
-                    frame["png_url"] = f"/api/tasks/{task_id}/artifacts/{frame_fname}"
+            normalized_frames = []
+            dates = data.get("dates", [])
+            series_values = data.get("series_values", [])
+            for i, frame in enumerate(data.get("frames", [])):
+                if isinstance(frame, str):
+                    fname = Path(frame).name
+                    frame_obj = {
+                        "index": i,
+                        "file": fname,
+                        "date": dates[i] if i < len(dates) else None,
+                        "value": series_values[i] if i < len(series_values) else None,
+                        "label": f"{dates[i] if i < len(dates) else fname}: {series_values[i] if i < len(series_values) else ''}".strip(),
+                    }
+                elif isinstance(frame, dict):
+                    frame_obj = frame
+                    fname = frame_obj.get("file") or ""
+                else:
+                    continue
+
+                frame_fname = Path(fname).name if fname else ""
+                if frame_fname and (timeline_dir / frame_fname).exists():
+                    frame_obj["png_url"] = f"/{rel_base}/{frame_fname}"
+                elif frame_fname and not frame_obj.get("png_url"):
+                    frame_obj["png_url"] = f"/api/tasks/{task_id}/artifacts/{frame_fname}"
+                normalized_frames.append(frame_obj)
+            data["frames"] = normalized_frames
             return JSONResponse(data)
         except Exception as e:
             return JSONResponse({"error": f"Invalid timeline.json: {e}"}, status_code=500)
     return JSONResponse({"error": "timeline.json not found"}, status_code=404)
+
+
+@app.get("/api/runs/{task_id}/terrain_3d.json")
+async def get_terrain_3d(task_id: str):
+    """Serve precomputed 3D terrain/LiDAR mesh payload or dynamically generate one on the fly."""
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    if not run_dir:
+        return JSONResponse({"error": "No run_dir"}, status_code=404)
+    p = Path(run_dir)
+    cands = list(p.rglob("terrain_3d.json")) + list(p.rglob("lidar_3d.json"))
+    if cands and cands[0].exists():
+        try:
+            data = json.loads(cands[0].read_text(encoding="utf-8"))
+            data["orthophoto_url"] = f"/api/runs/{task_id}/orthophoto.png"
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid 3D payload: {e}"}, status_code=500)
+
+    # Dynamic on-the-fly generation if an elevation or LiDAR GeoTIFF exists in run outputs or input files
+    from geollm_lib.lidar import generate_lidar_3d_payload
+    from geollm_lib.terrain import generate_terrain_3d_payload
+
+    all_tifs = list(p.rglob("*.tif"))
+    if ts.files:
+        for f in ts.files:
+            pf = Path(f)
+            if pf.exists() and pf.suffix.lower() == ".tif" and pf not in all_tifs:
+                all_tifs.append(pf)
+
+    # 1. Prioritize Canopy Height Model (CHM) and Above-Ground Objects
+    chm_cands = [
+        f for f in all_tifs
+        if any(k in f.name.lower() for k in ["chm", "canopy_height", "above_ground", "canopy", "height_classes"])
+        and "bare_ground" not in f.name.lower()
+    ]
+    # Prioritize continuous canopy height rasters over classified discrete rasters
+    chm_cands.sort(key=lambda f: (
+        0 if "canopy_height.tif" in f.name.lower() else
+        1 if "above_ground" in f.name.lower() else
+        2 if "chm" in f.name.lower() else
+        3 if "canopy" in f.name.lower() else 4
+    ))
+
+    dsm_cands = [f for f in all_tifs if "dsm" in f.name.lower()]
+    dtm_cands = [f for f in all_tifs if "dtm" in f.name.lower() or "bare_ground" in f.name.lower()]
+    if not dtm_cands and dsm_cands:
+        for dsm in dsm_cands:
+            dtm_guess = Path("data") / dsm.name.replace("dsm", "dtm")
+            if dtm_guess.exists():
+                dtm_cands.append(dtm_guess)
+                break
+
+    dem_cands = [
+        f for f in all_tifs
+        if any(k in f.name.lower() for k in ["dem", "cop-dem", "slope"])
+        or ("elevation" in f.name.lower() and "bare_ground" not in f.name.lower())
+    ]
+
+    payload = None
+    if chm_cands:
+        try:
+            out_json = p / "terrain_3d.json"
+            payload = generate_lidar_3d_payload(chm_cands[0], out_json_path=out_json, max_dim=512)
+        except Exception:
+            pass
+
+    # 2. If DSM + DTM pair exists, subtract to compute CHM
+    if not payload and dsm_cands and dtm_cands:
+        try:
+            out_json = p / "terrain_3d.json"
+            payload = generate_lidar_3d_payload(dsm_cands[0], dtm_path=dtm_cands[0], out_json_path=out_json, max_dim=512)
+        except Exception:
+            pass
+
+    # 3. If single DSM exists without DTM, render as terrain elevation (not relative height)
+    if not payload and dsm_cands:
+        try:
+            out_json = p / "terrain_3d.json"
+            payload = generate_terrain_3d_payload(dsm_cands[0], out_json, max_dim=512)
+        except Exception:
+            pass
+
+    # 4. Standard DEM
+    if not payload and dem_cands:
+        try:
+            out_json = p / "terrain_3d.json"
+            payload = generate_terrain_3d_payload(dem_cands[0], out_json, max_dim=512)
+        except Exception as e:
+            return JSONResponse({"error": f"Failed to generate terrain 3D mesh: {e}"}, status_code=500)
+
+    # 5. Fallback to any non-categorical tif (exclude class masks from 3D heightmaps)
+    valid_elevation_tifs = [
+        f for f in all_tifs
+        if not any(k in f.name.lower() for k in ["class", "mask", "water", "label", "cluster", "rgb", "preview"])
+    ]
+    if not payload and valid_elevation_tifs:
+        try:
+            out_json = p / "terrain_3d.json"
+            payload = generate_terrain_3d_payload(valid_elevation_tifs[0], out_json, max_dim=512)
+        except Exception as e:
+            return JSONResponse({"error": f"Failed to generate terrain 3D mesh: {e}"}, status_code=500)
+
+    if payload:
+        payload["orthophoto_url"] = f"/api/runs/{task_id}/orthophoto.png"
+        return JSONResponse(payload)
+
+    return JSONResponse({"error": "No elevation or LiDAR raster found"}, status_code=404)
+
+
+@app.get("/api/runs/{task_id}/orthophoto.png")
+async def get_task_orthophoto(task_id: str):
+    """
+    Fetches, stitches, and crops true-color aerial satellite/orthophoto imagery
+    covering the exact bounding box of the active raster for photorealistic 3D draping.
+    """
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    if not run_dir:
+        return JSONResponse({"error": "No run_dir"}, status_code=404)
+    p = Path(run_dir)
+    cache_path = p / "orthophoto.png"
+    if cache_path.exists():
+        return FileResponse(cache_path, media_type="image/png")
+
+    all_tifs = list(p.rglob("*.tif"))
+    if ts.files:
+        for f in ts.files:
+            pf = Path(f)
+            if pf.exists() and pf.suffix.lower() == ".tif" and pf not in all_tifs:
+                all_tifs.append(pf)
+    if not all_tifs:
+        return JSONResponse({"error": "No raster found"}, status_code=404)
+
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from geollm_lib.terrain import fetch_orthophoto_for_bounds
+    try:
+        with rasterio.open(all_tifs[0]) as src:
+            wgs84_bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+
+        await asyncio.to_thread(fetch_orthophoto_for_bounds, *wgs84_bounds, str(cache_path))
+        if cache_path.exists():
+            return FileResponse(cache_path, media_type="image/png")
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to fetch aerial orthophoto: {e}"}, status_code=500)
+
+    return JSONResponse({"error": "Could not create orthophoto"}, status_code=500)
 
 
 @app.get("/api/tasks/{task_id}/artifacts")
@@ -279,6 +450,7 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
         ext = chosen.suffix.lower()
         media_type = (
             "image/png" if ext == ".png"
+            else "image/svg+xml" if ext == ".svg"
             else "image/gif" if ext == ".gif"
             else "image/tiff" if ext in (".tif", ".tiff")
             else "application/json" if ext == ".json"

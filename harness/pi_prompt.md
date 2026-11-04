@@ -116,6 +116,24 @@ CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
     * Optical (Sentinel-2 / Landsat): Water absorbs Red (r < 0.16), NIR, and SWIR. Desert sand and bare soil have high Red (r > 0.22) and very high NIR/SWIR (> 0.25). When NIR/SWIR bands are available, use `NDWI = (Green - NIR) / (Green + NIR) > 0` or `MNDWI = (Green - SWIR1) / (Green + SWIR1) > 0`. Desert and bare soil have strongly negative NDWI (-0.3 to -0.6). In RGB composites, bright pixels (brightness > 0.25, r > 0.20, or r > 1.2 * b) are physically terrestrial bare ground or urban, NEVER water.
   - When using `classify_with_pretrained('eurosat', rgb)` or `classify_with_pretrained('global_landcover', rgb)`, ensure the input is normalized float [0, 1] in [Red, Green, Blue] order. If visual review requests changes, inspect channel order, stretch, and thresholds — DO NOT discard the ML model to write ad-hoc heuristic Green-Red thresholds.
   - Sub-Class Directives: The global model provides a unified `BuiltUp_Urban` class. If the user asks to distinguish residential vs. industrial, report both under the built-up category or explain that 20m visible RGB does not resolve building sub-types without spatial roof cadastre data.
+* DIGITAL ELEVATION MODELS (DEM) & TERRAIN ANALYSIS:
+  - GEODESIC SCALE CORRECTION: When opening a DEM (e.g. Copernicus DEM, SRTM, NASADEM in EPSG:4326), horizontal coordinates are in degrees while elevation is in meters. NEVER calculate slope directly without metric cell size conversion (`dy = abs(tf.e) * 110574`, `dx = abs(tf.a) * 111320 * cos(mid_lat)`), otherwise slopes will falsely exceed 89 degrees everywhere.
+  - USE `geollm_lib.terrain`:
+    * `dx, dy = geollm_lib.terrain.resolve_cell_size(src.transform, src.crs, src.bounds)`
+    * `slope_deg = geollm_lib.terrain.calculate_slope(dem, dx, dy)` (degrees or percent)
+    * `aspect_compass = geollm_lib.terrain.calculate_aspect(dem, dx, dy)` (0..360, flat=-1)
+    * `hillshade = geollm_lib.terrain.multi_directional_hillshade(dem, dx, dy)` (4-azimuth weighted blend, 0..255)
+    * `tri = geollm_lib.terrain.calculate_tri(dem)` (Terrain Ruggedness Index, Riley et al.)
+    * `tpi = geollm_lib.terrain.calculate_tpi(dem, window_size=5)` (Topographic Position Index: >0 ridge, <0 valley)
+    * `profile = geollm_lib.terrain.elevation_profile(dem_path, p1, p2, out_svg_path=out/'elevation_profile.svg', out_json_path=out/'elevation_profile.json')`
+    * `payload = geollm_lib.terrain.generate_terrain_3d_payload(dem_path, out/'terrain_3d.json', max_dim=256)`
+    * `geollm_lib.terrain.save_shaded_relief(dem, out/'shaded_relief.png', hillshade=hillshade, dx=dx, dy=dy, title=...)`
+* LIDAR & CANOPY HEIGHT MODELING (CHM):
+  - USE `geollm_lib.lidar`:
+    * `chm = geollm_lib.lidar.calculate_chm(dsm, dtm)` (Computes Canopy Height Model, clips negative pit artifacts)
+    * `layers, labels = geollm_lib.lidar.classify_canopy_layers(chm)` (Strata: Ground, Shrubs, Understory, Tall Canopy)
+    * `stats = geollm_lib.lidar.canopy_metrics_summary(chm, pixel_area_m2=...)` (Cover %, mean/max height, volume m³)
+    * `dsm, dtm, tf = geollm_lib.lidar.points_to_dsm_dtm(x, y, z, cell_size=...)` (Fast CPU binning of 3D point clouds)
 * For multi-band or hyperspectral rasters, DO NOT read all bands into memory at once (`src.read()` on 100+ bands will cause Out-Of-Memory or Timeout). Always read only the specific band indexes needed for your calculation (e.g. `src.read(indexes=[b1, b2])`).
 * Always read rasters inside context managers (`with rasterio.open(...) as src:`) and extract NumPy arrays so they remain accessible in memory.
 * When writing tiled GeoTIFFs, ensure block dimensions are multiples of 16 (e.g. `blockxsize=256, blockysize=256`).

@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir \
     matplotlib \
     scikit-learn==1.5.2 \
     statsmodels==0.14.4 \
-    ruptures==1.1.9
+    ruptures==1.1.9 \
+    laspy[lazrs]
 COPY lib/ /opt/geollm/
 ENV PYTHONPATH=/opt/geollm
 RUN useradd -m runner

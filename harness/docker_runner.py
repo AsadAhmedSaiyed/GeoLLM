@@ -54,7 +54,7 @@ def _safe_inputs(requested, allowed_originals):
 def _call_executor(code, files, attempt_dir, cfg):
     params = inspect.signature(run_code).parameters
     task_id = os.environ.get("GEOLLM_TASK_ID", "")
-    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "sklearn", "statsmodels", "ruptures"))
+    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "terrain", "lidar", "sklearn", "statsmodels", "ruptures"))
     custom_image = os.environ.get("GEOLLM_IMAGE_TS", "geollm-runtime-ts") if needs_ts else os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
     wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id, "image": custom_image}
     return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params and v is not None})

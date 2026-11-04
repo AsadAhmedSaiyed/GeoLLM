@@ -201,7 +201,7 @@ export function DatasetSidebar({
             <input
               type="file"
               multiple
-              accept=".tif,.tiff,.geojson,.csv,.json,.zip"
+              accept=".tif,.tiff,.geojson,.csv,.json,.zip,.laz,.png,.jpg,.jpeg"
               style=${{ display: 'none' }}
               onChange=${(e) => onUploadFiles(e.target.files)}
             />

@@ -104,12 +104,21 @@ IMPORTANT SCIENTIFIC GUIDANCE
       * In Sentinel-1 SAR: Smooth flat sand, playas, and calm water are BOTH specular reflectors (<-15 dB). NEVER use a single-date backscatter threshold to extract water over arid/flat scenes as it will mix desert and water. For flood/water detection, ALWAYS use temporal difference: `diff_dB = 10 * np.log10(post / (pre + 1e-6)) < -3.0 dB`. Static desert is dark in both dates (diff ~ 0), eliminating false positives.
       * In Optical: Water absorbs Red (r < 0.16) and NIR/SWIR. Desert sand and bare soil have high Red (r > 0.22) and high NIR/SWIR. Use `NDWI = (Green - NIR) / (Green + NIR) > 0` or `MNDWI = (Green - SWIR1) / (Green + SWIR1) > 0`. Desert has strongly negative NDWI (-0.3 to -0.6). Never classify bright pixels (brightness > 0.25, r > 0.20, or r > 1.2 * b) as water.
     - Never blindly label unsupervised mathematical clusters as 'trees' or 'vegetation' if their NDVI is low (< 0.3). In arid or desert scenes, low-NDVI surfaces (< 0.2) are bare sand, rock, or urban cover, NEVER trees.
+    - Spatial & Semantic Quality Guardrails (for classification or mapping tasks):
+      * Avoid naive single-band or single-threshold rules that cause false positives on bare ground, shadows, or urban surfaces.
+      * Apply data-driven or multi-feature logic where applicable.
+      * For spatial maps, incorporate noise removal or morphological smoothing when necessary to eliminate isolated pixel specks and artifacts.
   * For large scenes, use `predict_in_chunks()` to bound memory consumption.
   * For frontend animations and time-series (minimum 3 dates required):
     - 1 frame = 1 distinct date (never treat different bands from 1 date as an animation).
     - Use `geollm_lib.viz_ts.generate_downsampled_frame(src_tif, frame_png, date_text=...)` for each date.
     - Assemble frames into GIF using `geollm_lib.viz_ts.make_animated_gif(frame_pngs, 'animation.gif')`.
     - Export timeline metadata using `geollm_lib.viz_ts.make_timeline_json(dates, frame_pngs, series_values, metric_name=..., unit=...)`.
+  * For Digital Elevation Models (DEM) and Terrain Analysis:
+    - Never compute slopes directly in EPSG:4326 without resolving cell size in meters via `geollm_lib.terrain.resolve_cell_size(src.transform, src.crs, src.bounds)`.
+    - Use `geollm_lib.terrain` functions: `calculate_slope()`, `calculate_aspect()`, `multi_directional_hillshade()`, `calculate_tri()`, `calculate_tpi()`, `elevation_profile()`, `generate_terrain_3d_payload()`, and `save_shaded_relief()`.
+  * For LiDAR and Canopy Height Modeling:
+    - Use `geollm_lib.lidar` functions: `calculate_chm()`, `classify_canopy_layers()`, `canopy_metrics_summary()`, and `points_to_dsm_dtm()`.
 
 - Never invent measurements, observations, thresholds, locations, dates,
   percentages or other numerical results. Everything reported must be

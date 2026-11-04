@@ -1,12 +1,24 @@
 """Visual validation of generated PNG maps by a vision model. Secondary to the numerical checks; never fatal."""
 import json
+import os
 from pathlib import Path
 
 from . import llm, numerical_check, plan as plan_mod, prompts
 
 
 def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
-    """Returns a list of {file, status: ok|needs_revision|skipped, issues, recommended_action}."""
+    """Returns a list of {file, status: ok|needs_revision|skipped, issues, recommended_action}.
+
+    When ``GEOLLM_VALIDATION_MODE=agentic`` the call is delegated to the
+    multi-turn agentic loop in ``harness.validation.agent``.  The legacy
+    single-pass path remains the default and is untouched.
+    """
+    # ---- Phase 3 agentic gate (feature flag) --------------------------------
+    if os.environ.get("GEOLLM_VALIDATION_MODE", "legacy") == "agentic":
+        from harness.validation.agent import validate_artifacts
+        return validate_artifacts(task, output_dir, pngs, feedback_dir, on_step)
+    # -------------------------------------------------------------------------
+
     verdicts = []
     Path(feedback_dir).mkdir(parents=True, exist_ok=True)
     step = on_step or (lambda ev: None)

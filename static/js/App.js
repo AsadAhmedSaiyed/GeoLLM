@@ -448,6 +448,19 @@ export function App() {
               total: msg.total
             }
           ]);
+        } else if (t.startsWith('vision_') && t !== 'vision_check') {
+          setTasks(prev => {
+            const task = prev[taskId];
+            const acts = [...(task.activities || [])];
+            acts.push(msg);
+            return {
+              ...prev,
+              [taskId]: {
+                ...task,
+                activities: acts
+              }
+            };
+          });
         } else if (t === 'plan_ready') {
           setTasks(prev => ({
             ...prev,
