@@ -190,7 +190,11 @@ def test_input_gate_blocks_all_nodata_raster(tmp_path):
     assert "vision_insufficient_data" in types
     ins = [e for e in events if e["type"] == "vision_insufficient_data"][0]
     assert ins["area_verified_pct"] == 0.0
-    assert any("nodata" in r["issues"][0].lower() for r in ins["reports"])
+    assert ins["raster_count"] == 1
+    assert ins["files"][0]["nodata_pct"] == 100.0
+    assert any("nodata" in i.lower() for i in ins["files"][0]["issues"])
+    stopped = [e for e in events if e["type"] == "vision_stopped"]
+    assert stopped and stopped[0]["reason"] == "insufficient_data"
 
 
 def test_input_gate_approves_clean_raster(tmp_path):

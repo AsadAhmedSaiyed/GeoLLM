@@ -20,9 +20,24 @@ from __future__ import annotations
 import logging
 from typing import Callable, List, Optional, Sequence, Union
 
-from .quality_gate import QualityGateResult, evaluate_quality_gate
+from .quality_gate import QualityGateResult, evaluate_quality_gate, inspect_raster_quality
 
 log = logging.getLogger("harness.validation.input_gate")
+
+
+def _file_summary(report) -> dict:
+    """Build the per-file payload the UI renders in the input-gate card."""
+    return {
+        "name": report.path,
+        "nodata_pct": round(report.nodata_fraction * 100.0, 1),
+        "cloud_pct": round(report.cloud_fraction * 100.0, 1),
+        "crs": report.crs,
+        "resolution_m": [round(v, 3) for v in report.resolution],
+        "width": report.width,
+        "height": report.height,
+        "is_usable": report.is_usable,
+        "issues": list(report.issues),
+    }
 
 
 def run_input_gate(
@@ -32,7 +47,7 @@ def run_input_gate(
     """Evaluate the uploaded inputs.  Returns the gate result, or ``None``.
 
     A return value of ``None`` means the gate blocked execution — the caller
-    must stop without making any model call.  The two SSE events
+    must stop without making any model call.  The SSE events
     (``vision_input_gate`` and ``vision_insufficient_data``) are emitted
     through ``on_step`` before returning ``None``.
     """
@@ -45,47 +60,52 @@ def run_input_gate(
 
     step({
         "type": "vision_input_gate",
+        "state": "started",
         "raster_count": len(raster_paths),
         "raster_paths": raster_paths,
-        "state": "started",
     })
 
     result = evaluate_quality_gate(raster_paths)
+
+    # Build the per-file summaries the UI needs.  evaluate_quality_gate
+    # already inspected every raster, so we reuse those reports rather than
+    # re-opening the files.
+    files_summary = [_file_summary(r) for r in result.reports]
 
     if result.verdict == "insufficient_data":
         log.warning("Input gate blocked: %s", result.reason)
         step({
             "type": "vision_input_gate",
-            "raster_count": len(raster_paths),
-            "raster_paths": raster_paths,
             "state": "done",
             "verdict": "insufficient_data",
             "reason": result.reason,
+            "area_verified_pct": result.area_verified_pct,
+            "raster_count": len(raster_paths),
+            "raster_paths": raster_paths,
+            "files": files_summary,
         })
         step({
             "type": "vision_insufficient_data",
             "reason": result.reason,
             "area_verified_pct": result.area_verified_pct,
-            "reports": [
-                {
-                    "path": r.path,
-                    "nodata_fraction": r.nodata_fraction,
-                    "cloud_fraction": r.cloud_fraction,
-                    "is_usable": r.is_usable,
-                    "issues": list(r.issues),
-                }
-                for r in result.reports
-            ],
+            "raster_count": len(raster_paths),
+            "files": files_summary,
+        })
+        step({
+            "type": "vision_stopped",
+            "reason": "insufficient_data",
+            "detail": result.reason,
         })
         return None
 
     step({
         "type": "vision_input_gate",
-        "raster_count": len(raster_paths),
-        "raster_paths": raster_paths,
         "state": "done",
         "verdict": result.verdict,
         "reason": result.reason,
         "area_verified_pct": result.area_verified_pct,
+        "raster_count": len(raster_paths),
+        "raster_paths": raster_paths,
+        "files": files_summary,
     })
     return result

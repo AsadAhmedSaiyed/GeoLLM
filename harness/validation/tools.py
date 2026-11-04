@@ -366,7 +366,9 @@ def crop(
 
         ev = {
             "type": "vision_inspecting_tile",
+            "image": session.image_name,
             "tile_id": resolved_tid,
+            "bbox_norm": list(resolved_bbox_norm),
             "zoom_level": zoom_level,
             "thumb_url": rel_url,
             "step_number": session.steps_used,
@@ -581,13 +583,16 @@ def mark_result(
 
     ev = {
         "type": "vision_tile_verdict",
+        "image": session.image_name,
         "tile_id": tile_id,
         "verdict": verdict,
         "color": _VERDICT_COLORS.get(verdict, "#6B7280"),
+        "bbox_norm": list(rec.bbox_norm),
         "defect_category": defect_category,
         "rationale": rationale[:200],
         "confidence": round(float(np.clip(confidence, 0.0, 1.0)), 3),
         "crop_url": session.tiles[tile_id].evidence_crop_path,
+        "thumb_url": session.tiles[tile_id].evidence_crop_path,
         "verified_area_pct": session.verified_area_pct(),
     }
     session._emit(ev)
@@ -624,11 +629,20 @@ def report_insufficient_data(
 
     ev = {
         "type": "vision_insufficient_data",
+        "image": session.image_name,
         "tile_id": evidence_tile_id,
         "reason": session.abort_reason,
         "missing_data_fraction": session.abort_missing_fraction,
+        "steps_used": session.steps_used,
+        "budget": session.cfg.step_budget,
     }
     session._emit(ev)
+    session._emit({
+        "type": "vision_stopped",
+        "image": session.image_name,
+        "reason": "insufficient_data",
+        "detail": session.abort_reason,
+    })
 
     return {
         "ok": True,

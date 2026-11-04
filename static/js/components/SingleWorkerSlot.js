@@ -471,11 +471,13 @@ export function SingleWorkerSlot({
                   const imgName = act.image ? act.image.split(/[/\\]/).pop() : 'image';
                   const isOk = act.verdict === 'ok';
                   const isBad = act.verdict === 'needs_revision';
+                  const isNotVerified = act.verdict === 'not_verified' || act.verdict === 'insufficient_data';
+
                   return html`
-                    <div key=${i} className="tool-card ${isOk ? 'ok' : isBad ? 'bad' : ''}" style=${{ padding: '6px 8px' }}>
+                    <div key=${i} className="tool-card ${isOk ? 'ok' : isBad ? 'bad' : isNotVerified ? 'bad' : ''}" style=${{ padding: '6px 8px' }}>
                       <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
                         <span className="mono" style=${{ fontWeight: 600 }}>\ud83d\udc41\ufe0f Visual QA: ${imgName}</span>
-                        <span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: isOk ? '#065F46' : isBad ? '#991B1B' : '#5B6B64' }}>
+                        <span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: isOk ? '#065F46' : isBad ? '#991B1B' : isNotVerified ? '#B45309' : '#5B6B64' }}>
                           ${act.verdict || 'checking\u2026'}
                         </span>
                       </div>

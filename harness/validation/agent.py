@@ -350,6 +350,24 @@ def _session_to_verdict(session: InspectionSession, rel: str) -> Dict[str, Any]:
 # Single-image agentic loop
 # ---------------------------------------------------------------------------
 
+def _emit_stopped(on_step: Callable, image: str, reason: str, detail: str) -> None:
+    """Emit a vision_stopped SSE event so the UI can show a stop banner.
+
+    reason is one of: insufficient_data | not_verified | rate_limited
+    """
+    try:
+        on_step({
+            "type": "vision_stopped",
+            "image": image,
+            "reason": reason,
+            "detail": (detail or "")[:500],
+        })
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+
 def _run_agentic_loop(
     rel: str,
     png_path: Path,
@@ -425,6 +443,20 @@ def _run_agentic_loop(
             tool_finish(session, summary="Step budget exhausted — auto-closed.")
             break
 
+        # Live progress so the UI can show tiles-done / total and steps / budget.
+        on_step({
+            "type": "vision_progress",
+            "image": rel,
+            "index": turn_idx + 1,
+            "total": max_turns,
+            "steps_used": session.steps_used,
+            "budget": session.cfg.step_budget,
+            "tiles_checked": len(session.tiles),
+            "tiles_marked": sum(
+                1 for t in session.tiles.values() if t.verdict is not None
+            ),
+        })
+
         _t0 = time.time()
         if _DEBUG_VISION_AGENT:
             _dva(
@@ -439,6 +471,8 @@ def _run_agentic_loop(
             logger.warning("agent: LLM call failed on turn %d for %s: %s", turn_idx, rel, exc)
             session.not_verified = True
             session.not_verified_reason = f"LLM call failed: {exc}"
+            _emit_stopped(on_step, rel, "rate_limited" if "429" in str(exc) else "not_verified",
+                          str(exc))
             break
 
         if _DEBUG_VISION_AGENT:
@@ -478,6 +512,7 @@ def _run_agentic_loop(
             session.not_verified_reason = (
                 "Model did not emit a parseable tool call after a nudge."
             )
+            _emit_stopped(on_step, rel, "not_verified", session.not_verified_reason)
             break
 
         tool_name = parsed.get("tool", "")
@@ -497,6 +532,7 @@ def _run_agentic_loop(
             session.not_verified_reason = (
                 f"Model requested unknown tool {tool_name!r}."
             )
+            _emit_stopped(on_step, rel, "not_verified", session.not_verified_reason)
             break
 
         result = dispatch_tool(session, tool_name, tool_args)

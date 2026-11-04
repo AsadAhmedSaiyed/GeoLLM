@@ -460,6 +460,37 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
     raise HTTPException(status_code=404, detail=f"Artifact '{fname}' not found in task run")
 
 
+@app.get("/api/tasks/{task_id}/thumbs/{thumb_path:path}")
+async def get_task_thumb(task_id: str, thumb_path: str):
+    """Serve vision-crop thumbnails from the run's feedback/thumbs folder.
+
+    Restricted to the run's own ``feedback/thumbs`` directory and blocks
+    path traversal (``..`` / absolute paths / drive letters) so a malicious
+    ``thumb_url`` cannot reach arbitrary files on disk.
+    """
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Task not found")
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    if not run_dir:
+        raise HTTPException(status_code=404, detail="No run_dir for task")
+    rd = Path(run_dir)
+
+    # Block path traversal: reject anything that escapes the thumbs folder.
+    cleaned = thumb_path.replace("\\", "/")
+    if ".." in cleaned.split("/") or cleaned.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid thumbnail path")
+    candidate = (rd / "feedback" / "thumbs" / cleaned).resolve()
+    thumbs_root = (rd / "feedback" / "thumbs").resolve()
+    try:
+        candidate.relative_to(thumbs_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Thumbnail path outside feedback/thumbs")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    return FileResponse(candidate, media_type="image/png")
+
+
 @app.post("/api/tasks/{task_id}/approve")
 async def approve_task(task_id: str):
     if not task_manager.approve_task(task_id):
