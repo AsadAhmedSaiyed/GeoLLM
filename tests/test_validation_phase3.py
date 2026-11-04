@@ -344,22 +344,15 @@ class TestPiConfigNewFields:
     def test_new_fields_have_defaults(self):
         from harness.pi_config import load_config
         cfg = load_config()
-        assert hasattr(cfg, "validation_mode")
         assert hasattr(cfg, "validation_step_budget")
         assert hasattr(cfg, "validation_cost_limit_usd")
 
-    def test_validation_mode_default_is_legacy(self):
+    def test_validation_mode_removed_from_config(self):
+        """validation_mode is no longer a pi_config field — it lives in
+        harness.validation.config.get_mode() as the single source of truth."""
         from harness.pi_config import load_config
-        env = {k: v for k, v in os.environ.items() if k != "GEOLLM_VALIDATION_MODE"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = load_config()
-        assert cfg.validation_mode == "legacy"
-
-    def test_validation_mode_overridable(self):
-        from harness.pi_config import load_config
-        with mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
-            cfg = load_config()
-        assert cfg.validation_mode == "agentic"
+        cfg = load_config()
+        assert not hasattr(cfg, "validation_mode")
 
     def test_step_budget_default(self):
         from harness.pi_config import load_config
@@ -382,4 +375,41 @@ class TestPiConfigNewFields:
         assert isinstance(cfg.vision_max_retries, int)
         assert isinstance(cfg.max_concurrent_tasks, int)
         assert isinstance(cfg.runs_dir, Path)
+
+
+class TestGetMode:
+    """Single source of truth for the validation mode (validation.config.get_mode)."""
+
+    def _mode(self):
+        from harness.validation.config import get_mode
+        return get_mode()
+
+    def test_default_is_legacy(self):
+        env = {k: v for k, v in os.environ.items() if k != "GEOLLM_VALIDATION_MODE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert self._mode() == "legacy"
+
+    def test_agentic_when_set(self):
+        with mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
+            assert self._mode() == "agentic"
+
+    def test_invalid_value_falls_back_to_legacy(self, caplog):
+        import logging
+        env = {k: v for k, v in os.environ.items() if k != "GEOLLM_VALIDATION_MODE"}
+        env["GEOLLM_VALIDATION_MODE"] = "bogus"
+        with mock.patch.dict(os.environ, env, clear=True):
+            with caplog.at_level(logging.WARNING, logger="harness.validation"):
+                assert self._mode() == "legacy"
+        assert any("falling back" in r.message for r in caplog.records)
+
+    def test_visual_check_uses_get_mode(self):
+        """visual_check.check_images must route on get_mode(), not a raw env read."""
+        import inspect
+        from harness import visual_check
+        src = inspect.getsource(visual_check.check_images)
+        # Strip the docstring so the assertion targets executable code only.
+        code = src.split('"""', 2)[-1] if src.count('"""') >= 2 else src
+        assert "get_mode()" in code
+        assert "os.environ.get(" not in code
+        assert 'os.environ["GEOLLM_VALIDATION_MODE"]' not in code
 

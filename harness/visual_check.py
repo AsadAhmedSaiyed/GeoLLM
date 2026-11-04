@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from . import llm, numerical_check, plan as plan_mod, prompts
+from .validation.config import get_mode
 
 
 def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
@@ -14,7 +15,10 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
     single-pass path remains the default and is untouched.
     """
     # ---- Phase 3 agentic gate (feature flag) --------------------------------
-    if os.environ.get("GEOLLM_VALIDATION_MODE", "legacy") == "agentic":
+    # Single source of truth: validation.config.get_mode().  An invalid env
+    # value falls back to "legacy" with a warning rather than activating the
+    # agentic loop.
+    if get_mode() == "agentic":
         from harness.validation.agent import validate_artifacts
         return validate_artifacts(task, output_dir, pngs, feedback_dir, on_step)
     # -------------------------------------------------------------------------
@@ -24,6 +28,7 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
     step = on_step or (lambda ev: None)
     target_pngs = pngs[:3]
     total = len(target_pngs)
+    mode = get_mode()
     for i, rel in enumerate(target_pngs):
         p = Path(output_dir) / rel
         step({
@@ -31,7 +36,8 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
             "image": rel,
             "index": i + 1,
             "total": total,
-            "state": "started"
+            "state": "started",
+            "mode": mode
         })
         if not llm.vision_available():
             verdicts.append({"file": rel, "status": "skipped", "issues": [], "recommended_action": "no vision model configured"})
@@ -42,7 +48,8 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
                 "total": total,
                 "state": "done",
                 "verdict": "skipped",
-                "text": "no vision model configured"
+                "text": "no vision model configured",
+                "mode": mode
             })
             continue
         try:
@@ -64,7 +71,8 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
                 "total": total,
                 "state": "done",
                 "verdict": status,
-                "text": summary_text
+                "text": summary_text,
+                "mode": mode
             })
         except Exception as e:
             verdicts.append({"file": rel, "status": "skipped", "issues": [], "recommended_action": f"vision call failed: {e}"})
@@ -75,7 +83,8 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
                 "total": total,
                 "state": "done",
                 "verdict": "skipped",
-                "text": f"vision call failed: {e}"
+                "text": f"vision call failed: {e}",
+                "mode": mode
             })
     feedback_path = Path(feedback_dir) / "visual.json"
     try:

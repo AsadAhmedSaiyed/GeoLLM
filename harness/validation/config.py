@@ -41,3 +41,24 @@ def get_validation_config() -> ValidationConfig:
     """Returns an instance of ValidationConfig with environment overrides applied."""
     return ValidationConfig()
 
+
+_VALID_MODES = ("legacy", "agentic")
+
+
+def get_mode() -> str:
+    """Single source of truth for the validation mode.
+
+    Reads ``GEOLLM_VALIDATION_MODE``.  Defaults to ``"legacy"`` and falls
+    back to ``"legacy"`` (with a warning) for any unrecognised value, so a
+    typo can never silently activate the agentic loop.
+    """
+    import logging
+    raw = os.environ.get("GEOLLM_VALIDATION_MODE", "legacy")
+    if raw in _VALID_MODES:
+        return raw
+    logging.getLogger("harness.validation").warning(
+        "GEOLLM_VALIDATION_MODE=%r is not one of %s; falling back to 'legacy'.",
+        raw, _VALID_MODES,
+    )
+    return "legacy"
+
