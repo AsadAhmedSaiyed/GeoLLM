@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Sequence
 
 from PIL import Image
 
@@ -58,8 +58,8 @@ def _dva(msg: str, *args) -> None:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_MAX_TURNS: int = 20
-_DEFAULT_OVERVIEW_MAX_PX: int = 768
-_MAX_PNGS_PER_RUN: int = 3   # mirrors legacy visual_check.py cap
+_DEFAULT_OVERVIEW_MAX_PX: int = 1600
+_MAX_PNGS_PER_RUN: int = int(os.environ.get("GEOLLM_VALIDATION_MAX_IMAGES", "16"))
 
 # The single allowed nudge when the model replies without a tool call.
 NUDGE_PROMPT = (
@@ -75,17 +75,81 @@ NUDGE_PROMPT = (
 _MAP_SUFFIXES = ("_map", "_plot", "_viz", "_output", "_result", "_classified")
 
 
-def _discover_rasters(png_path: Path, output_dir: Path) -> Tuple[List[Path], List[Path]]:
+def _rank_rasters(
+    rasters: Sequence[Path],
+    target_path: Path,
+    context_keywords: Sequence[str] = (),
+) -> List[Path]:
+    """Sort candidate raster paths by relevance to target_path (dates and keywords)."""
+    if not rasters:
+        return []
+
+    stem = target_path.stem.lower()
+
+    date_matches = set(re.findall(r"\b\d{4}[-_]\d{2}(?:[-_]\d{2})?\b", stem))
+    years = set(re.findall(r"\b20\d{2}\b", stem))
+    months = {
+        "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
+        "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+    }
+    target_months = {m for m in months if m in stem}
+
+    def score(p: Path) -> int:
+        s = p.stem.lower()
+        pts = 0
+
+        # Exact stem match or variant
+        if s == stem or s in _stem_variants(stem) or stem in _stem_variants(s):
+            pts += 200
+
+        # Full date match
+        p_dates = set(re.findall(r"\b\d{4}[-_]\d{2}(?:[-_]\d{2})?\b", s))
+        if date_matches and (date_matches & p_dates):
+            pts += 100
+
+        # Year match
+        p_years = set(re.findall(r"\b20\d{2}\b", s))
+        if years and (years & p_years):
+            pts += 40
+
+        # Month match
+        for m in target_months:
+            if m in s or months[m] in s:
+                pts += 30
+
+        # Change/diff match
+        change_words = ("change", "diff", "transition", "loss", "gain", "comparison")
+        has_change_kw = any(w in stem for w in change_words) or any(cw in kw.lower() for kw in context_keywords for cw in change_words)
+        if has_change_kw and any(w in s for w in change_words):
+            pts += 60
+
+        # Common words
+        s_tokens = set(re.split(r"[-_.]+", s)) - {"tif", "tiff", "png", "frame", "water", "mask", "aral"}
+        stem_tokens = set(re.split(r"[-_.]+", stem)) - {"tif", "tiff", "png", "frame", "water", "mask", "aral"}
+        pts += len(s_tokens & stem_tokens) * 10
+
+        return pts
+
+    scored = sorted(enumerate(rasters), key=lambda x: (score(x[1]), -x[0]), reverse=True)
+    return [p for _, p in scored]
+
+
+def _discover_rasters(
+    png_path: Path,
+    output_dir: Path,
+    real_inputs: Optional[Sequence[Path]] = None,
+    context_keywords: Sequence[str] = (),
+) -> Tuple[List[Path], List[Path]]:
     """Locate input and output GeoTIFFs associated with a PNG map.
+
+    If real_inputs are provided (from user upload / task facts), they are used
+    directly for input_rasters.
 
     Search order (output rasters):
     1. ``output_dir/<png_stem>.tif[f]``
     2. Strip known trailing tokens from stem, then try ``.tif[f]``
     3. All ``*.tif``/``*.tiff`` in ``output_dir`` sorted by mtime (newest first)
     4. Repeat step 3 for ``output_dir.parent``
-
-    Input rasters are identified as any ``*.tif``/``*.tiff`` in ``output_dir``
-    or its parent that is NOT in the output set.
 
     Returns
     -------
@@ -117,10 +181,17 @@ def _discover_rasters(png_path: Path, output_dir: Path) -> Tuple[List[Path], Lis
             seen.add(rp)
             unique.append(p)
 
-    output_rasters = unique[:3]
-    # For now treat all discovered TIFFs as both input and output candidates;
-    # a future version can use naming heuristics to distinguish them.
-    input_rasters = unique[:3]
+    ranked_outputs = _rank_rasters(unique, png_path, context_keywords=context_keywords)
+    output_rasters = ranked_outputs[:3]
+
+    if real_inputs:
+        valid_inputs = [Path(p) for p in real_inputs if Path(p).is_file()]
+        ranked_inputs = _rank_rasters(valid_inputs, png_path, context_keywords=context_keywords)
+        input_rasters = ranked_inputs[:3]
+    else:
+        # Heuristic fallback: treat discovered TIFFs as input candidates
+        input_rasters = ranked_outputs[:3]
+
     return input_rasters, output_rasters
 
 
@@ -250,8 +321,17 @@ _TOOL_SUMMARIES: Dict[str, str] = {
 }
 
 
-def _build_system_prompt(task_name: str, task_description: str, image_name: str) -> str:
+def _build_system_prompt(task_name: str, task_description: str, image_name: str, input_gate_summary: str = "") -> str:
     tool_lines = "\n".join(f"  • {v}" for v in _TOOL_SUMMARIES.values())
+    is_3d_or_chart = any(kw in image_name.lower() for kw in ("3d", "chart", "graph", "timeline", "trend"))
+    extra_guidance = ""
+    if is_3d_or_chart:
+        extra_guidance = (
+            "\nNOTE ON 3D / CHARTS: This image is a 3D visualization or data chart. "
+            "Do not expect 2D planimetric GeoTIFF pixel alignment. Inspect visual readability, "
+            "axes, labels, and rendering quality, and call mark_result(verdict='correct' or 'not_verifiable').\n"
+        )
+
     return (
         f"You are a geospatial map validation AI for task: {task_name!r}.\n"
         f"Description: {task_description}\n"
@@ -262,10 +342,28 @@ def _build_system_prompt(task_name: str, task_description: str, image_name: str)
         "3. Start with make_grid() to plan your inspection, then crop() each tile, then mark_result().\n"
         "4. When data quality is too poor to judge, call report_insufficient_data() instead of guessing.\n"
         "5. Call finish() when all important tiles have a verdict.\n\n"
-        f"Available tools:\n{tool_lines}\n\n"
+        "VALIDATION GUIDELINES:\n"
+        "• Single Deliverable Scope: You are inspecting ONLY the single file named in 'Image under inspection'. "
+        "If the user's task asks for multiple outputs (e.g., a regional map, a trend chart, and a time-lapse animation), "
+        "each output is saved as a separate file. NEVER mark this image 'wrong' because other requested outputs "
+        "(like a trend chart or animation) are not inside this single image. Also, side-by-side comparison wrapper headers "
+        "like 'Input Crop (...)' and 'Deliverable (...)' are diagnostic panel labels, NOT the map's own title.\n"
+        "• Full overview: Overall elements (figure title, legend, colorbar, date annotations) "
+        "apply to the whole image. If the legend or title is present anywhere on the full overview image, "
+        "that requirement is met. For standard images, make_grid(rows=1, cols=1) allows verifying the entire "
+        "deliverable at once with mark_result('T0_0') without cutting through titles or margins.\n"
+        "• Tile crops: crop() evaluates spatial data correctness (water/land boundaries, classification masks, artifacts). "
+        "CRITICAL: When inspecting a cropped tile, the title and legend will naturally be cut off or outside this tile. "
+        "NEVER mark an individual cropped tile 'wrong' for 'missing legend', 'cut-off title', or 'blank margins'. "
+        "Evaluate ONLY whether the geographic features in that crop match the reference satellite image.\n"
+        + extra_guidance +
+        f"\nAvailable tools:\n{tool_lines}\n\n"
         "Respond ONLY with a ```json ... ``` block:\n"
         '{"tool": "<name>", "args": {<arguments as JSON>}}\n\n'
-        "Do not include any other text outside the JSON block."
+        "Do not include any other text outside the JSON block.\n\n"
+        f"TASK: {task_description}\n"
+        "CHECKLIST: Verify legend present, title present, units labeled, region matches query, dates match query, map type appropriate.\n"
+        + (f"INPUT DATA QUALITY: {input_gate_summary}\n" if input_gate_summary else "")
     )
 
 
@@ -307,36 +405,65 @@ def _session_to_verdict(session: InspectionSession, rel: str) -> Dict[str, Any]:
 
     wrong = [t for t in session.tiles.values() if t.verdict == "wrong"]
     review = [t for t in session.tiles.values() if t.verdict in ("unsure", "needs_review")]
+    inspected = [t for t in session.tiles.values() if t.verdict is not None]
+    not_verifiable = [t for t in inspected if t.verdict == "not_verifiable"]
 
     if wrong:
         status = "needs_revision"
-        issues = [
-            f"Tile {t.tile_id} [{t.defect_category or 'defect'}]: {t.rationale}"
-            for t in wrong
-        ]
-        recommended = (
-            f"{len(wrong)} tile(s) marked wrong. "
-            + " | ".join(
-                t.defect_category or "check output" for t in wrong
-            )
-        )
+        grouped: Dict[Tuple[str, str], List[str]] = {}
+        for t in wrong:
+            cat = t.defect_category or "defect"
+            rat = (t.rationale or "").strip()
+            grouped.setdefault((cat, rat), []).append(t.tile_id)
+
+        issues = []
+        for (cat, rat), tiles in grouped.items():
+            prefix = f"Tile {tiles[0]}" if len(tiles) == 1 else f"Tiles {', '.join(tiles)}"
+            if rat:
+                issues.append(f"{prefix} [{cat}]: {rat}")
+            else:
+                issues.append(f"{prefix} [{cat}]")
+
+        categories = sorted({t.defect_category for t in wrong if t.defect_category})
+        cat_summary = ", ".join(categories) if categories else "check output"
+        recommended = f"{len(wrong)} tile(s) marked wrong ({cat_summary})."
     elif review:
         status = "needs_revision"
-        issues = [f"Tile {t.tile_id}: {t.rationale} ({t.verdict})" for t in review]
-        recommended = f"{len(review)} tile(s) require manual review ({', '.join(set(t.verdict for t in review))})."
-    else:
+        grouped_rev: Dict[Tuple[str, str], List[str]] = {}
+        for t in review:
+            rat = (t.rationale or "").strip()
+            ver = t.verdict or "review"
+            grouped_rev.setdefault((ver, rat), []).append(t.tile_id)
+        issues = [
+            f"Tile {tiles[0]} ({ver}): {rat}" if len(tiles) == 1 else f"Tiles {', '.join(tiles)} ({ver}): {rat}"
+            if rat else (f"Tile {tiles[0]} ({ver})" if len(tiles) == 1 else f"Tiles {', '.join(tiles)} ({ver})")
+            for (ver, rat), tiles in grouped_rev.items()
+        ]
+        recommended = f"{len(review)} tile(s) require manual review ({', '.join(sorted(set(t.verdict for t in review)))})."
+    elif not inspected:
         # 0% verified MUST NOT be "ok".  This happens when the model calls
         # finish() without ever marking any tile (e.g. finish() on turn 1).
-        if session.verified_area_pct() == 0.0:
-            status = "not_verified"
-            issues = ["No tiles were inspected before finish() was called."]
-            recommended = "Re-run validation; the model completed without inspecting any region."
-        else:
-            status = "ok"
-            issues = []
-            recommended = (
-                f"Validation passed. {session.verified_area_pct():.0f}% of area verified."
-            )
+        status = "not_verified"
+        issues = ["No tiles were inspected before finish() was called."]
+        recommended = "Re-run validation; the model completed without inspecting any region."
+    elif not_verifiable and len(not_verifiable) == len(inspected):
+        # All inspected tiles were marked not_verifiable (e.g. 3D perspective animation, chart, or unreferenced raster)
+        is_non_map = any(kw in rel.lower() for kw in ("3d", "chart", "graph", "timeline", "anim", "plot", "frame"))
+        status = "ok" if is_non_map else "not_verified"
+        issues = [f"Tile {t.tile_id}: {t.rationale}" for t in not_verifiable]
+        recommended = (
+            "Visual inspection noted non-standard/3D cartography: "
+            + "; ".join(t.rationale for t in not_verifiable if t.rationale)[:200]
+            if is_non_map else
+            "Tiles could not be verified against reference rasters: "
+            + "; ".join(t.rationale for t in not_verifiable if t.rationale)[:200]
+        )
+    else:
+        status = "ok"
+        issues = []
+        recommended = (
+            f"Validation passed. {session.verified_area_pct():.0f}% of area verified."
+        )
 
     return {
         "file": rel,
@@ -378,6 +505,7 @@ def _run_agentic_loop(
     cfg: ValidationConfig,
     llm_call: Callable[[List[Dict[str, Any]], List[str]], str],
     max_turns: int,
+    input_files: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Dict[str, Any]:
     """Run the multi-turn tool-call loop for one PNG.
 
@@ -394,7 +522,19 @@ def _run_agentic_loop(
     -------
     Legacy verdict dict (same shape as ``check_images()`` list items).
     """
-    input_rasters, output_rasters = _discover_rasters(png_path, output_dir)
+    real_inputs = [Path(p) for p in (input_files or getattr(task, "input_files", []) or [])]
+    ctx_words: List[str] = []
+    if task:
+        if getattr(task, "name", None):
+            ctx_words.append(str(task.name))
+        if getattr(task, "description", None):
+            ctx_words.extend(str(task.description).split())
+        if getattr(task, "expected_outputs", None):
+            ctx_words.extend(str(task.expected_outputs).split())
+
+    input_rasters, output_rasters = _discover_rasters(
+        png_path, output_dir, real_inputs=real_inputs, context_keywords=ctx_words
+    )
 
     session = InspectionSession(
         image_name=rel,
@@ -415,7 +555,32 @@ def _run_agentic_loop(
         task_name=getattr(task, "name", "geospatial analysis"),
         task_description=getattr(task, "description", ""),
         image_name=rel,
+        input_gate_summary=getattr(task, "input_gate_summary", ""),
     )
+
+    # Check image resolution to guide optimal inspection
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(png_path) as _im:
+            _img_w, _img_h = _im.size
+    except Exception:
+        _img_w, _img_h = 1000, 1000
+
+    _is_standard_res = max(_img_w, _img_h) <= 2500
+
+    if _is_standard_res:
+        _initial_user_msg = (
+            f"Image under inspection: {rel} ({_img_w}×{_img_h} px).\n"
+            "This image is standard resolution and attached in full as the overview.\n"
+            "1. Inspect the full overview image to verify global elements: title, legend/colorbar, labels, and overall spatial correctness.\n"
+            "2. Plan your inspection with make_grid(). For standard images, make_grid(rows=1, cols=1) validates the whole map together without edge cuts. If you need to zoom in on a specific region, use make_grid(rows=2, cols=2) and crop().\n"
+            "3. Record your verdict with mark_result() and finish()."
+        )
+    else:
+        _initial_user_msg = (
+            f"Image under inspection: {rel} ({_img_w}×{_img_h} px, high-resolution).\n"
+            "Begin by calling make_grid() to plan your inspection, then crop() tiles to inspect at full resolution."
+        )
 
     # The conversation is the REAL multi-turn history.  It is sent in full on
     # every turn so the model remembers make_grid / crop / mark_result from
@@ -423,10 +588,7 @@ def _run_agentic_loop(
     # never sent it — each turn was a one-shot chat_vision call.)
     conversation: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": (
-            f"Image under inspection: {rel}\n"
-            "Begin by calling make_grid() to plan your inspection."
-        )},
+        {"role": "user", "content": _initial_user_msg},
     ]
     # Images attach only to the turn that needs them: the overview on turn
     # 0, and a crop after the crop() tool returns.  The overview is NOT
@@ -547,9 +709,26 @@ def _run_agentic_loop(
         crop_image = result.get("image_path") if isinstance(result, dict) else None
         image_paths_for_turn = [crop_image] if crop_image else []
 
+        # Strip binary/base64 payloads and host paths before JSON-serializing
+        # into the LLM text message so they never blow up the text token budget.
+        prompt_result = (
+            {k: v for k, v in result.items() if k not in ("image_b64", "image_path")}
+            if isinstance(result, dict)
+            else result
+        )
+        crop_reminder = ""
+        if tool_name == "crop" and isinstance(result, dict) and result.get("ok"):
+            tid = result.get("tile_id", "tile")
+            crop_reminder = (
+                f"\nNOTE FOR TILE {tid}: You are looking at a cropped sub-region. "
+                "The legend, overall title, and outer margins belong to the full figure overview. "
+                "DO NOT mark this tile wrong for missing legends, sliced titles, or margin whitespace. "
+                "Evaluate ONLY whether the geographic features in this crop match the satellite reference."
+            )
         conversation.append({"role": "user", "content": (
             f"Tool result for {tool_name!r}:\n```json\n"
-            f"{json.dumps(result, default=str)}\n```\n"
+            f"{json.dumps(prompt_result, default=str)}\n```"
+            f"{crop_reminder}\n"
             "Continue inspection. Reply with the next tool call."
         )})
 
@@ -608,6 +787,7 @@ def validate_artifacts(
     feedback_dir: Any,
     on_step: Optional[Callable] = None,
     cfg: Optional[ValidationConfig] = None,
+    input_files: Optional[Sequence[Union[str, Path]]] = None,
 ) -> List[Dict[str, Any]]:
     """Agentic drop-in replacement for ``visual_check.check_images()``.
 
@@ -664,8 +844,61 @@ def validate_artifacts(
         os.environ.get("GEOLLM_VALIDATION_MAX_TURNS", str(_DEFAULT_MAX_TURNS))
     )
 
-    # Mirror the legacy cap of 3 PNGs per run
-    target_pngs = pngs[:_MAX_PNGS_PER_RUN]
+    # Prioritize primary map deliverables (e.g. map.png, *change*, *result*) over intermediate frames
+    def _priority(p: str) -> int:
+        name = Path(p).name.lower()
+        if name == "map.png":
+            return 0
+        if any(w in name for w in ("change", "result", "classified", "water_change", "overview", "final")):
+            return 1
+        if any(w in name for w in ("timeseries", "chart", "timeline", "plot", "graph")):
+            return 2
+        if name.endswith(".gif"):
+            return 3
+        # Deprioritize internal helper / debug frames
+        if any(w in name for w in ("base_frame", "animation_frame", "frame_", "thumb", "mask_", "source_", "temp_", "slice_")):
+            return 5
+        if name.endswith((".png", ".jpg", ".jpeg")):
+            return 4
+        return 6
+
+    sorted_pngs = sorted(pngs, key=_priority)
+    target_pngs = sorted_pngs[:_cfg.max_images_per_run]
+    # Expand GIF files into sampled frames (first, middle, last)
+    expanded = []
+    source_artifact_map: Dict[str, str] = {}
+    for rel in target_pngs:
+        if str(rel).lower().endswith(".gif"):
+            gif_path = output_dir / rel
+            try:
+                from PIL import Image as _PILImage
+                gif = _PILImage.open(gif_path)
+                n = getattr(gif, "n_frames", 1)
+                indices = sorted({0, n // 2, n - 1})
+                stem = Path(rel).stem
+                for idx in indices:
+                    gif.seek(idx)
+                    frame_name = f"thumbs/{stem}_frame_{idx}.png"
+                    frame_path = feedback_dir / frame_name
+                    frame_path.parent.mkdir(parents=True, exist_ok=True)
+                    gif.convert("RGB").save(frame_path)
+                    exp_rel = str(frame_path.relative_to(output_dir)) if frame_path.is_relative_to(output_dir) else frame_name
+                    expanded.append(exp_rel)
+                    source_artifact_map[exp_rel] = rel
+            except Exception as _gif_err:
+                logger.warning("GIF frame extraction failed for %s: %s", rel, _gif_err)
+                expanded.append(rel)
+                source_artifact_map[rel] = rel
+        else:
+            expanded.append(rel)
+            source_artifact_map[rel] = rel
+
+    # Respect the max_images_per_run cap even after expansion (unless single GIF was expanded)
+    if len(target_pngs) > 1 and len(expanded) > _cfg.max_images_per_run:
+        target_pngs = expanded[:_cfg.max_images_per_run]
+    else:
+        target_pngs = expanded
+
     total = len(target_pngs)
     verdicts: List[Dict[str, Any]] = []
 
@@ -682,6 +915,8 @@ def validate_artifacts(
 
     for i, rel in enumerate(target_pngs):
         png_path = _output_dir / rel
+        if not png_path.is_file() and (_feedback_dir / rel).is_file():
+            png_path = _feedback_dir / rel
 
         _on_step({
             "type": "vision_check",
@@ -710,8 +945,10 @@ def validate_artifacts(
                 cfg=_cfg,
                 llm_call=_llm.chat_vision_multi,
                 max_turns=max_turns,
+                input_files=input_files,
             )
 
+        verdict["source_artifact"] = source_artifact_map.get(rel, rel)
         verdicts.append(verdict)
 
         _on_step({

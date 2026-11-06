@@ -49,10 +49,16 @@ def inspect_geotiff(path):
         labels = list(src.descriptions)
         bands = []
         for i in range(1, src.count + 1):
-          entry = {...}
-          if i <= MAX_SAMPLED_BANDS:          # only sample first N bands
-            entry.update(_band_sample(src, i))
-          bands.append(entry)
+            entry = {
+                "index": i,
+                "label": labels[i - 1],
+                "role": label_role(labels[i - 1], sensor),
+                "dtype": src.dtypes[i - 1],
+                "nodata": _safe(src.nodatavals[i - 1]),
+            }
+            if i <= MAX_SAMPLED_BANDS:          # only sample first N bands
+                entry.update(_band_sample(src, i))
+            bands.append(entry)
 
         metric = src.crs.is_projected and str(src.crs.linear_units).lower() in ("metre", "meter", "m")
         rx, ry = src.res

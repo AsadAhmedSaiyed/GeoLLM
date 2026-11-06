@@ -23,10 +23,19 @@ export function SingleWorkerSlot({
   const [timelineFrame, setTimelineFrame] = useState(null);
   const [showTerrain3D, setShowTerrain3D] = useState(false);
   const activityRef = useRef(null);
+  const isUserScrolledUp = useRef(false);
 
-  // Auto-scroll activity feed to bottom as new events arrive
+  const handleScroll = (e) => {
+    const el = e.currentTarget;
+    if (!el) return;
+    // If the user has scrolled up more than 60px above bottom, pause autoscroll
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isUserScrolledUp.current = distanceToBottom > 60;
+  };
+
+  // Auto-scroll activity feed to bottom as new events arrive, only if user hasn't scrolled up
   useEffect(() => {
-    if (activityRef.current && showLogs) {
+    if (activityRef.current && showLogs && !isUserScrolledUp.current) {
       activityRef.current.scrollTop = activityRef.current.scrollHeight;
     }
   }, [task.activities, showLogs]);
@@ -92,7 +101,7 @@ export function SingleWorkerSlot({
   })();
 
   const relevantActivities = (task.activities || []).filter((act) => {
-    if (act.type === 'vision_check' && act.state === 'started') return false;
+    // Keep vision_check events so starting validation is clearly announced
     return true;
   });
 
@@ -385,6 +394,7 @@ export function SingleWorkerSlot({
           ${showLogs ? html`
             <div
               ref=${activityRef}
+              onScroll=${handleScroll}
               className="worker-activity-feed"
               style=${{ marginTop: '10px', maxHeight: '480px', overflowY: 'auto', overflowX: 'hidden' }}
             >
@@ -469,9 +479,25 @@ export function SingleWorkerSlot({
                   `;
                 } else if (act.type === 'vision_check') {
                   const imgName = act.image ? act.image.split(/[/\\]/).pop() : 'image';
+                  const isStarted = act.state === 'started';
                   const isOk = act.verdict === 'ok';
                   const isBad = act.verdict === 'needs_revision';
                   const isNotVerified = act.verdict === 'not_verified' || act.verdict === 'insufficient_data';
+
+                  if (isStarted) {
+                    return html`
+                      <div key=${i} className="tool-card run" style=${{ padding: '6px 8px', borderLeft: '3px solid #3B82F6', marginTop: '6px' }}>
+                        <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                          <span className="mono" style=${{ fontWeight: 600 }}>🔍 Starting Visual QA: ${imgName}</span>
+                          ${act.index && act.total ? html`
+                            <span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: '#6B7280' }}>
+                              ${act.index} / ${act.total}
+                            </span>
+                          ` : null}
+                        </div>
+                      </div>
+                    `;
+                  }
 
                   return html`
                     <div key=${i} className="tool-card ${isOk ? 'ok' : isBad ? 'bad' : isNotVerified ? 'bad' : ''}" style=${{ padding: '6px 8px' }}>

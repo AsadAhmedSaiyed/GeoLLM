@@ -86,6 +86,15 @@ The user's question and the actual datasets determine the analysis.
      - TRUE TIME-LAPSE FRAMES: Each animation frame must show the full-screen satellite image or index map for that specific date (Frame 0 = Date 1, Frame 1 = Date 2, etc.), so the user sees the landscape physically transform over time. Never create a static multi-panel storyboard where only text labels or arrows change.
   Only once all deliverables are verified should you output your final textual response.
 
+* CARTOGRAPHY & FIGURE FORMATTING REQUIREMENTS:
+  - **No Cut-Off Titles, Labels, or Legends**: Figure boundaries must fully enclose all text and graphics.
+    - When using plt.suptitle(...), pair with plt.subplots_adjust(top=0.92, bottom=0.1, left=0.1, right=0.95) or fig.tight_layout(rect=[0, 0, 1, 0.94]) so titles are not clipped by the top border.
+    - Always save figures with fig.savefig(path, bbox_inches='tight', dpi=150, facecolor='white') so peripheral axis labels (like Easting/Northing) and legends are never cut off.
+    - Keep titles and labels concise so they fit comfortably within canvas margins.
+  - **Save Only Requested Deliverables in /workspace/output/**:
+    - Place primary deliverables (map.png, timeseries.png, animation.gif, result rasters, result.json, timeline.json) in /workspace/output/.
+    - Do NOT dump auxiliary intermediate debug files (such as base_frame_*.png, mask_*.png, source_*.png) into /workspace/output/ unless explicitly asked. If temporary frames are generated to build a GIF, use /tmp/ or clean them up so they do not trigger spurious validation failures.
+
 # 3. TOOLS AVAILABLE
 
 1. `run_geospatial_code`: Executes your Python script in the fresh isolated offline Docker environment.

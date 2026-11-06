@@ -281,11 +281,28 @@ def chat_vision_multi(messages, images, model=None, show=False):
     last = dict(prepared[-1])
     if images:
         content = [{"type": "text", "text": last.get("content", "") or ""}]
+        max_img_bytes = int(os.environ.get("GEOLLM_VISION_MAX_IMAGE_BYTES", str(900 * 1024)))
         for p in images:
-            b64 = base64.b64encode(open(p, "rb").read()).decode()
+            raw_bytes = open(p, "rb").read()
+            mime = "image/png"
+            if len(raw_bytes) > max_img_bytes:
+                try:
+                    import io as _io
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(_io.BytesIO(raw_bytes)) as _im:
+                        _rgb = _im.convert("RGB")
+                        if max(_rgb.size) > 1600:
+                            _rgb.thumbnail((1600, 1600), _PILImage.Resampling.LANCZOS)
+                        _buf = _io.BytesIO()
+                        _rgb.save(_buf, format="JPEG", quality=85, optimize=True)
+                        raw_bytes = _buf.getvalue()
+                        mime = "image/jpeg"
+                except Exception:
+                    pass
+            b64 = base64.b64encode(raw_bytes).decode()
             content.append(
                 {"type": "image_url",
-                 "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                 "image_url": {"url": f"data:{mime};base64,{b64}"}}
             )
         last["content"] = content
     prepared[-1] = last

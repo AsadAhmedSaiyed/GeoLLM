@@ -48,6 +48,15 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
     in_dir, code_dir, out_dir = work / "input", work / "code", work / "output"
     for d in (in_dir, code_dir, out_dir):
         d.mkdir()
+    seed_out = Path(run_dir) / "outputs"
+    if seed_out.is_dir():
+        for item in seed_out.rglob("*"):
+            if item.is_file():
+                rel_p = item.relative_to(seed_out)
+                target_p = out_dir / rel_p
+                target_p.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target_p)
+                os.chmod(target_p, 0o666)
     for f in input_files:
         dest = in_dir / Path(f).name
         shutil.copy(f, dest)

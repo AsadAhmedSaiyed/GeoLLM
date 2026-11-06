@@ -528,6 +528,32 @@ export function StacModal({
                           <span className="meta-tag date">${dt}</span>
                           <span className="meta-tag collection">${item.collection}</span>
                           ${cloud ? html`<span className="meta-tag cloud">${cloud}</span>` : null}
+                          ${item.aoi_coverage_pct != null ? html`
+                            <span
+                              className="meta-tag aoi-cover"
+                              style=${{
+                                background: item.aoi_coverage_pct >= 90 ? '#ECFDF5' : '#FFFBEB',
+                                color: item.aoi_coverage_pct >= 90 ? '#065F46' : '#B45309',
+                                border: `1px solid ${item.aoi_coverage_pct >= 90 ? '#A7F3D0' : '#FDE68A'}`,
+                                fontWeight: 600,
+                              }}
+                              title="Estimated percentage of your requested Area of Interest covered by this scene"
+                            >
+                              ${item.aoi_coverage_pct >= 95 ? '🎯 100% AOI Cover' : `📍 ${item.aoi_coverage_pct}% AOI`}
+                            </span>
+                          ` : null}
+                          ${item.nodata_pct != null ? html`
+                            <span
+                              className="meta-tag nodata"
+                              style=${{
+                                background: item.nodata_pct > 15 ? '#FEF2F2' : '#F3F4F6',
+                                color: item.nodata_pct > 15 ? '#991B1B' : '#4B5563',
+                              }}
+                              title="Sensor no-data border percentage"
+                            >
+                              ${item.nodata_pct}% nodata
+                            </span>
+                          ` : null}
                         </div>
 
                         <!-- Downloadable Assets -->

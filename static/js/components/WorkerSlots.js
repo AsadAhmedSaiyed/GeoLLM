@@ -8,7 +8,6 @@ function TaskActivityFeed({ activities }) {
   const [isOpen, setIsOpen] = useState(false);
 
   const relevantActivities = (activities || []).filter(act => {
-    if (act.type === 'vision_check' && act.state === 'started') return false;
     return true;
   });
 
@@ -74,8 +73,19 @@ function TaskActivityFeed({ activities }) {
               `;
             } else if (act.type === 'vision_check') {
               const imgName = act.image ? act.image.split(/[\\/]/).pop() : 'image';
+              const isStarted = act.state === 'started';
               const isOk = act.verdict === 'ok';
               const isBad = act.verdict === 'needs_revision';
+              if (isStarted) {
+                return html`
+                  <div key=${i} className="tool-card run" style=${{ padding: '6px 8px', borderLeft: '3px solid #3B82F6' }}>
+                    <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                      <span className="mono" style=${{ fontWeight: 600 }}>🔍 Starting QA: ${imgName}</span>
+                      ${act.index && act.total ? html`<span className="mono" style=${{ marginLeft: 'auto', fontSize: '10.5px', color: '#6B7280' }}>${act.index}/${act.total}</span>` : null}
+                    </div>
+                  </div>
+                `;
+              }
               return html`
                 <div key=${i} className="tool-card ${isOk ? 'ok' : isBad ? 'bad' : 'ok'}" style=${{ padding: '6px 8px' }}>
                   <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>

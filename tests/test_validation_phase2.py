@@ -195,6 +195,32 @@ class TestCrop:
         area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
         assert area2 < area1
 
+    def test_crop_with_geotiff_aligns_panels(self, tmp_path):
+        tif = _make_geotiff(tmp_path / "out.tif")
+        png = _make_png(tmp_path / "map.png")
+        s = _session(tmp_path, output_rasters=[tif], png_path=png)
+        make_grid(s, 2, 2)
+        res = crop(s, tile_id="T0_0")
+        assert res["ok"] is True
+        tile = s.tiles["T0_0"]
+        assert tile.bounds_geo is not None
+
+    def test_crop_missing_transform_marks_tile_not_verifiable(self, tmp_path):
+        # Create GeoTIFF without CRS / transform
+        raw_tif = tmp_path / "raw.tif"
+        data = np.zeros((1, 32, 32), dtype=np.uint8)
+        with rasterio.open(
+            raw_tif, "w", driver="GTiff", height=32, width=32, count=1, dtype="uint8"
+        ) as dst:
+            dst.write(data)
+        png = _make_png(tmp_path / "map.png")
+        s = _session(tmp_path, output_rasters=[raw_tif], png_path=png)
+        make_grid(s, 2, 2)
+        tile = s.tiles["T0_0"]
+        assert tile.bounds_geo is None
+        crop(s, tile_id="T0_0")
+        assert tile.verdict == "not_verifiable"
+
 
 # ---------------------------------------------------------------------------
 # get_stats
@@ -329,6 +355,19 @@ class TestMarkResult:
         mark_result(s, "T0_0", "unsure", "not sure", confidence=5.0)
         assert s.tiles["T0_0"].confidence <= 1.0
 
+    def test_subtile_crop_missing_legend_rejected(self, tmp_path):
+        s = _session(tmp_path)
+        make_grid(s, 2, 2)
+        res = mark_result(s, "T0_0", "wrong", "The title is cut off and there is no legend", defect_category="missing_legend")
+        assert res["ok"] is False
+        assert "cropped sub-region" in res["error"]
+
+    def test_whole_image_missing_legend_allowed(self, tmp_path):
+        s = _session(tmp_path)
+        make_grid(s, 1, 1)
+        res = mark_result(s, "T0_0", "wrong", "No legend present on deliverable", defect_category="missing_legend")
+        assert res["ok"] is True
+
 
 # ---------------------------------------------------------------------------
 # report_insufficient_data
@@ -398,6 +437,13 @@ class TestFinish:
         # Remaining 3 tiles should be auto-closed
         for tid in ["T0_1", "T1_0", "T1_1"]:
             assert s.tiles[tid].verdict == "not_verifiable"
+
+    def test_all_not_verifiable_gives_not_verifiable_verdict(self, tmp_path):
+        s = _session(tmp_path)
+        make_grid(s, 1, 1)
+        mark_result(s, "T0_0", "not_verifiable", "Crop memory failure")
+        result = finish(s, summary="Could not verify")
+        assert result["final_verdict"] == "not_verifiable"
 
     def test_aborted_session_gives_insufficient_data_verdict(self, tmp_path):
         s = _session(tmp_path)

@@ -35,11 +35,25 @@ class ValidationConfig:
     cloud_optical_min: float = _env_float("GEOLLM_CLOUD_OPTICAL_MIN", 0.35)
     cloud_swir_min: float = _env_float("GEOLLM_CLOUD_SWIR_MIN", 0.20)
     salt_flat_swir_max: float = _env_float("GEOLLM_SALT_SWIR_MAX", 0.15)
+    max_images_per_run: int = _env_int("GEOLLM_VALIDATION_MAX_IMAGES", 3)
 
 
 def get_validation_config() -> ValidationConfig:
     """Returns an instance of ValidationConfig with environment overrides applied."""
-    return ValidationConfig()
+    return ValidationConfig(
+        validation_mode=os.environ.get("GEOLLM_VALIDATION_MODE", "agentic"),
+        max_nodata_fraction=_env_float("GEOLLM_MAX_NODATA_FRACTION", 0.60),
+        max_cloud_fraction=_env_float("GEOLLM_MAX_CLOUD_FRACTION", 0.70),
+        min_mutual_valid_fraction=_env_float("GEOLLM_MIN_MUTUAL_VALID_FRACTION", 0.15),
+        sample_max_px=_env_int("GEOLLM_SAMPLE_MAX_PX", 2048),
+        crop_size_px=_env_int("GEOLLM_CROP_SIZE_PX", 512),
+        step_budget=_env_int("GEOLLM_VALIDATION_STEP_BUDGET", 12),
+        cost_limit_usd=_env_float("GEOLLM_VALIDATION_COST_LIMIT", 0.20),
+        cloud_optical_min=_env_float("GEOLLM_CLOUD_OPTICAL_MIN", 0.35),
+        cloud_swir_min=_env_float("GEOLLM_CLOUD_SWIR_MIN", 0.20),
+        salt_flat_swir_max=_env_float("GEOLLM_SALT_SWIR_MAX", 0.15),
+        max_images_per_run=_env_int("GEOLLM_VALIDATION_MAX_IMAGES", 3),
+    )
 
 
 _VALID_MODES = ("legacy", "agentic")

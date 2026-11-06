@@ -277,7 +277,7 @@ class TestAgenticLoop:
 
         with mock.patch("harness.llm.vision_available", return_value=True), \
              mock.patch("harness.llm.chat_vision_multi", side_effect=counting_llm), \
-             mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):
+             mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic", "GEOLLM_VALIDATION_MAX_IMAGES": "3"}):
             result = validate_artifacts(task, tmp_path, pngs, tmp_path / "feedback")
         assert len(result) == 3
 

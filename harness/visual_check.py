@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 
 from . import llm, numerical_check, plan as plan_mod, prompts
-from .validation.config import get_mode
+from .validation.config import get_mode, get_validation_config
 
 
-def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
+def check_images(task, output_dir, pngs, feedback_dir, on_step=None, input_files=None):
     """Returns a list of {file, status: ok|needs_revision|skipped, issues, recommended_action}.
 
     When ``GEOLLM_VALIDATION_MODE=agentic`` the call is delegated to the
@@ -18,15 +18,16 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None):
     # Single source of truth: validation.config.get_mode().  An invalid env
     # value falls back to "legacy" with a warning rather than activating the
     # agentic loop.
+    real_inputs = input_files or getattr(task, "input_files", None)
     if get_mode() == "agentic":
         from harness.validation.agent import validate_artifacts
-        return validate_artifacts(task, output_dir, pngs, feedback_dir, on_step)
+        return validate_artifacts(task, output_dir, pngs, feedback_dir, on_step, input_files=real_inputs)
     # -------------------------------------------------------------------------
 
     verdicts = []
     Path(feedback_dir).mkdir(parents=True, exist_ok=True)
     step = on_step or (lambda ev: None)
-    target_pngs = pngs[:3]
+    target_pngs = pngs[:get_validation_config().max_images_per_run]
     total = len(target_pngs)
     mode = get_mode()
     for i, rel in enumerate(target_pngs):

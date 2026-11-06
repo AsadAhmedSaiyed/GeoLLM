@@ -128,6 +128,7 @@ def re_verify_flagged_tiles(
                 f"Original verdict: {original_verdict}\n"
                 f"Original rationale: {rec.rationale}\n\n"
                 "Please re-examine the attached crop and provide your updated verdict. "
+                "NOTE: This is a cropped sub-region. Do not penalize for missing legends or outer titles that belong to the full figure overview. Judge ONLY whether geographic features in this crop align with the reference raster.\n"
                 "Reply with exactly one of: correct, wrong, unsure, not_verifiable — "
                 "on the first line, followed by your reasoning."
             )

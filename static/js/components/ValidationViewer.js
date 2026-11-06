@@ -34,11 +34,17 @@ export const ValidationViewer = ({ activity }) => {
     `;
   }
 
+  const cleanName = (p) => {
+    if (!p) return '';
+    return p.split(/[\\/]/).pop();
+  };
+
   if (type === 'vision_grid') {
+    const fileName = cleanName(activity.image);
     return html`
       <div className="tool-card ok" style=${{ padding: '6px 8px' }}>
         <div className="mono" style=${{ fontSize: '11px', fontWeight: 600 }}>
-          🗺️ Grid Defined: ${activity.rows}x${activity.cols} (${activity.tiles ? activity.tiles.length : 0} tiles)
+          🗺️ Grid Defined ${fileName ? `for ${fileName}` : ''}: ${activity.rows}x${activity.cols} (${activity.tiles ? activity.tiles.length : 0} tiles)
         </div>
         <div style=${{ fontSize: '10px', color: '#6B7280' }}>
           Step ${activity.steps_used} / ${activity.budget}
@@ -48,10 +54,13 @@ export const ValidationViewer = ({ activity }) => {
   }
 
   if (type === 'vision_inspecting_tile') {
+    const fileName = cleanName(activity.image);
     return html`
       <div className="tool-card run" style=${{ padding: '6px 8px', borderLeft: '3px solid #3B82F6' }}>
         <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span className="mono" style=${{ fontSize: '11px', fontWeight: 600 }}>🔍 Inspecting: ${activity.tile_id}</span>
+          <span className="mono" style=${{ fontSize: '11px', fontWeight: 600 }}>
+            🔍 Inspecting: ${fileName ? `${fileName} · ` : ''}${activity.tile_id}
+          </span>
           <span style=${{ fontSize: '10px', color: '#6B7280', marginLeft: 'auto' }}>Zoom x${activity.zoom_level || 1}</span>
         </div>
         ${activity.thumb_url && html`
@@ -67,16 +76,17 @@ export const ValidationViewer = ({ activity }) => {
 
   if (type === 'vision_tile_verdict') {
     const color = activity.color || '#6B7280';
+    const fileName = cleanName(activity.image);
     return html`
       <div className="tool-card" style=${{ padding: '6px 8px', borderLeft: `4px solid ${color}` }}>
         <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
-          <span className="mono" style=${{ fontWeight: 600 }}>⚖️ Verdict: ${activity.tile_id}</span>
+          <span className="mono" style=${{ fontWeight: 600 }}>⚖️ Verdict: ${fileName ? `${fileName} · ` : ''}${activity.tile_id}</span>
           <span className="mono" style=${{ marginLeft: 'auto', fontWeight: 700, color: color }}>${activity.verdict.toUpperCase()}</span>
         </div>
-        <div style=${{ fontSize: '10.5px', color: '#4B5B54', marginTop: '4px' }}>
+        <div style=${{ fontSize: '11px', color: '#374151', marginTop: '4px', lineHeight: '1.45', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
           ${activity.rationale}
         </div>
-        ${activity.thumb_url && html`
+        ${activity.confidence != null && html`
           <div style=${{ marginTop: '6px', fontSize: '10px', color: '#6B7280' }}>
              Confidence: ${Math.round(activity.confidence * 100)}%
           </div>
@@ -113,7 +123,9 @@ export const ValidationViewer = ({ activity }) => {
   }
 
   if (type === 'vision_summary') {
-    const color = activity.final_verdict === 'valid' ? '#059669' : activity.final_verdict === 'not_valid' ? '#DC2626' : '#D97706';
+    const isGood = activity.final_verdict === 'valid';
+    const isBad = activity.final_verdict === 'not_valid';
+    const color = isGood ? '#059669' : isBad ? '#DC2626' : '#D97706';
     return html`
       <div className="task-findings-card" style=${{ marginTop: '10px', borderLeft: `4px solid ${color}` }}>
         <div style=${{ fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}>
@@ -132,6 +144,18 @@ export const ValidationViewer = ({ activity }) => {
         <div className="mono" style=${{ fontSize: '11px', marginBottom: '8px' }}>
           ${activity.summary}
         </div>
+        ${activity.checklist_results && Object.keys(activity.checklist_results).length > 0 && html`
+          <div style=${{ borderTop: '1px solid #e5e7eb', paddingTop: '6px', marginBottom: '8px' }}>
+            <div style=${{ fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>📋 Checklist:</div>
+            <table className="checklist-table" style=${{ width: '100%', fontSize: '11px' }}>
+              <tbody>
+                ${Object.entries(activity.checklist_results).map(([k, v]) => html`
+                  <tr key=${k}><td className="mono" style=${{ padding: '2px 4px' }}>${k}</td><td style=${{ padding: '2px 4px', textAlign: 'right' }}>${v ? '✅' : '❌'}</td></tr>
+                `)}
+              </tbody>
+            </table>
+          </div>
+        `}
         ${activity.flagged_regions && activity.flagged_regions.length > 0 && html`
           <div style=${{ borderTop: '1px solid #e5e7eb', paddingTop: '8px' }}>
             <div style=${{ fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>🚩 Flagged Issues:</div>
@@ -142,6 +166,20 @@ export const ValidationViewer = ({ activity }) => {
             `)}
           </div>
         `}
+      </div>
+    `;
+  }
+
+  if (type === 'vision_feedback') {
+    return html`
+      <div className="tool-card vision-feedback-card" style=${{ padding: '6px 8px', marginBottom: '6px', borderLeft: '3px solid #F59E0B' }}>
+        <div className="mono" style=${{ fontSize: '11px', fontWeight: 600 }}>
+          ${activity.file}${activity.tile_id ? ' · tile ' + activity.tile_id : ''}
+        </div>
+        <div style=${{ fontSize: '10px', color: '#4B5563', margin: '2px 0' }}>
+          Severity: <strong>${activity.severity || 'medium'}</strong> | Category: ${activity.category || 'output'}
+        </div>
+        <div style=${{ fontSize: '11px' }}>${activity.suggested_fix || ''}</div>
       </div>
     `;
   }

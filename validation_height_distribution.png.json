@@ -1,0 +1,31 @@
+{
+  "image": "height_distribution.png",
+  "steps_used": 1,
+  "grid": "0x0",
+  "tiles_total": 1,
+  "aborted": false,
+  "abort_reason": "",
+  "finish_called": true,
+  "verified_area_pct": 0.0,
+  "tiles": {
+    "T0_0": {
+      "tile_id": "T0_0",
+      "bbox_norm": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "bounds_geo": null,
+      "crs": null,
+      "verdict": "not_verifiable",
+      "defect_category": null,
+      "confidence": 0.0,
+      "rationale": "",
+      "defect_bbox": null,
+      "evidence_crop_path": null,
+      "stats": null,
+      "step_number": 0
+    }
+  }
+}

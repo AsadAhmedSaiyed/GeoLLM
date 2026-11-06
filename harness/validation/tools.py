@@ -57,6 +57,7 @@ class TileRecord:
     tile_id: str
     bbox_norm: Tuple[float, float, float, float]   # (ymin, xmin, ymax, xmax) normalised
     bounds_geo: Optional[Tuple[float, float, float, float]] = None
+    crs: Optional[str] = None
     verdict: Optional[str] = None                  # correct|wrong|unsure|not_verifiable
     defect_category: Optional[str] = None
     confidence: float = 0.0
@@ -137,6 +138,10 @@ class InspectionSession:
         )
         return round(100.0 * definitive / len(self.tiles), 1)
 
+    def inspected_tiles_count(self) -> int:
+        """Number of tiles that received any verdict."""
+        return sum(1 for t in self.tiles.values() if t.verdict is not None)
+
     def to_summary_dict(self) -> Dict[str, Any]:
         return {
             "image": self.image_name,
@@ -171,13 +176,15 @@ def _save_thumb(arr_rgb: np.ndarray, path: Path, max_side: int = 512) -> Path:
 def _geo_bounds_for_norm(
     bbox_norm: Tuple[float, float, float, float],
     raster_path: Optional[Path],
-) -> Optional[Tuple[float, float, float, float]]:
-    """Converts normalised image coords to geographic bounds using the companion GeoTIFF."""
+) -> Tuple[Optional[Tuple[float, float, float, float]], Optional[str]]:
+    """Converts normalised image coords to geographic bounds (W,S,E,N) and returns CRS string."""
     if raster_path is None or not raster_path.is_file():
-        return None
+        return None, None
     ymin, xmin, ymax, xmax = bbox_norm
     try:
         with rasterio.open(raster_path) as src:
+            if src.crs is None:
+                return None, None  # Cannot georeference without CRS
             t = src.transform
             # Top-left corner mapped from pixel fraction
             west = t.c + xmin * src.width * t.a
@@ -185,24 +192,88 @@ def _geo_bounds_for_norm(
             east = t.c + xmax * src.width * t.a
             south = t.f + ymax * src.height * t.e
             return (
-                min(west, east),
-                min(north, south),
-                max(west, east),
-                max(north, south),
+                (
+                    min(west, east),
+                    min(north, south),
+                    max(west, east),
+                    max(north, south),
+                ),
+                src.crs.to_string(),
             )
     except Exception:
+        return None, None
+
+
+def _select_best_input_raster(session: InspectionSession) -> Optional[Path]:
+    """Select the most contextually relevant input raster for the current artifact.
+
+    Matches semantic tokens between the artifact name and input raster filenames
+    (e.g., 'elevation' or 'dtm' -> 'lidar_dtm', 'dsm' -> 'lidar_dsm',
+    'chm' or 'canopy' -> 'lidar_chm', 'sar'/'vv'/'vh' -> sar rasters, date matching).
+    """
+    valid_inputs = [p for p in session.input_raster_paths if p.is_file()]
+    if not valid_inputs:
         return None
+    if len(valid_inputs) == 1:
+        return valid_inputs[0]
+
+    img_stem = Path(session.image_name).stem.lower()
+
+    # Priority score for each input candidate
+    def _score(candidate: Path) -> int:
+        cand_stem = candidate.stem.lower()
+        score = 0
+        # Specific elevation / DTM matching
+        if any(w in img_stem for w in ("dtm", "elevation", "terrain", "profile")):
+            if "dtm" in cand_stem:
+                score += 20
+            elif "dem" in cand_stem:
+                score += 15
+        # DSM matching
+        if "dsm" in img_stem and "dsm" in cand_stem:
+            score += 20
+        # CHM / Canopy matching
+        if any(w in img_stem for w in ("chm", "canopy", "tree", "forest", "height")):
+            if "chm" in cand_stem:
+                score += 20
+            elif "canopy" in cand_stem:
+                score += 15
+        # Water / NDWI matching
+        if any(w in img_stem for w in ("water", "flood", "ndwi", "mndwi")):
+            if any(w in cand_stem for w in ("water", "swir", "green")):
+                score += 10
+        # Vegetation / NDVI matching
+        if any(w in img_stem for w in ("ndvi", "vegetation", "greenness")):
+            if any(w in cand_stem for w in ("nir", "red", "b08", "b04", "visual")):
+                score += 10
+        # Visual / True color matching
+        if any(w in img_stem for w in ("rgb", "visual", "true_color", "composite")):
+            if any(w in cand_stem for w in ("visual", "rgb", "b04")):
+                score += 15
+        # Date token matching (e.g. 2026-05-07)
+        import re
+        dates = re.findall(r"\d{4}[-_]\d{2}[-_]\d{2}", img_stem)
+        for dt in dates:
+            if dt in cand_stem:
+                score += 25
+        # Common word token overlap
+        tokens = [t for t in re.split(r"[-_.]+", img_stem) if len(t) >= 3]
+        for tok in tokens:
+            if tok in cand_stem:
+                score += 5
+        return score
+
+    best = max(valid_inputs, key=_score)
+    # If no keyword matched, default to the first valid input
+    return best
 
 
 def _anchor_raster(session: InspectionSession) -> Optional[Path]:
-    """Returns the best raster to anchor geographic calculations (output first, then input)."""
+    """Returns the best raster to anchor geographic calculations (output first, then best input)."""
     for p in session.output_raster_paths:
         if p.is_file():
             return p
-    for p in session.input_raster_paths:
-        if p.is_file():
-            return p
-    return None
+    return _select_best_input_raster(session)
 
 
 # ---------------------------------------------------------------------------
@@ -233,12 +304,13 @@ def make_grid(session: InspectionSession, rows: int, cols: int) -> Dict[str, Any
             ymax = (r + 1) / rows
             xmax = (c + 1) / cols
             bbox_norm = (ymin, xmin, ymax, xmax)
-            bounds_geo = _geo_bounds_for_norm(bbox_norm, anchor)
+            bounds_geo, crs = _geo_bounds_for_norm(bbox_norm, anchor)
 
             rec = TileRecord(
                 tile_id=tid,
                 bbox_norm=bbox_norm,
                 bounds_geo=bounds_geo,
+                crs=crs,
                 step_number=session.steps_used,
             )
             session.tiles[tid] = rec
@@ -247,6 +319,7 @@ def make_grid(session: InspectionSession, rows: int, cols: int) -> Dict[str, Any
                 "id": tid,
                 "bbox_norm": list(bbox_norm),
                 "bounds_geo": list(bounds_geo) if bounds_geo else None,
+                "crs": crs,
             })
 
     ev = {
@@ -292,10 +365,11 @@ def crop(
     # Resolve bounding box from tile registry or raw argument
     resolved_bbox_norm: Optional[Tuple[float, float, float, float]] = None
     resolved_tid = tile_id or "custom"
+    tile_rec: Optional[TileRecord] = None
 
     if tile_id and tile_id in session.tiles:
-        rec = session.tiles[tile_id]
-        resolved_bbox_norm = rec.bbox_norm
+        tile_rec = session.tiles[tile_id]
+        resolved_bbox_norm = tile_rec.bbox_norm
         resolved_tid = tile_id
     elif bbox_norm is not None and len(bbox_norm) == 4:
         resolved_bbox_norm = (
@@ -305,7 +379,18 @@ def crop(
     else:
         return {"ok": False, "error": f"Unknown tile_id '{tile_id}' and no bbox_norm provided."}
 
+    # If georeferencing is missing/broken on the tile, mark tile not_verifiable
+    if tile_rec is not None and tile_rec.bounds_geo is None:
+        anchor_check = _anchor_raster(session)
+        if anchor_check is not None:
+            # Transform/CRS was missing or unreadable
+            tile_rec.verdict = "not_verifiable"
+            tile_rec.rationale = "Missing geographic transform / CRS in raster."
+
     # Apply zoom: narrow the bounding box around the centre
+    resolved_bbox_geo = tile_rec.bounds_geo if tile_rec else None
+    resolved_bbox_crs = tile_rec.crs if tile_rec else None
+
     if zoom_level >= 2:
         ymin, xmin, ymax, xmax = resolved_bbox_norm
         cy, cx = (ymin + ymax) / 2, (xmin + xmax) / 2
@@ -315,12 +400,20 @@ def crop(
             max(0.0, cy - hy), max(0.0, cx - hx),
             min(1.0, cy + hy), min(1.0, cx + hx),
         )
+        if resolved_bbox_geo is not None:
+            g_minx, g_miny, g_maxx, g_maxy = resolved_bbox_geo
+            g_cx, g_cy = (g_minx + g_maxx) / 2, (g_miny + g_maxy) / 2
+            g_hx = (g_maxx - g_minx) / (2 * zoom_level)
+            g_hy = (g_maxy - g_miny) / (2 * zoom_level)
+            resolved_bbox_geo = (g_cx - g_hx, g_cy - g_hy, g_cx + g_hx, g_cy + g_hy)
 
-    thumb_name = f"{resolved_tid}_z{zoom_level}.png"
+    img_stem = Path(session.image_name).stem
+    thumb_name = f"{img_stem}_{resolved_tid}_z{zoom_level}.png"
     thumb_path = session.feedback_dir / "thumbs" / thumb_name
+    legacy_thumb_path = session.feedback_dir / "thumbs" / f"{resolved_tid}_z{zoom_level}.png"
 
-    # Select best input raster
-    input_raster = next((p for p in session.input_raster_paths if p.is_file()), None)
+    # Select best input raster contextually for this deliverable
+    input_raster = _select_best_input_raster(session)
     output_raster = next((p for p in session.output_raster_paths if p.is_file()), None) \
         if include_output_raster else None
 
@@ -340,16 +433,28 @@ def crop(
             from PIL import Image as _PIL_Image
             _PIL_Image.fromarray(png_arr).save(str(thumb_path))
             saved = thumb_path
+            try:
+                _PIL_Image.fromarray(png_arr).save(str(legacy_thumb_path))
+            except Exception:
+                pass
         else:
             # Full multi-panel comparison using raster(s) ± PNG.
             saved = generate_side_by_side_comparison(
                 input_raster_path=anchor,
                 output_raster_path=output_raster if include_output_raster else None,
                 png_map_path=session.png_map_path if session.png_map_path and session.png_map_path.is_file() else None,
+                bbox_geo=resolved_bbox_geo,
                 bbox_norm=resolved_bbox_norm,
                 out_path=thumb_path,
                 cfg=session.cfg,
             )
+
+        # Also write legacy un-prefixed thumbnail to preserve backwards-compatibility
+        try:
+            import shutil
+            shutil.copyfile(saved, legacy_thumb_path)
+        except Exception:
+            pass
 
         # Build a relative URL for the frontend
         try:
@@ -393,7 +498,8 @@ def crop(
             "bbox_norm": list(resolved_bbox_norm),
             "message": (
                 f"Comparison image ready for tile {resolved_tid} (zoom ×{zoom_level}). "
-                "Inspect visually then call mark_result() or get_stats() for pixel evidence."
+                "This is a cropped sub-region; legends and outer titles belong to the full overview. "
+                "Inspect spatial feature alignment, then call mark_result() or get_stats()."
             ),
         }
     except Exception as exc:
@@ -564,12 +670,35 @@ def mark_result(
         defect_category = None   # Ignore unknown category rather than failing
 
     rec = session.tiles[tile_id]
+
+    # Guard against false-positive "missing legend / title cut off" on sub-tile crops:
+    if len(session.tiles) > 1 and rec.bbox_norm != (0.0, 0.0, 1.0, 1.0) and verdict == "wrong":
+        rat_lower = (rationale or "").lower()
+        legend_or_title_issue = (
+            defect_category in ("missing_legend",)
+            or any(p in rat_lower for p in ("no legend", "missing legend", "title is cut off", "title cut off", "without legend"))
+        )
+        spatial_data_issue = any(
+            p in rat_lower
+            for p in ("water", "misclass", "align", "cloud", "shadow", "nodata", "land",
+                      "vegetation", "pixel", "semantic", "inversion", "boundary", "incorrect", "discrepan")
+        )
+        if legend_or_title_issue and not spatial_data_issue:
+            return {
+                "ok": False,
+                "error": (
+                    f"Tile '{tile_id}' is a cropped sub-region. Legends and figure titles belong to the full "
+                    "image overview, not individual sub-tiles. Do not mark a crop 'wrong' for missing legends "
+                    "or sliced titles. Only mark 'wrong' if there is a spatial data error."
+                ),
+            }
+
     session.tiles[tile_id] = dataclasses.replace(
         rec,
         verdict=verdict,
         defect_category=defect_category,
         confidence=float(np.clip(confidence, 0.0, 1.0)),
-        rationale=rationale[:500],  # Cap to prevent prompt injection via very long strings
+        rationale=rationale[:2000] if rationale else "",  # Cap to prevent excessive memory/payload
         defect_bbox=tuple(float(v) for v in defect_bbox) if defect_bbox and len(defect_bbox) == 4 else None,
         step_number=session.steps_used,
     )
@@ -589,7 +718,7 @@ def mark_result(
         "color": _VERDICT_COLORS.get(verdict, "#6B7280"),
         "bbox_norm": list(rec.bbox_norm),
         "defect_category": defect_category,
-        "rationale": rationale[:200],
+        "rationale": (rationale or "").strip()[:2000],
         "confidence": round(float(np.clip(confidence, 0.0, 1.0)), 3),
         "crop_url": session.tiles[tile_id].evidence_crop_path,
         "thumb_url": session.tiles[tile_id].evidence_crop_path,
@@ -659,7 +788,7 @@ def report_insufficient_data(
 # Tool 7: finish
 # ---------------------------------------------------------------------------
 
-def finish(session: InspectionSession, summary: str) -> Dict[str, Any]:
+def finish(session: InspectionSession, summary: str, checklist_results: Optional[Dict[str, bool]] = None) -> Dict[str, Any]:
     """Aggregate all tile marks and emit the final verdict + summary event.
 
     Marks any un-judged tiles as ``not_verifiable`` before computing the
@@ -679,9 +808,19 @@ def finish(session: InspectionSession, summary: str) -> Dict[str, Any]:
         final_verdict = "insufficient_data"
     else:
         wrong_tiles = [t for t in session.tiles.values() if t.verdict == "wrong"]
+        correct_tiles = [t for t in session.tiles.values() if t.verdict == "correct"]
+        review_tiles = [t for t in session.tiles.values() if t.verdict in ("unsure", "needs_review")]
+        not_verifiable_tiles = [t for t in session.tiles.values() if t.verdict == "not_verifiable"]
+
         if wrong_tiles:
             final_verdict = "not_valid"
-        elif any(t.verdict in ("unsure", "needs_review") for t in session.tiles.values()):
+        elif review_tiles:
+            final_verdict = "needs_review"
+        elif not_verifiable_tiles and len(not_verifiable_tiles) == len(session.tiles):
+            # All tiles could not be verified (e.g. crop memory allocation failure or unreferenced)
+            final_verdict = "not_verifiable"
+        elif not correct_tiles:
+            # No tile was confirmed correct
             final_verdict = "needs_review"
         else:
             final_verdict = "valid"
@@ -710,6 +849,7 @@ def finish(session: InspectionSession, summary: str) -> Dict[str, Any]:
         "defects_count": len([t for t in session.tiles.values() if t.verdict == "wrong"]),
         "flagged_regions": flagged,
         "summary": session.finish_summary,
+        "checklist_results": checklist_results or {},
     }
     session._emit(ev)
 
@@ -727,6 +867,7 @@ def finish(session: InspectionSession, summary: str) -> Dict[str, Any]:
         "verified_area_pct": session.verified_area_pct(),
         "flagged_regions": flagged,
         "summary": session.finish_summary,
+        "checklist_results": checklist_results or {},
         "message": f"Validation complete: {final_verdict}. {session.verified_area_pct():.1f}% area verified.",
     }
 

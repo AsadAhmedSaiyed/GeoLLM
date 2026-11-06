@@ -88,20 +88,44 @@ def find_artifacts(run_dir) -> list:
         return []
 
     valid_exts = {".png", ".tif", ".tiff", ".geojson", ".csv", ".json", ".gif", ".svg"}
-    excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", ".flag"}
+    excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", "vision_revision.json", ".flag"}
 
-    candidate_paths = []
+    bad_files = set()
+    bad_attempt = None
+    unfixed_bad = False
+    rev_file = rd / "vision_revision.json"
+    if rev_file.exists():
+        try:
+            rev_data = json.loads(rev_file.read_text(encoding="utf-8"))
+            bad_files = {Path(f).name for f in rev_data.get("bad_files", [])}
+            bad_attempt = rev_data.get("attempt")
+            unfixed_bad = bool(rev_data.get("unfixed", False))
+        except Exception:
+            pass
+
+    candidate_entries = []  # list of (Path, attempt_num)
     if status_data and status_data.get("ok") and status_data.get("artifacts"):
         for a in status_data["artifacts"]:
             ap = Path(a)
             if ap.exists() and ap.is_file() and ap.parent.resolve() == outputs_dir.resolve():
-                candidate_paths.append(ap)
+                candidate_entries.append((ap, int(final_attempt)))
 
-    if not candidate_paths:
-        candidate_paths = [p for p in outputs_dir.iterdir() if p.is_file()]
+    if not candidate_entries:
+        for p in sorted(outputs_dir.iterdir()):
+            if p.is_file():
+                candidate_entries.append((p, int(final_attempt)))
+
+    # Also retain valid outputs from earlier completed attempts (those with result.json)
+    # if the latest attempt only re-generated a subset of files during revision.
+    for prev_num in range(int(final_attempt) - 1, 0, -1):
+        prev_out = rd / f"attempt_{prev_num:02d}" / "outputs"
+        if prev_out.is_dir() and (prev_out / "result.json").is_file():
+            for p in sorted(prev_out.iterdir()):
+                if p.is_file():
+                    candidate_entries.append((p, prev_num))
 
     seen_names = set()
-    for p in candidate_paths:
+    for p, att_num in candidate_entries:
         ext = p.suffix.lower()
         if ext not in valid_exts:
             continue
@@ -109,6 +133,10 @@ def find_artifacts(run_dir) -> list:
             continue
         if p.name in seen_names:
             continue
+        # Exclude wrong outputs flagged by Vision QA unless replaced in a newer attempt
+        if p.name in bad_files:
+            if unfixed_bad or bad_attempt is None or att_num <= int(bad_attempt):
+                continue
         seen_names.add(p.name)
 
         try:
@@ -123,7 +151,7 @@ def find_artifacts(run_dir) -> list:
             "url": f"/{rel}",
             "type": "image" if ext in (".png", ".svg") else "raster" if ext in (".tif", ".tiff") else "file",
             "ext": ext,
-            "attempt": final_attempt,
+            "attempt": att_num,
         })
 
     return artifacts

@@ -59,9 +59,10 @@ def extract_raster_crop(
     bbox_norm: Optional[Tuple[float, float, float, float]] = None,
     bbox_crs: Optional[str] = None,
     target_bands: Optional[Sequence[int]] = None,
+    max_dimension: int = 2048,
     cfg: Optional[ValidationConfig] = None,
 ) -> ExtractedCrop:
-    """Extracts a full-resolution spatial crop from a GeoTIFF using windowed I/O.
+    """Extracts a spatial crop from a GeoTIFF using windowed I/O.
 
     Args:
         raster_path: Path to target GeoTIFF file.
@@ -69,6 +70,7 @@ def extract_raster_crop(
         bbox_norm: Normalized image coordinates (ymin, xmin, ymax, xmax) between 0.0 and 1.0.
         bbox_crs: Coordinate system of bbox_geo (defaults to raster's native CRS).
         target_bands: Optional 1-based band numbers to read (reads all or top 3 if None).
+        max_dimension: Max pixel width or height to read. If window is larger, decimates read to protect memory.
         cfg: Optional validation configuration.
 
     Returns:
@@ -112,8 +114,17 @@ def extract_raster_crop(
         else:
             bands_to_read = list(range(1, min(src.count + 1, 4)))
 
+        # Decimate if window exceeds max_dimension to prevent multi-gigabyte allocations and OOM crashes
+        out_shape = None
+        max_side = max(win.width, win.height)
+        if max_dimension > 0 and max_side > max_dimension:
+            scale = max_dimension / max_side
+            out_h = max(1, int(round(win.height * scale)))
+            out_w = max(1, int(round(win.width * scale)))
+            out_shape = (len(bands_to_read), out_h, out_w)
+
         # Read window with nodata masking
-        arr = src.read(bands_to_read, window=win, masked=True)
+        arr = src.read(bands_to_read, window=win, out_shape=out_shape, masked=True)
         crop_bounds = rasterio.windows.bounds(win, transform=src.transform)
 
         # Determine semantic raster properties
@@ -234,11 +245,13 @@ def generate_side_by_side_comparison(
     """
     config = cfg or get_validation_config()
 
-    # 1. Extract input satellite crop
-    input_crop = extract_raster_crop(input_raster_path, bbox_geo=bbox_geo, bbox_norm=bbox_norm, cfg=config)
+    # 1. Extract input satellite crop (capped at 1024px for quick multi-panel comparison)
+    input_crop = extract_raster_crop(input_raster_path, bbox_geo=bbox_geo, bbox_norm=bbox_norm, max_dimension=1024, cfg=config)
     input_rgb = render_crop_to_rgb(input_crop)
 
-    panels: List[Tuple[str, np.ndarray]] = [("Source Satellite Crop", input_rgb)]
+    # Use input raster filename for accurate title instead of generic "Source Satellite Crop"
+    input_name = Path(input_raster_path).name
+    panels: List[Tuple[str, np.ndarray]] = [(f"Input Crop ({input_name})", input_rgb)]
 
     # 2. Extract and re-render output GeoTIFF crop using shared geographic bounds
     out_crop = None
@@ -248,10 +261,12 @@ def generate_side_by_side_comparison(
                 output_raster_path,
                 bbox_geo=input_crop.bounds_geo,
                 bbox_crs=input_crop.crs,
+                max_dimension=1024,
                 cfg=config,
             )
             out_rgb = render_crop_to_rgb(out_crop)
-            panels.append(("Output GeoTIFF (Re-rendered)", out_rgb))
+            out_name = Path(output_raster_path).name
+            panels.append([(f"Output GeoTIFF ({out_name})", out_rgb)][0])
         except Exception:
             pass
 
@@ -259,7 +274,8 @@ def generate_side_by_side_comparison(
     if png_map_path and bbox_norm is not None:
         png_crop = extract_png_crop(png_map_path, bbox_norm)
         if png_crop is not None:
-            panels.append(("Sub-Agent PNG Map Crop", png_crop))
+            png_name = Path(png_map_path).name
+            panels.append((f"Deliverable ({png_name})", png_crop))
 
     # 4. Generate Difference Overlay if both input and output crops are available
     if out_crop is not None:

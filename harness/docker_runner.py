@@ -1,10 +1,12 @@
 """Bridge: Pi extension -> path-checked, validated run through harness.executor.
 Prints exactly ONE JSON line to stdout (everything else goes to stderr)."""
 import contextlib
+import hashlib
 import inspect
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -252,9 +254,10 @@ def main():
         except SyntaxError as se:
             out["ok"] = False
             out["exit_code"] = 1
+            out["syntax_error"] = True
             out["error"] = f"SyntaxError: {se}"
             out["message"] = (
-                f"Execution FAILED (attempt {attempt}/{cfg.max_tool_calls}, exit code 1).\n"
+                f"Syntax error detected before execution (attempt counter unchanged).\n"
                 f"Preflight SyntaxError at line {se.lineno}:\n"
                 f"  {se.text.strip() if se.text else ''}\n"
                 f"SyntaxError: {se.msg}\n\n"
@@ -272,14 +275,72 @@ def main():
                 return
 
         files, err = _safe_inputs(payload.get("input_files") or [], allowed)
+        preserve_last_status = False
         if err:
             out["message"] = err
         else:
             (attempt_dir / "script.py").write_text(payload["code"], encoding="utf-8")
 
+            # Seed from previous valid attempt so revision scripts keep already-passed outputs
+            bad_files = set()
+            vision_rev_file = run_dir / "vision_revision.json"
+            if vision_rev_file.exists():
+                try:
+                    rev_data = json.loads(vision_rev_file.read_text(encoding="utf-8"))
+                    bad_files = {Path(f).name for f in rev_data.get("bad_files", [])}
+                except Exception:
+                    pass
+
+            prev_outputs_dir = None
+            for prev_num in range(attempt - 1, 0, -1):
+                cand_out = run_dir / f"attempt_{prev_num:02d}" / "outputs"
+                if cand_out.is_dir() and (cand_out / "result.json").is_file():
+                    prev_outputs_dir = cand_out
+                    break
+
+            seeded_hashes = {}
+            seed_dir = attempt_dir / "outputs"
+            if prev_outputs_dir is not None:
+                seed_dir.mkdir(parents=True, exist_ok=True)
+                for src_item in prev_outputs_dir.rglob("*"):
+                    if src_item.is_file() and src_item.name not in bad_files:
+                        rel_p = src_item.relative_to(prev_outputs_dir)
+                        dst_item = seed_dir / rel_p
+                        dst_item.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_item, dst_item)
+                        seeded_hashes[rel_p.as_posix()] = hashlib.sha256(dst_item.read_bytes()).hexdigest()
+
             with contextlib.redirect_stdout(sys.stderr):      # keep our stdout clean
                 res = _call_executor(payload["code"], files, attempt_dir, cfg)
+
+            # Check if revision attempt was a pure inspection step vs output update
+            dest_out = attempt_dir / "outputs"
+            if prev_outputs_dir is not None and dest_out.is_dir():
+                changed_files = []
+                for p in dest_out.rglob("*"):
+                    if p.is_file():
+                        rel_k = p.relative_to(dest_out).as_posix()
+                        h = hashlib.sha256(p.read_bytes()).hexdigest()
+                        if seeded_hashes.get(rel_k) != h:
+                            changed_files.append(p.name)
+                if res.get("exit_code") == 0 and not changed_files:
+                    # Pure inspection step during revision: clear seeded files so it reports as inspection
+                    # and preserve previous last_status.json
+                    shutil.rmtree(dest_out, ignore_errors=True)
+                    dest_out.mkdir(parents=True, exist_ok=True)
+                    res["result"] = None
+                    res["artifacts"] = []
+                    preserve_last_status = True
+
             errors, warnings, artifacts = _validate(res, attempt_dir, cfg)
+            if bad_files and res.get("exit_code") == 0 and res.get("result") is not None:
+                missing_fixes = [bf for bf in sorted(bad_files) if not (dest_out / bf).is_file()]
+                if missing_fixes:
+                    errors.append(
+                        f"Vision revision required fixing and saving {', '.join(missing_fixes)}, "
+                        f"but it was not saved to /workspace/output."
+                    )
+
             ok = res.get("exit_code") == 0 and not errors
             final_err = res.get("error")
             if not final_err:
@@ -313,8 +374,9 @@ def main():
                 ),
             }
     except Exception as e:
+        preserve_last_status = False
         out["message"] = f"Runner exception: {type(e).__name__}: {e}"
-    if run_dir is not None:
+    if run_dir is not None and not preserve_last_status:
         try:
             (run_dir / "last_status.json").write_text(json.dumps(out, default=str, indent=2), encoding="utf-8")
         except Exception:

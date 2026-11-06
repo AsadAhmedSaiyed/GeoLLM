@@ -303,15 +303,23 @@ async def search_stac_items(
         "limit": clean_limit,
     }
 
-    # 4. Optional Cloud Cover Filter (only if < 100% and optical collection queried)
+    # 4. Optional Cloud Cover & Quality Filters
+    query_filters: Dict[str, Any] = {}
     if max_cloud_cover is not None:
         try:
             cloud_val = float(max_cloud_cover)
             if 0.0 <= cloud_val < 100.0:
                 if any(c in ["sentinel-2-l2a", "landsat-c2-l2"] for c in clean_collections):
-                    search_payload["query"] = {"eo:cloud_cover": {"lte": cloud_val}}
+                    query_filters["eo:cloud_cover"] = {"lte": cloud_val}
         except (ValueError, TypeError):
             pass
+
+    # Exclude scenes with excessive empty sensor/orbit borders (> 20% nodata)
+    if "sentinel-2-l2a" in clean_collections:
+        query_filters["s2:nodata_pixel_percentage"] = {"lte": 20.0}
+
+    if query_filters:
+        search_payload["query"] = query_filters
 
     try:
         data = await http_post_json(f"{STAC_API_URL}/search", search_payload, timeout=30.0)
@@ -323,10 +331,32 @@ async def search_stac_items(
 
     # Process and normalize items for UI consumption
     normalized_items = []
+    aoi_w, aoi_s, aoi_e, aoi_n = clean_bbox
+    aoi_area = max(1e-9, (aoi_e - aoi_w) * (aoi_n - aoi_s))
+
     for feat in features:
         props = feat.get("properties", {})
         assets = feat.get("assets", {})
         col = feat.get("collection", "")
+        item_bbox = feat.get("bbox")
+
+        # Calculate geometric overlap percentage with user AOI
+        aoi_coverage_pct = None
+        if item_bbox and len(item_bbox) >= 4:
+            feat_w, feat_s, feat_e, feat_n = item_bbox[0], item_bbox[1], item_bbox[2], item_bbox[3]
+            inter_w = max(aoi_w, feat_w)
+            inter_e = min(aoi_e, feat_e)
+            inter_s = max(aoi_s, feat_s)
+            inter_n = min(aoi_n, feat_n)
+            if inter_e > inter_w and inter_n > inter_s:
+                inter_area = (inter_e - inter_w) * (inter_n - inter_s)
+                aoi_coverage_pct = round(min(100.0, (inter_area / aoi_area) * 100.0), 1)
+            else:
+                aoi_coverage_pct = 0.0
+
+        nodata_pct = props.get("s2:nodata_pixel_percentage")
+        if nodata_pct is not None:
+            nodata_pct = round(float(nodata_pct), 1)
 
         # Extract best thumbnail
         thumb_url = None
@@ -364,6 +394,8 @@ async def search_stac_items(
             "collection": col,
             "datetime": props.get("datetime") or props.get("start_datetime"),
             "cloud_cover": props.get("eo:cloud_cover"),
+            "nodata_pct": nodata_pct,
+            "aoi_coverage_pct": aoi_coverage_pct,
             "platform": props.get("platform"),
             "bbox": feat.get("bbox"),
             "thumbnail": thumb_url,

@@ -63,11 +63,42 @@ def _read_status(run_dir):
 
 
 def _png_rels(run_dir):
-    """PNG artifact names as recorded by the runner (check_images joins them to run_dir)."""
+    """PNG/GIF artifact names as recorded by the runner (with fallback across succeeded attempts)."""
     rels = []
-    for a in _read_status(run_dir).get("artifacts", []):
-        if str(a).lower().endswith(".png") and (Path(run_dir) / a).exists():
-            rels.append(str(a))
+    seen_names = set()
+    rd = Path(run_dir).resolve()
+    status_data = _read_status(run_dir)
+    for a in status_data.get("artifacts", []):
+        p = Path(a)
+        if not p.is_absolute():
+            p = (rd / p).resolve()
+        if p.suffix.lower() in (".png", ".gif") and p.is_file() and p.name not in seen_names:
+            seen_names.add(p.name)
+            try:
+                rel = str(p.relative_to(rd))
+            except ValueError:
+                rel = str(p)
+            rels.append(rel)
+
+    # If a revision attempt updated only a subset of files without re-declaring artifacts,
+    # merge PNG/GIF files from the latest attempt outputs and earlier completed attempts.
+    if status_data.get("ok"):
+        for ad in sorted(rd.glob("attempt_*"), reverse=True):
+            out_dir = ad / "outputs"
+            if not out_dir.is_dir():
+                continue
+            # Include latest attempt or earlier completed attempts (those with result.json)
+            att_num = int(ad.name.split("_")[-1]) if ad.name.split("_")[-1].isdigit() else 0
+            if att_num != status_data.get("attempt") and not (out_dir / "result.json").is_file():
+                continue
+            for p in sorted(out_dir.iterdir()):
+                if p.is_file() and p.suffix.lower() in (".png", ".gif") and p.name not in seen_names:
+                    seen_names.add(p.name)
+                    try:
+                        rel = str(p.relative_to(rd))
+                    except ValueError:
+                        rel = str(p)
+                    rels.append(rel)
     return rels
 
 
@@ -160,6 +191,8 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             state[f"t_start_{tool_id}"] = time.time()
             if tool_name == "run_geospatial_code":
                 state["code_attempts"] = state.get("code_attempts", 0) + 1
+                if task_state and args_payload.get("code"):
+                    task_state.last_code = args_payload.get("code")
             code_attempt = state.get("code_attempts", state["tool_calls"])
             max_code_attempts = getattr(cfg, "max_tool_calls", 4)
             step({
@@ -182,6 +215,9 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             details = res.get("details") or {} if isinstance(res, dict) else {}
             ok = details.get("ok", not is_err)
             exit_code = details.get("exit_code", -1 if is_err else 0)
+            # SyntaxError: do not count as a code attempt
+            if details.get("syntax_error"):
+                state["code_attempts"] = max(0, state.get("code_attempts", 1) - 1)
             code_attempt = state.get("code_attempts", state.get("tool_calls", 1))
             attempt = details.get("attempt", code_attempt)
             dur_val = details.get("duration_s")
@@ -343,27 +379,76 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
         # ---- vision loop: check -> Pi fixes -> check again ----
         if llm.vision_available():
             max_r = cfg.vision_max_retries
+            feedback_memory: list = []
+            cached_passed: Dict[str, Dict[str, Any]] = {}
+            seen_rel_names: set = set()
+            needs_recheck_names: set = set()
+
             for attempt in range(max_r + 1):          # +1 = final re-check after the last fix
-                rels = _png_rels(run_dir)
-                if not rels:
+                all_rels = _png_rels(run_dir)
+                if not all_rels:
                     break
+
+                if attempt == 0:
+                    rels = all_rels
+                else:
+                    # Incremental check: only re-evaluate files that needed revision
+                    # (or brand-new files generated in the fix attempt), skipping
+                    # files that already passed or were unflagged in earlier rounds.
+                    rels = [
+                        r for r in all_rels
+                        if Path(r).name not in cached_passed
+                        and (not needs_recheck_names or Path(r).name in needs_recheck_names or Path(r).name not in seen_rel_names)
+                    ]
+                    if not rels:
+                        # Everything has passed!
+                        break
+
+                seen_rel_names.update(Path(r).name for r in all_rels)
+
+                input_geotiffs = [
+                    Path(f) for f in files
+                    if str(f).lower().endswith((".tif", ".tiff")) and Path(f).is_file()
+                ]
                 task_stub = SimpleNamespace(
                     name="geospatial analysis",
                     description=question,
+                    input_files=input_geotiffs,
                     expected_outputs=[str(a) for a in _read_status(run_dir).get("artifacts", [])]
                                      or ["the outputs the question asks for"],
                 )
                 try:
-                    verdicts = visual_check.check_images(task_stub, run_dir, rels, run_dir / "feedback", on_step=step)
+                    verdicts = visual_check.check_images(
+                        task_stub, run_dir, rels, run_dir / "feedback", on_step=step, input_files=input_geotiffs
+                    )
                 except Exception as e:
                     warnings.append(f"Vision check failed: {e}")
                     break
-                bad = [v for v in verdicts if v.get("status") == "needs_revision"]
-                skipped = [v for v in verdicts if v.get("status") == "skipped"]
-                passed = [v for v in verdicts if v.get("status") == "ok"]
+
+                # Cache newly passed verdicts (including parent GIFs when all sampled frames pass)
+                source_groups: Dict[str, list] = {}
+                for v in verdicts:
+                    src_name = Path(v.get("source_artifact") or v["file"]).name
+                    source_groups.setdefault(src_name, []).append(v)
+                    if v.get("status") == "ok":
+                        cached_passed[Path(v["file"]).name] = v
+                for src_name, g_vs in source_groups.items():
+                    if g_vs and all(gv.get("status") == "ok" for gv in g_vs):
+                        cached_passed[src_name] = g_vs[0]
+                        needs_recheck_names.discard(src_name)
+
+                # Merge current verdicts with cached passed verdicts for full inventory
+                all_verdicts_dict = dict(cached_passed)
+                for v in verdicts:
+                    all_verdicts_dict[Path(v["file"]).name] = v
+                all_verdicts = list(all_verdicts_dict.values())
+
+                bad = [v for v in all_verdicts if v.get("status") == "needs_revision"]
+                skipped = [v for v in all_verdicts if v.get("status") == "skipped"]
+                passed = [v for v in all_verdicts if v.get("status") == "ok"]
                 # not_verified / insufficient_data are NOT "ok" — they mean the
                 # model could not confirm the output, or the input was unusable.
-                failed = [v for v in verdicts
+                failed = [v for v in all_verdicts
                           if v.get("status") in ("not_verified", "insufficient_data")]
 
                 vision_log.append({
@@ -375,40 +460,143 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     "skipped": [{"file": v["file"], "reason": v.get("recommended_action", "")} for v in skipped]
                 })
 
+                # Accumulate feedback memory across rounds
+                for v in bad:
+                    tile_ids = [t.get("tile_id") for t in feedback_memory]
+                    if v.get("tile_id") not in tile_ids:
+                        feedback_memory.append({
+                            "tile_id": v.get("tile_id"),
+                            "file": v["file"],
+                            "severity": v.get("severity", "medium"),
+                            "category": v.get("category", "output"),
+                            "suggested_fix": v.get("recommended_action", ""),
+                            "status": "open",
+                        })
+                # Mark previously-seen issues as fixed if no longer in bad
+                bad_tile_ids = {v.get("tile_id") for v in bad}
+                for mem in feedback_memory:
+                    if mem["tile_id"] not in bad_tile_ids:
+                        mem["status"] = "fixed"
+
+                # Emit vision_feedback SSE events (output/code issues only, not input)
+                for v in bad:
+                    if v.get("category") != "input":
+                        step({
+                            "type": "vision_feedback",
+                            "file": v["file"],
+                            "tile_id": v.get("tile_id"),
+                            "bbox_norm": v.get("bbox_norm"),
+                            "bbox_geo": v.get("bbox_geo"),
+                            "severity": v.get("severity", "medium"),
+                            "category": v.get("category", "output"),
+                            "suggested_fix": v.get("recommended_action", ""),
+                        })
+                # Input problems -> user warnings only (not sub-agent critique)
+                for v in bad:
+                    if v.get("category") == "input":
+                        warnings.append(
+                            f"Input data problem for {v['file']}: {v.get('recommended_action', '')}"
+                        )
+
                 if skipped:
                     reason = skipped[0].get("recommended_action", "unknown vision error")
                     warnings.append(f"Vision check warning: {reason}")
 
                 if failed:
                     for v in failed:
+                        v_name = Path(v["file"]).name
                         warnings.append(
-                            f"Vision check failed for {v['file']}: "
+                            f"Vision check note for {v_name}: "
                             f"{v.get('status')} — {'; '.join(map(str, v.get('issues', [])))}"
                         )
-                    session_problem = True
-                    break
 
                 if not bad:
+                    rev_file = run_dir / "vision_revision.json"
+                    if rev_file.exists():
+                        try:
+                            rev_file.unlink()
+                        except Exception:
+                            pass
                     break
                 if attempt == max_r:
+                    unfixed_names = sorted({
+                        Path(v.get("source_artifact") or v["file"]).name for v in bad
+                    })
                     warnings.append("Vision issues remain after max retries: "
-                                    + "; ".join(v["file"] for v in bad))
+                                    + "; ".join(unfixed_names))
+                    try:
+                        cur_att = _read_status(run_dir).get("attempt")
+                        (run_dir / "vision_revision.json").write_text(
+                            json.dumps({"bad_files": unfixed_names, "attempt": cur_att, "unfixed": True}, indent=2),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
                     break
 
                 step({"type": "status", "status": "running"})
-                critique = "\n".join(
-                    f"- {v['file']}: {'; '.join(map(str, v.get('issues', [])))} "
-                    f"| fix: {v.get('recommended_action', '')}" for v in bad)
+                # Only send output/code issues to sub-agent; input problems go to user only
+                agent_bad = [v for v in bad if v.get("category") != "input"]
+                if not agent_bad:
+                    # All issues are input-data problems; nothing for the sub-agent to fix
+                    break
+
+                bad_artifact_names = sorted({
+                    Path(v.get("source_artifact") or v["file"]).name for v in agent_bad
+                })
+                needs_recheck_names = set(bad_artifact_names)
+                try:
+                    cur_att = _read_status(run_dir).get("attempt")
+                    (run_dir / "vision_revision.json").write_text(
+                        json.dumps({"bad_files": bad_artifact_names, "attempt": cur_att, "unfixed": False}, indent=2),
+                        encoding="utf-8",
+                    )
+                    from harness.orchestrator import find_artifacts
+                    step({"type": "artifacts", "artifacts": find_artifacts(run_dir)})
+                except Exception:
+                    pass
+
+                critique_lines = []
+                for v in agent_bad:
+                    v_name = Path(v.get("source_artifact") or v["file"]).name
+                    raw_issues = v.get("issues", [])
+                    seen_issues = set()
+                    unique_issues = []
+                    for iss in raw_issues:
+                        s_iss = str(iss).strip()
+                        if s_iss and s_iss not in seen_issues:
+                            seen_issues.add(s_iss)
+                            unique_issues.append(s_iss)
+                    issues_str = "; ".join(unique_issues) if unique_issues else "Visual inspection identified defects"
+                    fix_action = v.get("recommended_action", "").strip()
+                    critique_lines.append(f"- {v_name}: {issues_str} | fix: {fix_action}")
+                critique = "\n".join(critique_lines)
                 pi.drain()
+                # Build patch-first prompt using patcher SEARCH/REPLACE format
+                last_code = getattr(task_state, "last_code", None) if task_state else None
+                if last_code:
+                    patch_hint = (
+                        "\n\nPrefer to fix using SEARCH/REPLACE patches in this format:\n"
+                        "<<<<<<< SEARCH\n<exact lines to replace>\n=======\n<replacement lines>\n>>>>>>> REPLACE\n"
+                        "If patching is not possible, re-run the full corrected script."
+                    )
+                else:
+                    patch_hint = " Re-run the full corrected script."
                 stats = pi.run_prompt(
-                    "A visual review of your output maps found problems:\n"
+                    "A visual review of your output maps found problems with specific files:\n"
                     f"{critique}\n"
-                    "Fix them by patching your existing script (sandbox files may not persist, so "
-                    "re-run the full corrected script), and save the corrected outputs. "
-                    "You have a fresh tool-call budget for this fix.",
+                    "Fix ONLY these affected files and save their corrected versions. "
+                    "Files not listed above already passed validation and are already preserved in /workspace/output. "
+                    "You have a fresh tool-call budget for this fix."
+                    + patch_hint,
                     cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls,
-                    on_event, images=_b64_images([Path(run_dir) / v["file"] for v in bad]))
+                    on_event, images=_b64_images([Path(run_dir) / v["file"] for v in agent_bad if (Path(run_dir) / v["file"]).is_file()]))
                 answer = pi.last_assistant_text()
+                try:
+                    from harness.orchestrator import find_artifacts
+                    step({"type": "artifacts", "artifacts": find_artifacts(run_dir)})
+                except Exception:
+                    pass
         else:
             warnings.append("Visual validation not performed (no GEOLLM_VISION_MODEL set).")
     except (PiRPCError, TimeoutError) as e:
