@@ -99,6 +99,29 @@ def _png_rels(run_dir):
                     except ValueError:
                         rel = str(p)
                     rels.append(rel)
+
+    # If both a .gif animation and timeline.json exist, exclude the per-frame PNGs
+    # listed in timeline.json from _png_rels so Vision QA validates the .gif (which
+    # already samples frames via _expand_gifs_for_vision) without duplicate frame checks.
+    has_gif = any(Path(r).suffix.lower() == ".gif" for r in rels)
+    if has_gif:
+        timeline_frame_names = set()
+        for ad in sorted(rd.glob("attempt_*"), reverse=True):
+            tl_file = ad / "outputs" / "timeline.json"
+            if tl_file.is_file():
+                try:
+                    tl_data = json.loads(tl_file.read_text(encoding="utf-8"))
+                    for fr in tl_data.get("frames", []):
+                        fname = Path(str(fr.get("file", ""))).name
+                        if fname:
+                            timeline_frame_names.add(fname)
+                except Exception:
+                    pass
+        if timeline_frame_names:
+            non_frame_rels = [r for r in rels if Path(r).name not in timeline_frame_names]
+            if non_frame_rels:
+                rels = non_frame_rels
+
     return rels
 
 
@@ -114,6 +137,48 @@ def _stderr_tail(run_dir, n=400):
         return text[-n:] if text else ""
     except Exception:
         return ""
+
+
+def _stage_approved_stac_scenes(stac_data: dict, step) -> tuple:
+    """Download & crop approved STAC scenes to the target AOI bbox at 100% original native resolution."""
+    import asyncio
+    from harness.stac_service import stage_stac_aoi_native
+
+    bbox = stac_data.get("bbox")
+    scenes = stac_data.get("scenes") or []
+    staged_files = []
+    errors = []
+    data_dir = Path("data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    async def _run_all():
+        for sc in scenes:
+            col = sc.get("collection") or "sentinel-2-l2a"
+            item_id = sc.get("item_id") or sc.get("id")
+            dt_str = str(sc.get("datetime") or "scene")[:10]
+            assets = sc.get("assets") or ["B04", "B03", "B02", "B08"]
+            for asset_key in assets:
+                custom_name = f"{col}_{dt_str}_{asset_key}.tif"
+                step({
+                    "type": "status",
+                    "status": "running",
+                    "step": f"Staging {custom_name} at native resolution...",
+                })
+                res = await stage_stac_aoi_native(
+                    collection=col,
+                    item_id=item_id,
+                    asset_key=asset_key,
+                    bbox_wgs84=bbox,
+                    output_dir=data_dir,
+                    custom_filename=custom_name,
+                )
+                if res.get("ok") and res.get("path"):
+                    staged_files.append(str(res["path"]))
+                else:
+                    errors.append(f"{custom_name}: {res.get('error', 'staging failed')}")
+
+    asyncio.run(_run_all())
+    return staged_files, errors
 
 
 def solve(question, files, overrides=None, max_turns=None, explain=True, on_step=None, state=None, task_id="task_1", task_state=None) -> dict:
@@ -135,7 +200,18 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
     if not EXTENSION.exists():
         return _result("failed", f"Missing Pi extension: {EXTENSION}")
 
-    facts = inspect_dataset(files)
+    facts = (
+        inspect_dataset(files)
+        if files
+        else {
+            "mode": "autonomous_stac_discovery",
+            "note": (
+                "No local files were pre-selected by the user. "
+                "Start in Phase 0: use `search_stac` to find appropriate satellite scenes for the user's location and dates, "
+                "then call `propose_stac_scenes` to present visual previews to the user for approval before proposing an analysis plan."
+            ),
+        }
+    )
     run_dir = cfg.runs_dir / (time.strftime("%Y%m%d_%H%M%S") + "_" + task_id)
 
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -272,32 +348,140 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
         step({"type": "status", "status": "running"})
 
         # ---- Preflight input quality gate (Phase 1e) ---------------------------
-        # Runs on the real uploaded paths before ANY model call.  If the
-        # inputs are unusable (nodata / cloud / multi-date intersection below
-        # thresholds) the gate emits vision_input_gate + vision_insufficient_data
-        # and stops here — the Pi agent is never invoked.
-        try:
-            from harness.validation.input_gate import run_input_gate
-            gate = run_input_gate(files, on_step=step)
-            if gate is None:
-                warnings.append(
-                    "Input quality gate blocked execution: insufficient data in "
-                    "the uploaded rasters. No model call was made."
-                )
-                return _result(
-                    "failed",
-                    "Input quality gate blocked execution: insufficient data in the "
-                    "uploaded rasters.",
-                    run_dir,
-                    warnings=warnings,
-                )
-        except Exception as exc:
-            warnings.append(f"Input quality gate error: {exc}")
+        # Runs on the real uploaded paths before ANY model call when files are pre-selected.
+        # If files is empty (Autonomous STAC Discovery mode), the gate runs right after
+        # the approved STAC scenes are staged.
+        if files:
+            try:
+                from harness.validation.input_gate import run_input_gate
+                gate = run_input_gate(files, on_step=step)
+                if gate is None:
+                    warnings.append(
+                        "Input quality gate blocked execution: insufficient data in "
+                        "the uploaded rasters. No model call was made."
+                    )
+                    return _result(
+                        "failed",
+                        "Input quality gate blocked execution: insufficient data in the "
+                        "uploaded rasters.",
+                        run_dir,
+                        warnings=warnings,
+                    )
+            except Exception as exc:
+                warnings.append(f"Input quality gate error: {exc}")
         # ------------------------------------------------------------------------
 
         stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
                               cfg.max_tool_calls, on_event)
         answer = pi.last_assistant_text()
+
+        # ---- Phase 0: STAC Preview & Approval Gate ----
+        stac_preview_file = run_dir / "stac_preview.json"
+        stac_revisions = 0
+        while stac_revisions <= 5 and stac_preview_file.exists():
+            try:
+                stac_data = json.loads(stac_preview_file.read_text(encoding="utf-8"))
+                stac_preview_file.unlink()
+            except Exception:
+                break
+
+            if task_state and not getattr(task_state, "auto_approve", False):
+                task_state.approval_event.clear()
+                task_state.stac_preview = stac_data
+                task_state.status = "pending_stac_approval"
+                step({"type": "stac_preview_ready", "preview": stac_data})
+                step({"type": "status", "status": "pending_stac_approval"})
+
+                approved = task_state.approval_event.wait(timeout=1800)
+                if not approved or task_state.error == "Cancelled by user":
+                    if not approved:
+                        task_state.error = "STAC preview approval timed out after 30 minutes"
+                    task_state.status = "failed"
+                    return _result("failed", task_state.error, run_dir)
+
+                if task_state.revision_feedback:
+                    stac_revisions += 1
+                    step({"type": "status", "status": "running"})
+                    task_state.status = "running"
+                    fb = task_state.revision_feedback
+                    task_state.revision_feedback = None
+                    pi.drain()
+                    stats = pi.run_prompt(
+                        f"The user reviewed your STAC satellite image preview and requested changes:\n{fb}\n\n"
+                        "Use `search_stac` to find updated scenes matching the user's feedback, "
+                        "then call `propose_stac_scenes` again.",
+                        cfg.idle_timeout_s, cfg.total_timeout_s,
+                        cfg.max_tool_calls, on_event,
+                    )
+                    answer = pi.last_assistant_text()
+                    continue
+
+            # Approved (or CLI auto-approve): stage the scenes cropped to AOI at 100% native resolution
+            if task_state:
+                task_state.status = "running"
+                task_state.stac_preview = None
+            step({"type": "status", "status": "running", "step": "Staging approved STAC scenes at native resolution..."})
+            staged_files, stage_errors = _stage_approved_stac_scenes(stac_data, step)
+
+            if not staged_files or stage_errors:
+                stac_revisions += 1
+                err_msg = "; ".join(stage_errors) if stage_errors else "No files were staged."
+                pi.drain()
+                stats = pi.run_prompt(
+                    f"Staging the selected STAC scenes encountered an issue:\n{err_msg}\n\n"
+                    "Please adjust the bounding box or select alternative scenes/collections with `search_stac` "
+                    "and call `propose_stac_scenes` again.",
+                    cfg.idle_timeout_s, cfg.total_timeout_s,
+                    cfg.max_tool_calls, on_event,
+                )
+                answer = pi.last_assistant_text()
+                continue
+
+            files = list(staged_files)
+            if task_state:
+                task_state.files = list(files)
+            (run_dir / "allowed_files.json").write_text(json.dumps([str(f) for f in files]), encoding="utf-8")
+            step({"type": "stac_staged", "files": files})
+
+            # Run Input Quality Gate on the newly staged rasters
+            gate_passed = True
+            try:
+                from harness.validation.input_gate import run_input_gate
+                gate = run_input_gate(files, on_step=step)
+                if gate is None:
+                    gate_passed = False
+            except Exception as exc:
+                warnings.append(f"Input quality gate error: {exc}")
+
+            if not gate_passed:
+                stac_revisions += 1
+                pi.drain()
+                stats = pi.run_prompt(
+                    "The staged STAC scenes did not pass the Input Quality Gate (insufficient valid pixels, "
+                    "cloud contamination, or <15% multi-temporal overlap inside the AOI). "
+                    "Please search STAC with `search_stac` for clearer dates or better-overlapping tiles "
+                    "and call `propose_stac_scenes` again.",
+                    cfg.idle_timeout_s, cfg.total_timeout_s,
+                    cfg.max_tool_calls, on_event,
+                )
+                answer = pi.last_assistant_text()
+                continue
+
+            facts = inspect_dataset(files)
+            state["facts"] = json.dumps(facts, default=str)[:3000]
+            pi.drain()
+            mounted_list = "\n".join(f"- `/workspace/input/{Path(f).name}` (host: `{f}`)" for f in files)
+            stats = pi.run_prompt(
+                "The user approved your STAC satellite scenes! They have been cropped to the AOI at 100% original "
+                "native resolution, verified by the Input Quality Gate, and mounted in `/workspace/input/`:\n"
+                f"{mounted_list}\n\n"
+                f"Inspected dataset metadata:\n{json.dumps(facts, indent=2, default=str)[:4000]}\n\n"
+                "Now proceed to Phase 1: formulate your scientific methodology and call `propose_plan(plan=..., expected_outputs=[...])`.",
+                cfg.idle_timeout_s, cfg.total_timeout_s,
+                cfg.max_tool_calls, on_event,
+            )
+            answer = pi.last_assistant_text()
+            break
 
         # ---- Plan Approval Gate ----
         plan_file = run_dir / "plan.json"

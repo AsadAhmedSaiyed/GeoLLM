@@ -204,13 +204,75 @@ def _geo_bounds_for_norm(
         return None, None
 
 
-def _select_best_input_raster(session: InspectionSession) -> Optional[Path]:
-    """Select the most contextually relevant input raster for the current artifact.
+def _score_raster_for_target(candidate: Path, target_stem: str) -> int:
+    """Compute contextual + temporal relevance score between candidate raster and target stem."""
+    import re
+    img_stem = target_stem.lower()
+    cand_stem = candidate.stem.lower()
+    score = 0
 
-    Matches semantic tokens between the artifact name and input raster filenames
-    (e.g., 'elevation' or 'dtm' -> 'lidar_dtm', 'dsm' -> 'lidar_dsm',
-    'chm' or 'canopy' -> 'lidar_chm', 'sar'/'vv'/'vh' -> sar rasters, date matching).
-    """
+    # Specific elevation / DTM matching
+    if any(w in img_stem for w in ("dtm", "elevation", "terrain", "profile")):
+        if "dtm" in cand_stem:
+            score += 20
+        elif "dem" in cand_stem:
+            score += 15
+    # DSM matching
+    if "dsm" in img_stem and "dsm" in cand_stem:
+        score += 20
+    # CHM / Canopy matching
+    if any(w in img_stem for w in ("chm", "canopy", "tree", "forest", "height")):
+        if "chm" in cand_stem:
+            score += 20
+        elif "canopy" in cand_stem:
+            score += 15
+    # Water / NDWI matching
+    if any(w in img_stem for w in ("water", "flood", "ndwi", "mndwi")):
+        if any(w in cand_stem for w in ("water", "swir", "green", "mask")):
+            score += 10
+    # Vegetation / NDVI matching
+    if any(w in img_stem for w in ("ndvi", "vegetation", "greenness")):
+        if any(w in cand_stem for w in ("nir", "red", "b08", "b04", "visual", "ndvi")):
+            score += 10
+    # Visual / True color matching
+    if any(w in img_stem for w in ("rgb", "visual", "true_color", "composite")):
+        if any(w in cand_stem for w in ("visual", "rgb", "b04")):
+            score += 15
+    # Change / difference matching
+    change_words = ("change", "diff", "transition", "loss", "gain", "comparison")
+    if any(w in img_stem for w in change_words) and any(w in cand_stem for w in change_words):
+        score += 30
+
+    # Date token matching (YYYY-MM-DD, YYYY-MM, and YYYY, even when bounded by underscores)
+    norm_img = img_stem.replace("_", "-")
+    norm_cand = cand_stem.replace("_", "-")
+    ymd_dates = re.findall(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", norm_img)
+    ym_dates = re.findall(r"(?<!\d)\d{4}-\d{2}(?!\d)", norm_img)
+    years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", norm_img)
+
+    for dt in ymd_dates:
+        if dt in norm_cand:
+            score += 45
+    for dt in ym_dates:
+        if dt in norm_cand:
+            score += 35
+    for yr in years:
+        if re.search(rf"(?<!\d){re.escape(yr)}(?!\d)", norm_cand):
+            score += 20
+
+    # Common word token overlap
+    tokens = [t for t in re.split(r"[-_.]+", img_stem) if len(t) >= 3]
+    for tok in tokens:
+        if tok in cand_stem:
+            score += 5
+    return score
+
+
+def _select_best_input_raster(
+    session: InspectionSession,
+    reference_output: Optional[Path] = None,
+) -> Optional[Path]:
+    """Select the most contextually and temporally relevant input raster for the current artifact."""
     valid_inputs = [p for p in session.input_raster_paths if p.is_file()]
     if not valid_inputs:
         return None
@@ -218,61 +280,33 @@ def _select_best_input_raster(session: InspectionSession) -> Optional[Path]:
         return valid_inputs[0]
 
     img_stem = Path(session.image_name).stem.lower()
-
-    # Priority score for each input candidate
-    def _score(candidate: Path) -> int:
-        cand_stem = candidate.stem.lower()
-        score = 0
-        # Specific elevation / DTM matching
-        if any(w in img_stem for w in ("dtm", "elevation", "terrain", "profile")):
-            if "dtm" in cand_stem:
-                score += 20
-            elif "dem" in cand_stem:
-                score += 15
-        # DSM matching
-        if "dsm" in img_stem and "dsm" in cand_stem:
-            score += 20
-        # CHM / Canopy matching
-        if any(w in img_stem for w in ("chm", "canopy", "tree", "forest", "height")):
-            if "chm" in cand_stem:
-                score += 20
-            elif "canopy" in cand_stem:
-                score += 15
-        # Water / NDWI matching
-        if any(w in img_stem for w in ("water", "flood", "ndwi", "mndwi")):
-            if any(w in cand_stem for w in ("water", "swir", "green")):
-                score += 10
-        # Vegetation / NDVI matching
-        if any(w in img_stem for w in ("ndvi", "vegetation", "greenness")):
-            if any(w in cand_stem for w in ("nir", "red", "b08", "b04", "visual")):
-                score += 10
-        # Visual / True color matching
-        if any(w in img_stem for w in ("rgb", "visual", "true_color", "composite")):
-            if any(w in cand_stem for w in ("visual", "rgb", "b04")):
-                score += 15
-        # Date token matching (e.g. 2026-05-07)
+    # If deliverable stem has no date but the matched output raster has a specific date, include it
+    if reference_output is not None:
         import re
-        dates = re.findall(r"\d{4}[-_]\d{2}[-_]\d{2}", img_stem)
-        for dt in dates:
-            if dt in cand_stem:
-                score += 25
-        # Common word token overlap
-        tokens = [t for t in re.split(r"[-_.]+", img_stem) if len(t) >= 3]
-        for tok in tokens:
-            if tok in cand_stem:
-                score += 5
-        return score
+        if not re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", img_stem):
+            img_stem = f"{img_stem}_{reference_output.stem.lower()}"
 
-    best = max(valid_inputs, key=_score)
-    # If no keyword matched, default to the first valid input
+    best = max(valid_inputs, key=lambda c: _score_raster_for_target(c, img_stem))
     return best
+
+
+def _select_best_output_raster(session: InspectionSession) -> Optional[Path]:
+    """Select the most contextually and temporally relevant output raster for the current artifact."""
+    valid_outputs = [p for p in session.output_raster_paths if p.is_file()]
+    if not valid_outputs:
+        return None
+    if len(valid_outputs) == 1:
+        return valid_outputs[0]
+
+    img_stem = Path(session.image_name).stem.lower()
+    return max(valid_outputs, key=lambda c: _score_raster_for_target(c, img_stem))
 
 
 def _anchor_raster(session: InspectionSession) -> Optional[Path]:
     """Returns the best raster to anchor geographic calculations (output first, then best input)."""
-    for p in session.output_raster_paths:
-        if p.is_file():
-            return p
+    out_r = _select_best_output_raster(session)
+    if out_r is not None:
+        return out_r
     return _select_best_input_raster(session)
 
 
@@ -408,14 +442,22 @@ def crop(
             resolved_bbox_geo = (g_cx - g_hx, g_cy - g_hy, g_cx + g_hx, g_cy + g_hy)
 
     img_stem = Path(session.image_name).stem
+    path_parts = list(Path(session.image_name).parts)
+    if session.png_map_path is not None:
+        path_parts.extend(session.png_map_path.parts)
+    attempt_tag = next((p for p in path_parts if p.startswith("attempt_")), "")
+
     thumb_name = f"{img_stem}_{resolved_tid}_z{zoom_level}.png"
     thumb_path = session.feedback_dir / "thumbs" / thumb_name
     legacy_thumb_path = session.feedback_dir / "thumbs" / f"{resolved_tid}_z{zoom_level}.png"
+    attempt_thumb_path = (
+        session.feedback_dir / "thumbs" / f"{attempt_tag}_{img_stem}_{resolved_tid}_z{zoom_level}.png"
+        if attempt_tag else None
+    )
 
-    # Select best input raster contextually for this deliverable
-    input_raster = _select_best_input_raster(session)
-    output_raster = next((p for p in session.output_raster_paths if p.is_file()), None) \
-        if include_output_raster else None
+    # Select best output and input rasters contextually and temporally for this deliverable
+    output_raster = _select_best_output_raster(session) if include_output_raster else None
+    input_raster = _select_best_input_raster(session, reference_output=output_raster)
 
     if input_raster is None and output_raster is None and session.png_map_path is None:
         return {"ok": False, "error": "No source files available for cropping."}
@@ -449,20 +491,28 @@ def crop(
                 cfg=session.cfg,
             )
 
-        # Also write legacy un-prefixed thumbnail to preserve backwards-compatibility
+        # Also write legacy un-prefixed thumbnail and attempt-scoped thumbnail
+        url_file = saved
         try:
             import shutil
             shutil.copyfile(saved, legacy_thumb_path)
+            if attempt_thumb_path is not None:
+                shutil.copyfile(saved, attempt_thumb_path)
+                url_file = attempt_thumb_path
         except Exception:
             pass
 
-        # Build a relative URL for the frontend
+        # Build a relative URL for the frontend with cache-busting timestamp
         try:
-            rel_url = "/" + saved.relative_to(Path.cwd()).as_posix()
+            rel_url = "/" + url_file.relative_to(Path.cwd()).as_posix()
         except ValueError:
-            parts = saved.parts
+            parts = url_file.parts
             idx = next((i for i, p in enumerate(parts) if p == "runs"), 0)
             rel_url = "/" + "/".join(parts[idx:])
+        try:
+            rel_url = f"{rel_url}?v={int(url_file.stat().st_mtime_ns)}"
+        except Exception:
+            pass
 
         # Store evidence path on tile record
         if tile_id and tile_id in session.tiles:

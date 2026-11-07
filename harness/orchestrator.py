@@ -30,6 +30,7 @@ class TaskState:
     question: str = ""
     files: list = field(default_factory=list)
     plan: Optional[str] = None            # Phase 3: holds draft plan markdown
+    stac_preview: Optional[dict] = None   # Phase 0: holds STAC preview card data
     approval_event: threading.Event = field(default_factory=threading.Event)
     revision_feedback: Optional[str] = None
     auto_approve: bool = False
@@ -146,9 +147,16 @@ def find_artifacts(run_dir) -> list:
             idx = parts.index("runs") if "runs" in parts else 0
             rel = "/".join(parts[idx:])
 
+        # Append file mtime cache-buster so browser never serves stale attempt's GIF or image
+        url_with_ts = f"/{rel}"
+        try:
+            url_with_ts = f"/{rel}?v={int(p.stat().st_mtime_ns)}"
+        except Exception:
+            pass
+
         artifacts.append({
             "name": p.name,
-            "url": f"/{rel}",
+            "url": url_with_ts,
             "type": "image" if ext in (".png", ".svg") else "raster" if ext in (".tif", ".tiff") else "file",
             "ext": ext,
             "attempt": att_num,
@@ -192,6 +200,7 @@ class TaskManager:
                     ts.question = question
                     ts.files = list(files)
                     ts.plan = None
+                    ts.stac_preview = None
                     ts.auto_approve = self.auto_approve
                     ts.approval_event = threading.Event()
                     ts.revision_feedback = None
@@ -214,7 +223,7 @@ class TaskManager:
 
     def cancel_task(self, task_id: str) -> bool:
         ts = self.tasks.get(task_id)
-        if not ts or ts.status not in ("running", "pending_approval"):
+        if not ts or ts.status not in ("running", "pending_approval", "pending_stac_approval"):
             return False
 
         with self._lock:
@@ -259,9 +268,9 @@ class TaskManager:
             self.cancel_task(tid)
 
     def approve_task(self, task_id: str) -> bool:
-        """Phase 3: approve a pending plan."""
+        """Approve a pending STAC preview or analysis plan."""
         ts = self.tasks.get(task_id)
-        if not ts or ts.status != "pending_approval":
+        if not ts or ts.status not in ("pending_approval", "pending_stac_approval"):
             return False
         with self._lock:
             ts.revision_feedback = None
@@ -269,9 +278,9 @@ class TaskManager:
         return True
 
     def revise_task(self, task_id: str, feedback: str) -> bool:
-        """Phase 3: send revision feedback on a plan."""
+        """Send revision feedback on a pending STAC preview or analysis plan."""
         ts = self.tasks.get(task_id)
-        if not ts or ts.status != "pending_approval":
+        if not ts or ts.status not in ("pending_approval", "pending_stac_approval"):
             return False
         with self._lock:
             ts.revision_feedback = feedback
@@ -314,6 +323,10 @@ class TaskManager:
                 step_str = ev_data.get("step") or ev_data.get("status") or ts.status
             elif t == "plan_ready":
                 step_str = "Plan proposed"
+            elif t == "stac_preview_ready":
+                step_str = "STAC Satellite Preview Ready"
+            elif t == "stac_staged":
+                step_str = f"Staged {len(ev_data.get('files', []))} native-resolution STAC files"
             elif t == "turn":
                 step_str = f"Turn {ev_data.get('turn', '')}".strip()
             elif t == "artifacts":

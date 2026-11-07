@@ -320,10 +320,23 @@ def make_timeline_json(
     if len(dates) != len(frame_files):
         raise ValueError("dates and frame_files must have equal length")
 
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
     frames = []
     for i, (d, f) in enumerate(zip(dates, frame_files)):
         val = float(series_values[i]) if (series_values and i < len(series_values)) else None
-        fname = Path(f).name
+        src_frame_path = Path(f)
+        fname = src_frame_path.name
+        # Ensure every frame PNG referenced in timeline.json persists in the output directory
+        # even if the script initially rendered frames into /tmp or a temporary directory.
+        dest_frame_path = out.parent / fname
+        try:
+            if src_frame_path.is_file() and src_frame_path.resolve() != dest_frame_path.resolve():
+                import shutil
+                shutil.copy2(src_frame_path, dest_frame_path)
+        except Exception:
+            pass
         date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
         label_str = f"{date_str}: {val:.3f} {unit}".strip() if val is not None else date_str
         frames.append({
@@ -349,8 +362,6 @@ def make_timeline_json(
         "frames": frames,
     }
 
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as fp:
         json.dump(payload, fp, indent=2)
     return out

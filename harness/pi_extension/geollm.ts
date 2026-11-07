@@ -248,4 +248,150 @@ export default function (pi: ExtensionAPI) {
       });
     },
   });
+
+  // ---- Autonomous STAC Search Tool ----
+  pi.registerTool({
+    name: "search_stac",
+    label: "Search STAC Satellite Catalog",
+    description:
+      "Search Microsoft Planetary Computer STAC catalog for satellite scenes matching the user's location, dates, and modality. " +
+      "You can pass either a place name (`location_name`) to geocode or an explicit `bbox` ([min_lon, min_lat, max_lon, max_lat]). " +
+      "Returns candidate scenes with `id`, `collection`, `datetime`, `cloud_cover`, `aoi_coverage_pct`, `nodata_pct`, signed `thumbnail` URL, available band `assets`, and native resolution memory estimates.",
+    parameters: Type.Object({
+      location_name: Type.Optional(
+        Type.String({ description: "Optional place name to geocode if bbox is not provided (e.g. 'Basra, Iraq', 'Lake Mead')." })
+      ),
+      bbox: Type.Optional(
+        Type.Array(Type.Number(), {
+          description: "Geographic bounding box [min_lon, min_lat, max_lon, max_lat] in EPSG:4326.",
+        })
+      ),
+      start_date: Type.String({ description: "Start date in YYYY-MM-DD format." }),
+      end_date: Type.String({ description: "End date in YYYY-MM-DD format." }),
+      collections: Type.Array(Type.String(), {
+        description: "STAC collection IDs, e.g. ['sentinel-2-l2a'], ['landsat-c2-l2'], ['sentinel-1-rtc'], ['cop-dem-glo-30'], ['esa-worldcover'].",
+      }),
+      max_cloud_cover: Type.Optional(
+        Type.Number({ description: "Maximum cloud cover percentage (0-100), e.g. 15." })
+      ),
+      limit: Type.Optional(
+        Type.Number({ description: "Max items to return (default 12)." })
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      return await new Promise((resolve) => {
+        const path = require("node:path");
+        const stacCli = path.resolve(__dirname, "..", "stac_tool_cli.py");
+        const child = spawn(python, [stacCli, "search"], {
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        child.on("close", () => {
+          try {
+            const parsed = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+            resolve({
+              content: [{ type: "text", text: JSON.stringify(parsed, null, 2) }],
+              details: parsed,
+              isError: parsed.ok === false,
+            });
+          } catch {
+            resolve({
+              content: [{ type: "text", text: `STAC search failed: ${stderr || stdout}` }],
+              details: { ok: false, error: stderr || stdout },
+              isError: true,
+            });
+          }
+        });
+        child.on("error", (err: Error) => {
+          resolve({
+            content: [{ type: "text", text: `STAC search error: ${err.message}` }],
+            details: { ok: false, error: err.message },
+            isError: true,
+          });
+        });
+        child.stdin.write(JSON.stringify(params));
+        child.stdin.end();
+      });
+    },
+  });
+
+  // ---- STAC Preview & User Approval Tool ----
+  pi.registerTool({
+    name: "propose_stac_scenes",
+    label: "Show STAC Satellite Preview to User",
+    description:
+      "Present your selected STAC satellite scenes (with preview thumbnails, dates, cloud cover, AOI coverage %, and bands to download) " +
+      "to the user for approval or feedback BEFORE downloading GeoTIFFs or proposing an analysis plan. " +
+      "Once called, STOP and wait for user approval or feedback.",
+    parameters: Type.Object({
+      explanation: Type.String({
+        description: "Plain-English explanation for the user describing the selected location, dates, satellite scenes, coverage, and bands.",
+      }),
+      location_name: Type.Optional(
+        Type.String({ description: "Human-readable name of the study area." })
+      ),
+      bbox: Type.Array(Type.Number(), {
+        description: "Target AOI bounding box [min_lon, min_lat, max_lon, max_lat] in EPSG:4326 that will be cropped at 100% original native resolution.",
+      }),
+      scenes: Type.Array(
+        Type.Object({
+          collection: Type.String({ description: "STAC collection ID (e.g. 'sentinel-2-l2a')." }),
+          item_id: Type.String({ description: "Exact STAC item ID from search_stac results." }),
+          datetime: Type.Optional(Type.String({ description: "Scene acquisition datetime." })),
+          assets: Type.Array(Type.String(), {
+            description: "Band/asset keys to download at native resolution (e.g. ['B02', 'B03', 'B04', 'B08'] or ['vv', 'vh'] or ['data']).",
+          }),
+          thumbnail: Type.Optional(Type.String({ description: "Signed preview thumbnail URL from search_stac." })),
+          cloud_cover: Type.Optional(Type.Number({ description: "Cloud cover percentage." })),
+          aoi_coverage_pct: Type.Optional(Type.Number({ description: "AOI overlap percentage." })),
+        }),
+        { description: "List of selected satellite scenes to preview and stage upon user approval." }
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      return await new Promise((resolve) => {
+        const path = require("node:path");
+        const stacCli = path.resolve(__dirname, "..", "stac_tool_cli.py");
+        const child = spawn(python, [stacCli, "propose_preview"], {
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        child.on("close", () => {
+          try {
+            const parsed = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+            resolve({
+              content: [{ type: "text", text: parsed.message || JSON.stringify(parsed, null, 2) }],
+              details: parsed,
+              isError: parsed.ok === false,
+            });
+          } catch {
+            resolve({
+              content: [{ type: "text", text: `STAC preview submission failed: ${stderr || stdout}` }],
+              details: { ok: false, error: stderr || stdout },
+              isError: true,
+            });
+          }
+        });
+        child.on("error", (err: Error) => {
+          resolve({
+            content: [{ type: "text", text: `STAC preview error: ${err.message}` }],
+            details: { ok: false, error: err.message },
+            isError: true,
+          });
+        });
+        child.stdin.write(JSON.stringify(params));
+        child.stdin.end();
+      });
+    },
+  });
 }

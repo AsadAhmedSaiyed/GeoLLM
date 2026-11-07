@@ -36,12 +36,12 @@ _NO_TOOLS = "\n\nIMPORTANT: Reply in plain text only. Do not call any tools or f
 
 
 def _groq(messages, retry=True):
-    key = os.environ.get("GROQ_API_KEY")
-    model = os.environ.get("GEOLLM_CHAT_MODEL")
+    import harness
+    harness.reload_dotenv()
+    key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    model = (os.environ.get("GEOLLM_CHAT_MODEL") or "openai/gpt-oss-20b").strip()
     if not key:
         raise RuntimeError("Set GROQ_API_KEY in your environment.")
-    if not model:
-        raise RuntimeError("Set GEOLLM_CHAT_MODEL, for example openai/gpt-oss-20b.")
     r = requests.post(
         GROQ_URL,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -56,6 +56,9 @@ def _groq(messages, retry=True):
         patched[0]["content"] += _NO_TOOLS
         return _groq(patched, retry=False)
     if r.status_code != 200:
+        # Automatic fallback to OpenRouter if Groq key is rejected or service errors
+        if os.environ.get("OPENROUTER_API_KEY"):
+            return llm._openrouter(messages, show=False, stream=False)
         raise RuntimeError(f"Groq error {r.status_code}: {r.text[:300]}")
     text = (r.json()["choices"][0]["message"].get("content") or "").strip()
     if not text:
@@ -66,6 +69,8 @@ def _groq(messages, retry=True):
 def ask(history, job_summary, job_detail=""):
     """history: chat turns; the live multi-task reference is attached to the LAST user message only
     (built fresh every call, never stored in history)."""
+    import harness
+    harness.reload_dotenv()
     reference = ("\n\n[LIVE MULTI-TASK STATUS — Read this carefully before answering. "
                  "Use specific details from each task.]\n" + job_summary
                  + ("\n\n" + job_detail[:3500] if job_detail else ""))

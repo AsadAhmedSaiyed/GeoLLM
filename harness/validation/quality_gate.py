@@ -141,7 +141,11 @@ def _detect_cloud_mask(
         s = src.read(swir_idx, out_shape=sample_shape, masked=True).astype("float32")
 
         # Determine if data is integer scaled (e.g. 0..10000) or float reflectance (0..1)
-        valid_mask = ~(b.mask | g.mask | r.mask | s.mask)
+        b_mask = b.mask if isinstance(b.mask, np.ndarray) else np.zeros(sample_shape, dtype=bool)
+        g_mask = g.mask if isinstance(g.mask, np.ndarray) else np.zeros(sample_shape, dtype=bool)
+        r_mask = r.mask if isinstance(r.mask, np.ndarray) else np.zeros(sample_shape, dtype=bool)
+        s_mask = s.mask if isinstance(s.mask, np.ndarray) else np.zeros(sample_shape, dtype=bool)
+        valid_mask = ~(b_mask | g_mask | r_mask | s_mask)
         if valid_mask.any():
             b_arr = b.filled(np.nan)
             r_arr = r.filled(np.nan)
@@ -326,7 +330,11 @@ def compute_mutual_valid_mask(
             src_sample_shape = (max(1, src.height // step_src), max(1, src.width // step_src))
             arr_masked = src.read(1, out_shape=src_sample_shape, masked=True)
 
-            valid_src = ~arr_masked.mask
+            mask = arr_masked.mask
+            if isinstance(mask, np.ndarray):
+                valid_src = ~mask
+            else:
+                valid_src = np.zeros(src_sample_shape, dtype=bool) if mask else np.ones(src_sample_shape, dtype=bool)
             if arr_masked.data.dtype.kind == "f":
                 valid_src = valid_src & np.isfinite(arr_masked.data)
 

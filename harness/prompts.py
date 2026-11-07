@@ -84,11 +84,17 @@ IMPORTANT SCIENTIFIC GUIDANCE
   If the available data cannot support the requested class, state the
   limitation honestly.
 
-- Sentinel-2:
-  Be aware of product-specific scaling and processing conventions.
-  Sentinel-2 L2A reflectance values may use integer scaling and processing
-  offsets depending on the product/version.
-  Verify metadata and helper behavior before interpreting absolute values.
+- Sentinel-2 Radiometric Calibration & Cross-Date Harmonization:
+  * CRITICAL: Sentinel-2 L2A scenes processed under ESA Processing Baseline 04.00+ (all scenes acquired on or after 2022-01-25) encode surface reflectance with an additive offset `BOA_ADD_OFFSET = -1000` (`reflectance = (DN - 1000) / 10000.0`), whereas pre-2022-01-25 scenes have zero offset (`reflectance = DN / 10000.0`).
+  * Never compute normalized difference indices (`NDVI`, `NDBI`, `MNDWI`, etc.) directly on raw integer DNs across the 2022-01-25 boundary, as the `+1000` offset adds `+2000` to post-2022 denominators and artificially compresses index magnitudes by 30-50%.
+  * Always convert bands to physical Bottom-of-Atmosphere surface reflectance `[0.0, 1.0]` first via `geollm_lib.indices.to_surface_reflectance(arr, tags=src.tags(), filename=path.name)`.
+
+- Scientific Multi-Feature Modeling (Beyond Basic Single-Index NDVI/NDBI):
+  * Before computing any terrestrial histogram, Otsu cutoff, or land-cover area statistic, ALWAYS mask out open water (`SCL == 6` or `MNDWI > 0` or `NDWI > 0.1`) in addition to clouds/shadows (`SCL in [0, 1, 3, 8, 9, 10, 11]`).
+  * Raw `NDBI = (SWIR1 - NIR)/(SWIR1 + NIR)` confuses dry bare soil, sand, fallow agricultural fields, and rubble with built-up urban structures. For rigorous vegetation and built-up/urban analysis, combine:
+    1. Soil-adjusted & biophysical vegetation indices: `MSAVI2` (`geollm_lib.indices.compute_index('msavi2', ...)`), `SAVI`, `EVI`, `NDVI`, and canopy moisture `NDMI`.
+    2. Built-up impervious vs. bare-soil/rubble separation: Index-Based Built-Up Index (`IBI`, Xu 2008), Bare Soil Index (`BSI = ((SWIR1 + RED) - (NIR + BLUE)) / ((SWIR1 + RED) + (NIR + BLUE))`), Urban Index (`UI = (SWIR2 - NIR)/(SWIR2 + NIR)`), and spatial texture / local edge variance (e.g. `scipy.ndimage.sobel` or `3x3`/`5x5` local standard deviation, or `classify_with_pretrained`).
+    3. Multi-class land-cover transition matrices (`from_class -> to_class` in ha and `%`) and pixel-wise temporal trend & significance tests (`geollm_lib.series.ols_trend`, `sens_slope`, `mann_kendall`).
 
 - Time Series & Classification:
   For multi-temporal analysis, align rasters using `geollm_lib.series.load_series()` or verify matching grids.

@@ -53,37 +53,44 @@ export function SingleWorkerSlot({
 
   const statusLabel =
     task.status === 'running' ? (task.step || 'Running\u2026') :
+    task.status === 'pending_stac_approval' ? 'STAC Satellite Preview Pending Review' :
     task.status === 'pending_approval' ? 'Plan Pending Approval' :
     task.status === 'done' ? 'Completed' :
     task.status === 'failed' ? (task.error || 'Failed') : 'Idle';
 
+  const inputGateActivity = (task.activities || []).slice().reverse().find(a => a.type === 'vision_input_gate');
   const artifacts = task.artifacts || [];
+  const gifArt = artifacts.find(a => {
+    const name = typeof a === 'string' ? a : (a.name || '');
+    return name.toLowerCase().endsWith('.gif');
+  });
   const hasTimeline = artifacts.some(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
     return name.toLowerCase().includes('timeline.json');
-  });
+  }) || !!gifArt;
   const terrain3dArt = artifacts.find(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
     return name.toLowerCase().includes('terrain_3d.json');
   });
   const isLidar = artifacts.some(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
-    return ['lidar', 'chm', 'las', 'laz', 'canopy', 'above_ground', 'height_classes', 'vegetation_height', 'flat_ground'].some(k => name.toLowerCase().includes(k));
-  }) || (task.files || []).some(f => ['lidar', 'chm', 'las', 'laz', 'canopy', 'above_ground', 'autzen'].some(k => (f || '').toLowerCase().includes(k)))
+    return ['lidar', 'chm', 'las', 'laz', 'canopy_height'].some(k => name.toLowerCase().includes(k));
+  }) || (task.files || []).some(f => ['lidar', 'chm', 'las', 'laz', 'autzen'].some(k => (f || '').toLowerCase().includes(k)))
   || (task.prompt || '').toLowerCase().includes('lidar')
-  || (task.prompt || '').toLowerCase().includes('canopy')
-  || (task.prompt || '').toLowerCase().includes('height audit')
-  || (task.prompt || '').toLowerCase().includes('tallest structures')
-  || (task.prompt || '').toLowerCase().includes('flat ground')
-  || (task.prompt || '').toLowerCase().includes('vegetation')
-  || (task.prompt || '').toLowerCase().includes('buildings')
-  || (task.prompt || '').toLowerCase().includes('stadium');
+  || (task.prompt || '').toLowerCase().includes('canopy height')
+  || (task.prompt || '').toLowerCase().includes('point cloud');
 
-  const hasRaster = artifacts.some(a => {
+  const isElevation = artifacts.some(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
-    return name.toLowerCase().endsWith('.tif');
-  }) || (task.files || []).some(f => (f || '').toLowerCase().endsWith('.tif') || (f || '').toLowerCase().endsWith('.laz') || (f || '').toLowerCase().endsWith('.las'));
-  const canShow3D = !!terrain3dArt || hasRaster || (artifacts.length > 0);
+    return ['dem', 'elevation', 'dsm', 'dtm', 'cop-dem', 'srtm', 'nasadem', 'topography', 'terrain'].some(k => name.toLowerCase().includes(k));
+  }) || (task.files || []).some(f => ['dem', 'elevation', 'dsm', 'dtm', 'cop-dem', 'srtm', 'nasadem'].some(k => (f || '').toLowerCase().includes(k)))
+  || (task.prompt || '').toLowerCase().includes('elevation')
+  || (task.prompt || '').toLowerCase().includes('terrain')
+  || (task.prompt || '').toLowerCase().includes('topography')
+  || (task.prompt || '').toLowerCase().includes('dem')
+  || (task.prompt || '').toLowerCase().includes('slope');
+
+  const canShow3D = !!terrain3dArt || isLidar || isElevation;
   const profileSvgArt = artifacts.find(a => {
     const name = typeof a === 'string' ? a : (a.name || '');
     return name.toLowerCase().includes('profile.svg') || (name.toLowerCase().includes('profile') && name.toLowerCase().endsWith('.svg'));
@@ -101,7 +108,6 @@ export function SingleWorkerSlot({
   })();
 
   const relevantActivities = (task.activities || []).filter((act) => {
-    // Keep vision_check events so starting validation is clearly announced
     return true;
   });
 
@@ -120,7 +126,7 @@ export function SingleWorkerSlot({
               Elapsed: ${formatSeconds(task)} \u2022 Status: <span style=${{ fontWeight: 600 }}>${statusLabel}</span>
             </div>
           </div>
-          ${task.status === 'running' || task.status === 'pending_approval' ? html`
+          ${task.status === 'running' || task.status === 'pending_approval' || task.status === 'pending_stac_approval' ? html`
             <button
               type="button"
               className="btn danger"
@@ -132,6 +138,117 @@ export function SingleWorkerSlot({
           ` : null}
         </div>
       </div>
+
+      <!-- Autonomous STAC Satellite Preview & Approval Gate -->
+      ${task.status === 'pending_stac_approval' && task.stacPreview ? html`
+        <div className="plan-approval-banner" style=${{ borderLeft: '4px solid #0284C7', background: '#F0F9FF' }}>
+          <div className="plan-header" style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <span style=${{ fontSize: '14px', fontWeight: 700, color: '#0369A1' }}>
+              \ud83d\udef0\ufe0f Satellite Scene Previews \u2014 Review Before Native-Resolution Staging
+            </span>
+            <span className="mono" style=${{ fontSize: '11px', color: '#0284C7', background: '#E0F2FE', padding: '2px 8px', borderRadius: '10px' }}>
+              100% Native Resolution Preserved
+            </span>
+          </div>
+
+          ${task.stacPreview.explanation ? html`
+            <div style=${{ fontSize: '12.5px', color: '#1E293B', marginBottom: '10px', lineHeight: 1.5 }}>
+              <${MarkdownView} content=${task.stacPreview.explanation} />
+            </div>
+          ` : null}
+
+          <div className="mono" style=${{ fontSize: '11px', color: '#334155', background: '#E2E8F0', padding: '6px 10px', borderRadius: '6px', marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+            <span><strong>Location:</strong> ${task.stacPreview.location_name || 'Custom AOI'}</span>
+            ${task.stacPreview.bbox ? html`
+              <span><strong>BBox:</strong> [${task.stacPreview.bbox.map(n => Number(n).toFixed(4)).join(', ')}]</span>
+            ` : null}
+            ${task.stacPreview.native_grid_estimate ? html`
+              <span>
+                <strong>Native Grid:</strong> ~${task.stacPreview.native_grid_estimate.estimated_width_px}\u00d7${task.stacPreview.native_grid_estimate.estimated_height_px} px
+                (${task.stacPreview.native_grid_estimate.native_resolution_m}m native res, ${task.stacPreview.native_grid_estimate.area_km2} km\u00b2)
+              </span>
+            ` : null}
+          </div>
+
+          <div style=${{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '12px', marginBottom: '14px' }}>
+            ${(task.stacPreview.scenes || []).map((sc, idx) => html`
+              <div key=${sc.id || idx} style=${{ background: '#FFFFFF', border: '1px solid #CBD5E1', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                ${sc.thumbnail ? html`
+                  <div style=${{ background: '#0F172A', textAlign: 'center', height: '170px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    <img
+                      src=${sc.thumbnail}
+                      alt=${sc.label || sc.id}
+                      style=${{ maxHeight: '170px', maxWidth: '100%', objectFit: 'contain' }}
+                    />
+                  </div>
+                ` : html`
+                  <div className="mono" style=${{ height: '120px', background: '#1E293B', color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px' }}>
+                    No preview thumbnail
+                  </div>
+                `}
+                <div style=${{ padding: '8px 10px', fontSize: '11.5px' }}>
+                  <div style=${{ fontWeight: 700, color: '#0F172A', marginBottom: '4px' }}>
+                    ${sc.label || `Scene ${idx + 1}`}
+                  </div>
+                  <div className="mono" style=${{ fontSize: '10.5px', color: '#475569', lineHeight: 1.5 }}>
+                    <div><strong>Collection:</strong> ${sc.collection}</div>
+                    <div><strong>Date:</strong> ${(sc.datetime || '').slice(0, 10) || 'N/A'}</div>
+                    ${sc.cloud_cover !== null && sc.cloud_cover !== undefined ? html`
+                      <div><strong>Cloud Cover:</strong> ${sc.cloud_cover}%</div>
+                    ` : null}
+                    ${sc.aoi_coverage_pct !== null && sc.aoi_coverage_pct !== undefined ? html`
+                      <div><strong>AOI Coverage:</strong> ${sc.aoi_coverage_pct}%</div>
+                    ` : null}
+                    <div><strong>Bands:</strong> ${(sc.assets || []).join(', ')}</div>
+                  </div>
+                </div>
+              </div>
+            `)}
+          </div>
+
+          <div className="plan-actions">
+            <button
+              type="button"
+              className="btn primary"
+              style=${{ backgroundColor: '#0284C7', color: '#FFFFFF' }}
+              onClick=${() => onApprovePlan && onApprovePlan(taskId)}
+            >
+              \u2713 Approve & Stage Native-Resolution Images
+            </button>
+            <div style=${{ display: 'flex', gap: '8px', flex: 1, marginTop: '8px' }}>
+              <input
+                type="text"
+                className="input mono"
+                style=${{ flex: 1, fontSize: '11.5px' }}
+                placeholder="Or give feedback to search different images (e.g., '2020 image looks cloudy, try June instead')\u2026"
+                value=${revisionFeedback}
+                onChange=${(e) => setRevisionFeedback(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick=${() => {
+                  if (!revisionFeedback.trim()) {
+                    if (onNotify) onNotify('Please enter feedback for the satellite search.', 'warning');
+                    return;
+                  }
+                  onRevisePlan && onRevisePlan(taskId, revisionFeedback.trim());
+                  setRevisionFeedback('');
+                }}
+              >
+                Search Again
+              </button>
+            </div>
+          </div>
+        </div>
+      ` : null}
+
+      <!-- Input Quality Gate Status Card -->
+      ${inputGateActivity ? html`
+        <div style=${{ marginBottom: '12px' }}>
+          <${ValidationViewer} activity=${inputGateActivity} />
+        </div>
+      ` : null}
 
       <!-- Plan Approval Gate -->
       ${task.status === 'pending_approval' ? html`
@@ -207,12 +324,19 @@ export function SingleWorkerSlot({
           border: '1px solid #1E293B',
           boxShadow: '0 4px 14px rgba(0,0,0,0.3)'
         }}>
-          ${timelineFrame && timelineFrame.file ? (() => {
-            const frameFname = getBasename(timelineFrame.file);
-            const matchingArt = (artifacts || []).find((a) => getBasename(typeof a === 'string' ? a : a.name) === frameFname);
+          ${(timelineFrame || gifArt) ? (() => {
+            const frameFname = timelineFrame && timelineFrame.file ? getBasename(timelineFrame.file) : '';
+            const matchingArt = frameFname ? (artifacts || []).find((a) => getBasename(typeof a === 'string' ? a : a.name) === frameFname) : null;
+            const gifUrl = gifArt ? (typeof gifArt === 'string' ? `/runs/${gifArt}` : gifArt.url) : (timelineFrame && timelineFrame.gif_url ? timelineFrame.gif_url : null);
             const initialSrc = (matchingArt && matchingArt.url)
               ? matchingArt.url
-              : (timelineFrame.png_url || `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`);
+              : (timelineFrame && timelineFrame.png_url)
+              ? timelineFrame.png_url
+              : frameFname
+              ? `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`
+              : gifUrl;
+
+            if (!initialSrc) return null;
 
             return html`
             <div style=${{ textAlign: 'center', marginBottom: '10px' }}>
@@ -231,28 +355,44 @@ export function SingleWorkerSlot({
                     boxShadow: '0 4px 12px rgba(0,0,0,0.6)'
                   }}
                   onError=${(e) => {
-                    if (e.target.dataset.triedFallback) return;
+                    if (e.target.dataset.triedFallback === 'true') {
+                      if (gifUrl && e.target.src !== gifUrl) {
+                        e.target.dataset.triedFallback = 'gif';
+                        e.target.src = gifUrl;
+                      }
+                      return;
+                    }
                     e.target.dataset.triedFallback = 'true';
-                    const fbUrl = `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`;
-                    if (e.target.src !== fbUrl) e.target.src = fbUrl;
+                    if (frameFname) {
+                      const fbUrl = `/api/tasks/${taskId || task.id}/artifacts/${frameFname}`;
+                      if (e.target.src !== fbUrl) {
+                        e.target.src = fbUrl;
+                        return;
+                      }
+                    }
+                    if (gifUrl && e.target.src !== gifUrl) {
+                      e.target.src = gifUrl;
+                    }
                   }}
                 />
-                <div style=${{
-                  position: 'absolute',
-                  bottom: '10px',
-                  left: '12px',
-                  background: 'rgba(15, 23, 42, 0.85)',
-                  backdropFilter: 'blur(4px)',
-                  color: '#38BDF8',
-                  padding: '4px 10px',
-                  borderRadius: '4px',
-                  fontSize: '11px',
-                  fontWeight: 600,
-                  fontFamily: 'monospace',
-                  border: '1px solid rgba(56, 189, 248, 0.3)'
-                }}>
-                  ${timelineFrame.label || timelineFrame.date || ''}
-                </div>
+                ${(timelineFrame && (timelineFrame.label || timelineFrame.date)) ? html`
+                  <div style=${{
+                    position: 'absolute',
+                    bottom: '10px',
+                    left: '12px',
+                    background: 'rgba(15, 23, 42, 0.85)',
+                    backdropFilter: 'blur(4px)',
+                    color: '#38BDF8',
+                    padding: '4px 10px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    fontFamily: 'monospace',
+                    border: '1px solid rgba(56, 189, 248, 0.3)'
+                  }}>
+                    ${timelineFrame.label || timelineFrame.date || ''}
+                  </div>
+                ` : null}
               </div>
             </div>
             `;

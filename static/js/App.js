@@ -4,11 +4,11 @@ const { useState, useEffect, useRef } = React;
 
 import { TaskTabs } from '/static/js/components/TaskTabs.js?v=20261025_3';
 import { GlobeView } from '/static/js/components/GlobeView.js?v=20261026_3';
-import { SingleWorkerSlot } from '/static/js/components/SingleWorkerSlot.js?v=20261026_1';
+import { SingleWorkerSlot } from '/static/js/components/SingleWorkerSlot.js?v=20261106_stac';
 import { StacModal } from '/static/js/components/StacModal.js?v=20261026_2';
 import { SupervisorDrawer } from '/static/js/components/SupervisorDrawer.js?v=20261025_3';
 import { DatasetSidebar } from '/static/js/components/DatasetSidebar.js?v=20261025_2';
-import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261025_2';
+import { QueryConsole } from '/static/js/components/QueryConsole.js?v=20261106_stac';
 import { TiffPreviewModal } from '/static/js/components/TiffPreviewModal.js?v=20261025_2';
 import { ToastContainer } from '/static/js/components/Toast.js?v=20261025_2';
 
@@ -102,6 +102,7 @@ export function App() {
                         step: t.step || task.step,
                         error: t.error || task.error,
                         plan: t.plan !== undefined ? t.plan : task.plan,
+                        stacPreview: t.stac_preview !== undefined ? t.stac_preview : task.stacPreview,
                       }
                     };
                   });
@@ -128,9 +129,6 @@ export function App() {
       const res = await fetch('/api/files');
       const data = await res.json();
       setFiles(data.files || []);
-      if (data.files && data.files.length > 0 && selectedFiles.length === 0) {
-        setSelectedFiles(data.files.slice(0, 2).map(f => f.name));
-      }
     } catch (_) {}
   };
 
@@ -155,7 +153,19 @@ export function App() {
       if (!data.tasks) return;
 
       for (const t of data.tasks) {
-        if (t.status === 'running' || t.status === 'pending_approval') {
+        if (t.status === 'running' || t.status === 'pending_approval' || t.status === 'pending_stac_approval') {
+          setTasks(prev => ({
+            ...prev,
+            [t.task_id]: {
+              ...prev[t.task_id],
+              status: t.status,
+              question: t.question,
+              step: t.step || t.status,
+              elapsed: t.elapsed || 0,
+              plan: t.plan,
+              stacPreview: t.stac_preview
+            }
+          }));
           streamTask(t.task_id, t.question);
         } else if (['done', 'failed', 'partial'].includes(t.status)) {
           setTasks(prev => ({
@@ -166,7 +176,8 @@ export function App() {
               question: t.question,
               step: t.step || t.status,
               elapsed: t.elapsed || 0,
-              plan: t.plan
+              plan: t.plan,
+              stacPreview: t.stac_preview
             }
           }));
           fetchArtifacts(t.task_id);
@@ -194,10 +205,7 @@ export function App() {
 
   const handleSubmitTask = async (questionText, targetFiles) => {
     if (!questionText.trim()) return;
-    if (!targetFiles || !targetFiles.length) {
-      showToast('Please select at least one dataset file before running.', 'warning');
-      return;
-    }
+    const filesList = Array.isArray(targetFiles) ? targetFiles : [];
 
     setIsSubmitting(true);
     try {
@@ -206,7 +214,8 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: questionText,
-          files: targetFiles.join(',')
+          files: filesList.join(','),
+          bbox: activeAoiBbox || null
         })
       });
 
@@ -413,7 +422,17 @@ export function App() {
         } else if (t === 'vision_check') {
           setTasks(prev => {
             const task = prev[taskId];
-            const acts = [...(task.activities || [])];
+            let acts = [...(task.activities || [])];
+            if (msg.state === 'started' && msg.image) {
+              const targetBase = msg.image.split(/[/\\]/).pop();
+              // Supersede stale vision cards from earlier attempts for the same deliverable
+              acts = acts.filter(a => {
+                if (!a.type || !a.type.startsWith('vision_')) return true;
+                const aImg = a.image || a.file || '';
+                const aBase = aImg.split(/[/\\]/).pop();
+                return aBase !== targetBase;
+              });
+            }
             acts.push({
               type: 'vision_check',
               image: msg.image,
@@ -461,6 +480,35 @@ export function App() {
               }
             };
           });
+        } else if (t === 'stac_preview_ready') {
+          setTasks(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              status: 'pending_stac_approval',
+              stacPreview: msg.preview,
+              step: 'STAC satellite preview ready — review required'
+            }
+          }));
+
+          setFeedItems(prev => [
+            ...prev,
+            {
+              type: 'progress',
+              taskId,
+              text: 'Satellite scene previews ready — awaiting user approval'
+            }
+          ]);
+        } else if (t === 'stac_staged') {
+          loadFiles();
+          setTasks(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              files: msg.files || prev[taskId].files,
+              step: `Staged ${(msg.files || []).length} native-resolution GeoTIFFs`
+            }
+          }));
         } else if (t === 'plan_ready') {
           setTasks(prev => ({
             ...prev,
@@ -536,11 +584,11 @@ export function App() {
       await fetch(`/api/tasks/${taskId}/approve`, { method: 'POST' });
       setTasks(prev => ({
         ...prev,
-        [taskId]: { ...prev[taskId], status: 'running', plan: null }
+        [taskId]: { ...prev[taskId], status: 'running', plan: null, stacPreview: null }
       }));
       setFeedItems(prev => [
         ...prev,
-        { type: 'progress', taskId, text: 'Plan approved — executing code' }
+        { type: 'progress', taskId, text: 'Approved — resuming agent' }
       ]);
     } catch (_) {}
   };
@@ -554,11 +602,11 @@ export function App() {
       });
       setTasks(prev => ({
         ...prev,
-        [taskId]: { ...prev[taskId], status: 'running', plan: null }
+        [taskId]: { ...prev[taskId], status: 'running', plan: null, stacPreview: null }
       }));
       setFeedItems(prev => [
         ...prev,
-        { type: 'progress', taskId, text: `Revision requested: "${feedback.slice(0, 40)}..."` }
+        { type: 'progress', taskId, text: `Feedback sent: "${feedback.slice(0, 40)}..."` }
       ]);
     } catch (_) {}
   };

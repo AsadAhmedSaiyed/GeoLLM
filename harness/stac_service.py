@@ -340,9 +340,23 @@ async def search_stac_items(
         col = feat.get("collection", "")
         item_bbox = feat.get("bbox")
 
-        # Calculate geometric overlap percentage with user AOI
+        # Calculate geometric overlap percentage with user AOI (prefer exact footprint polygon)
         aoi_coverage_pct = None
-        if item_bbox and len(item_bbox) >= 4:
+        geom = feat.get("geometry")
+        if geom:
+            try:
+                from shapely.geometry import box as shapely_box, shape as shapely_shape
+                aoi_poly = shapely_box(aoi_w, aoi_s, aoi_e, aoi_n)
+                feat_poly = shapely_shape(geom)
+                if not feat_poly.is_valid:
+                    feat_poly = feat_poly.buffer(0)
+                if aoi_poly.area > 0:
+                    inter_area = aoi_poly.intersection(feat_poly).area
+                    aoi_coverage_pct = round(min(100.0, (inter_area / aoi_poly.area) * 100.0), 1)
+            except Exception:
+                aoi_coverage_pct = None
+
+        if aoi_coverage_pct is None and item_bbox and len(item_bbox) >= 4:
             feat_w, feat_s, feat_e, feat_n = item_bbox[0], item_bbox[1], item_bbox[2], item_bbox[3]
             inter_w = max(aoi_w, feat_w)
             inter_e = min(aoi_e, feat_e)
@@ -381,7 +395,7 @@ async def search_stac_items(
             a_type = a_val.get("type", "")
             if a_key in ["thumbnail", "rendered_preview"]:
                 continue
-            if "data" in roles or "overview" in roles or "image/tiff" in a_type or a_key in ["vv", "vh", "visual", "B02", "B03", "B04", "B08", "B11", "reflectance", "data"]:
+            if "data" in roles or "overview" in roles or "image/tiff" in a_type or a_key in ["vv", "vh", "visual", "B02", "B03", "B04", "B08", "B11", "B12", "SCL", "qa_pixel", "reflectance", "data"]:
                 asset_summary.append({
                     "key": a_key,
                     "title": a_val.get("title") or a_key,
@@ -397,10 +411,20 @@ async def search_stac_items(
             "nodata_pct": nodata_pct,
             "aoi_coverage_pct": aoi_coverage_pct,
             "platform": props.get("platform"),
+            "processing_baseline": props.get("s2:processing_baseline"),
             "bbox": feat.get("bbox"),
             "thumbnail": thumb_url,
             "assets": asset_summary,
         })
+
+    # Rank scenes by AOI coverage (high first) and cloud cover (low first) so best scenes appear at the top
+    normalized_items.sort(
+        key=lambda it: (
+            -(float(it["aoi_coverage_pct"]) if it.get("aoi_coverage_pct") is not None else 50.0),
+            float(it["cloud_cover"]) if it.get("cloud_cover") is not None else 50.0,
+            float(it["nodata_pct"]) if it.get("nodata_pct") is not None else 0.0,
+        )
+    )
 
     return {
         "ok": True,
@@ -542,5 +566,319 @@ async def stage_stac_asset(
             "updated_at": time.time(),
         })
         return {"ok": False, "error": err}
+
+
+async def geocode_location(place_query: str) -> Dict[str, Any]:
+    """
+    Resolve a natural-language place name to a geographic bounding box [min_lon, min_lat, max_lon, max_lat]
+    using OpenStreetMap Nominatim.
+    """
+    import urllib.parse
+    q_clean = (place_query or "").strip()
+    if not q_clean:
+        return {"ok": False, "error": "Empty location query"}
+    encoded = urllib.parse.quote(q_clean)
+    url = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&limit=3"
+    try:
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, _sync_get_json, url, 15.0)
+        if isinstance(results, list) and results:
+            best = results[0]
+            bb = best.get("boundingbox")  # [south_lat, north_lat, west_lon, east_lon]
+            lat = float(best.get("lat", 0.0))
+            lon = float(best.get("lon", 0.0))
+            if bb and len(bb) == 4:
+                s_lat, n_lat, w_lon, e_lon = float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])
+                # Cap overly large administrative boxes (e.g. entire country) to a ~35km x 35km window around center
+                # so native 10m resolution stays well within container RAM limits
+                if (e_lon - w_lon) > 0.45 or (n_lat - s_lat) > 0.45:
+                    w_lon, e_lon = lon - 0.15, lon + 0.15
+                    s_lat, n_lat = lat - 0.15, lat + 0.15
+                elif (e_lon - w_lon) < 0.02 or (n_lat - s_lat) < 0.02:
+                    w_lon, e_lon = lon - 0.08, lon + 0.08
+                    s_lat, n_lat = lat - 0.08, lat + 0.08
+                bbox = [round(w_lon, 5), round(s_lat, 5), round(e_lon, 5), round(n_lat, 5)]
+            else:
+                bbox = [round(lon - 0.12, 5), round(lat - 0.12, 5), round(lon + 0.12, 5), round(lat + 0.12, 5)]
+            return {
+                "ok": True,
+                "query": q_clean,
+                "display_name": best.get("display_name", q_clean),
+                "bbox": bbox,
+                "center": [round(lon, 5), round(lat, 5)],
+            }
+        return {"ok": False, "error": f"No coordinates found for '{q_clean}'"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Geocoding error: {exc}"}
+
+
+def _sync_stage_cog_window_native(
+    signed_href: str,
+    dest_path: Path,
+    bbox_wgs84: List[float],
+    max_native_pixels: int = 36_000_000,
+    metadata_tags: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Streams the exact AOI window from a Cloud-Optimized GeoTIFF at 100% original native resolution.
+    Preserves original pixel spacing, CRS, dtype, nodata, band count, and affine transform.
+    Never resamples or alters resolution.
+    """
+    import numpy as np
+    import rasterio
+    from rasterio.windows import Window, from_bounds as window_from_bounds
+    from rasterio.warp import transform_bounds
+
+    env_opts = {
+        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.tiff,.TIF,.TIFF",
+        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+        "GDAL_HTTP_MULTIPLEX": "YES",
+    }
+    with rasterio.Env(**env_opts):
+        with rasterio.open(signed_href) as src:
+            if src.crs is not None:
+                t_left, t_bottom, t_right, t_top = transform_bounds(
+                    "EPSG:4326", src.crs,
+                    bbox_wgs84[0], bbox_wgs84[1], bbox_wgs84[2], bbox_wgs84[3],
+                    densify_pts=21,
+                )
+            else:
+                t_left, t_bottom, t_right, t_top = bbox_wgs84[:4]
+
+            # Intersect with raster bounds
+            i_left = max(src.bounds.left, min(t_left, t_right))
+            i_right = min(src.bounds.right, max(t_left, t_right))
+            i_bottom = max(src.bounds.bottom, min(t_bottom, t_top))
+            i_top = min(src.bounds.top, max(t_bottom, t_top))
+
+            if i_right <= i_left or i_top <= i_bottom:
+                return {
+                    "ok": False,
+                    "error": f"Requested AOI {bbox_wgs84} does not intersect raster bounds {list(src.bounds)}.",
+                }
+
+            raw_win = window_from_bounds(i_left, i_bottom, i_right, i_top, src.transform)
+            win = raw_win.round_offsets().round_lengths()
+            full_win = Window(0, 0, src.width, src.height)
+            win = win.intersection(full_win)
+
+            win_w = int(round(win.width))
+            win_h = int(round(win.height))
+            if win_w <= 0 or win_h <= 0:
+                return {"ok": False, "error": "Computed AOI window has 0 pixels."}
+
+            total_px = win_w * win_h
+            if total_px > max_native_pixels:
+                return {
+                    "ok": False,
+                    "memory_limit_exceeded": True,
+                    "error": (
+                        f"Native resolution window is {win_w}x{win_h} pixels ({total_px:,} px), "
+                        f"which exceeds the safe container memory limit ({max_native_pixels:,} px). "
+                        f"To preserve 100% native resolution without OOM, please narrow the AOI bounding box "
+                        f"or select a coarser native sensor (e.g. 30m Landsat/DEM)."
+                    ),
+                }
+
+            # Read at 100% original native resolution (NO out_shape / NO resampling)
+            data = src.read(window=win)
+            win_transform = src.window_transform(win)
+
+            profile = src.profile.copy()
+            profile.update({
+                "driver": "GTiff",
+                "height": win_h,
+                "width": win_w,
+                "transform": win_transform,
+                "compress": "deflate",
+                "tiled": True if win_w >= 256 and win_h >= 256 else False,
+            })
+            if not profile.get("tiled"):
+                profile.pop("blockxsize", None)
+                profile.pop("blockysize", None)
+            else:
+                profile["blockxsize"] = 256
+                profile["blockysize"] = 256
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(dest_path, "w", **profile) as dst:
+                dst.write(data)
+                has_desc = False
+                if src.descriptions:
+                    for b_idx, desc in enumerate(src.descriptions, start=1):
+                        if desc:
+                            dst.set_band_description(b_idx, desc)
+                            has_desc = True
+                if not has_desc and metadata_tags and metadata_tags.get("asset_key") and dst.count == 1:
+                    dst.set_band_description(1, str(metadata_tags["asset_key"]))
+                merged_tags = {}
+                try:
+                    if src.tags():
+                        merged_tags.update({k: str(v) for k, v in src.tags().items() if v is not None})
+                except Exception:
+                    pass
+                if metadata_tags:
+                    merged_tags.update({k: str(v) for k, v in metadata_tags.items() if v is not None})
+                if merged_tags:
+                    dst.update_tags(**merged_tags)
+
+            # Calculate valid data percentage inside the clipped native window
+            nodata_val = src.nodata
+            band1 = data[0]
+            if nodata_val is not None:
+                if np.isnan(nodata_val):
+                    valid_mask = ~np.isnan(band1)
+                else:
+                    valid_mask = (band1 != nodata_val) & (band1 != 0)
+            else:
+                valid_mask = (band1 != 0) & (~np.isnan(band1) if np.issubdtype(band1.dtype, np.floating) else np.ones_like(band1, dtype=bool))
+            valid_pct = round(float(np.count_nonzero(valid_mask)) / max(1, band1.size) * 100.0, 1)
+
+            res_x = round(abs(win_transform.a), 4)
+            res_y = round(abs(win_transform.e), 4)
+
+            return {
+                "ok": True,
+                "width": win_w,
+                "height": win_h,
+                "crs": str(src.crs),
+                "native_resolution": [res_x, res_y],
+                "dtype": str(src.dtypes[0]),
+                "valid_pct": valid_pct,
+            }
+
+
+async def stage_stac_aoi_native(
+    collection: str,
+    item_id: str,
+    asset_key: str,
+    bbox_wgs84: Optional[List[float]],
+    output_dir: Path,
+    custom_filename: Optional[str] = None,
+    max_native_pixels: int = 36_000_000,
+) -> Dict[str, Any]:
+    """
+    Stages a STAC asset cropped to the user's AOI bounding box at 100% original native resolution.
+    If bbox_wgs84 is None, falls back to stage_stac_asset.
+    """
+    if not bbox_wgs84 or len(bbox_wgs84) < 4:
+        return await stage_stac_asset(collection, item_id, asset_key, output_dir, custom_filename)
+
+    stage_id = f"{item_id}_{asset_key}"
+    try:
+        item_data = await http_get_json(f"{STAC_API_URL}/collections/{collection}/items/{item_id}", timeout=60.0)
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to retrieve STAC item {item_id}: {e}"}
+
+    assets = item_data.get("assets", {})
+    if asset_key not in assets:
+        return {"ok": False, "error": f"Asset '{asset_key}' not found in item {item_id}"}
+
+    raw_href = assets[asset_key]["href"]
+    try:
+        sign_data = await http_get_json(f"{SAS_API_URL}/sign?href={raw_href}", timeout=30.0)
+        signed_href = sign_data.get("href", raw_href)
+    except Exception:
+        signed_href = raw_href
+
+    ext = Path(raw_href.split("?")[0]).suffix or ".tif"
+    if custom_filename:
+        filename = custom_filename if custom_filename.endswith(ext) else f"{custom_filename}{ext}"
+    else:
+        dt_str = (item_data.get("properties", {}).get("datetime") or "scene")[:10]
+        filename = f"{collection}_{dt_str}_{asset_key}{ext}"
+
+    dest_path = output_dir / filename
+    ACTIVE_DOWNLOADS[stage_id] = {
+        "stage_id": stage_id,
+        "collection": collection,
+        "item_id": item_id,
+        "asset_key": asset_key,
+        "filename": filename,
+        "path": str(dest_path),
+        "status": "downloading",
+        "percent": 25.0,
+        "downloaded_mb": 0.0,
+        "total_mb": 0.0,
+        "speed_mbps": 0.0,
+        "error": None,
+        "updated_at": time.time(),
+    }
+
+    try:
+        props = item_data.get("properties", {})
+        dt_full = props.get("datetime") or props.get("start_datetime") or ""
+        acq_date = dt_full[:10] if dt_full else ""
+        s2_baseline = str(props.get("s2:processing_baseline") or "")
+        boa_add_offset = 0
+        if collection == "sentinel-2-l2a" and asset_key not in ("SCL", "AOT", "WVP", "visual"):
+            try:
+                if s2_baseline and float(s2_baseline) >= 4.0:
+                    boa_add_offset = -1000
+                elif acq_date >= "2022-01-25":
+                    boa_add_offset = -1000
+            except ValueError:
+                if acq_date >= "2022-01-25":
+                    boa_add_offset = -1000
+        metadata_tags = {
+            "collection": collection,
+            "sensor": collection,
+            "item_id": item_id,
+            "asset_key": asset_key,
+            "datetime": dt_full,
+            "acquisition_date": acq_date,
+            "platform": props.get("platform") or "",
+            "s2_processing_baseline": s2_baseline,
+            "BOA_ADD_OFFSET": str(boa_add_offset) if collection == "sentinel-2-l2a" else "",
+            "eo_cloud_cover": props.get("eo:cloud_cover"),
+        }
+        loop = asyncio.get_running_loop()
+        cog_res = await loop.run_in_executor(
+            None,
+            _sync_stage_cog_window_native,
+            signed_href,
+            dest_path,
+            bbox_wgs84,
+            max_native_pixels,
+            metadata_tags,
+        )
+        if not cog_res.get("ok"):
+            ACTIVE_DOWNLOADS[stage_id].update({
+                "status": "failed",
+                "error": cog_res.get("error"),
+                "updated_at": time.time(),
+            })
+            return cog_res
+
+        size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
+        ACTIVE_DOWNLOADS[stage_id].update({
+            "status": "completed",
+            "percent": 100.0,
+            "downloaded_mb": size_mb,
+            "total_mb": size_mb,
+            "updated_at": time.time(),
+        })
+        return {
+            "ok": True,
+            "filename": filename,
+            "path": str(dest_path),
+            "size_mb": size_mb,
+            "collection": collection,
+            "item_id": item_id,
+            "asset_key": asset_key,
+            **cog_res,
+        }
+    except Exception as e:
+        if dest_path.exists():
+            dest_path.unlink(missing_ok=True)
+        err = f"Native AOI window staging failed: {e}"
+        ACTIVE_DOWNLOADS[stage_id].update({
+            "status": "failed",
+            "error": err,
+            "updated_at": time.time(),
+        })
+        return {"ok": False, "error": err}
+
 
 

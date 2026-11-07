@@ -75,6 +75,19 @@ NUDGE_PROMPT = (
 _MAP_SUFFIXES = ("_map", "_plot", "_viz", "_output", "_result", "_classified")
 
 
+def _extract_date_tokens(text: str) -> Tuple[set[str], set[str]]:
+    """Extract normalized YYYY-MM[-DD] and YYYY date tokens even when bounded by underscores."""
+    s = text.lower()
+    raw_dates = re.findall(r"(?<!\d)\d{4}[-_]\d{2}(?:[-_]\d{2})?(?!\d)", s)
+    norm_dates = {d.replace("_", "-") for d in raw_dates}
+    # Also include YYYY-MM prefix for any YYYY-MM-DD token so month-level matching works
+    for d in list(norm_dates):
+        if len(d) == 10:
+            norm_dates.add(d[:7])
+    years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", s))
+    return norm_dates, years
+
+
 def _rank_rasters(
     rasters: Sequence[Path],
     target_path: Path,
@@ -85,9 +98,7 @@ def _rank_rasters(
         return []
 
     stem = target_path.stem.lower()
-
-    date_matches = set(re.findall(r"\b\d{4}[-_]\d{2}(?:[-_]\d{2})?\b", stem))
-    years = set(re.findall(r"\b20\d{2}\b", stem))
+    date_matches, years = _extract_date_tokens(stem)
     months = {
         "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
         "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
@@ -102,24 +113,26 @@ def _rank_rasters(
         if s == stem or s in _stem_variants(stem) or stem in _stem_variants(s):
             pts += 200
 
-        # Full date match
-        p_dates = set(re.findall(r"\b\d{4}[-_]\d{2}(?:[-_]\d{2})?\b", s))
+        p_dates, p_years = _extract_date_tokens(s)
+
+        # Full / YYYY-MM date match
         if date_matches and (date_matches & p_dates):
             pts += 100
 
         # Year match
-        p_years = set(re.findall(r"\b20\d{2}\b", s))
         if years and (years & p_years):
             pts += 40
 
         # Month match
         for m in target_months:
-            if m in s or months[m] in s:
+            if m in s or f"-{months[m]}" in s.replace("_", "-"):
                 pts += 30
 
         # Change/diff match
         change_words = ("change", "diff", "transition", "loss", "gain", "comparison")
-        has_change_kw = any(w in stem for w in change_words) or any(cw in kw.lower() for kw in context_keywords for cw in change_words)
+        has_change_kw = any(w in stem for w in change_words) or any(
+            cw in kw.lower() for kw in context_keywords for cw in change_words
+        )
         if has_change_kw and any(w in s for w in change_words):
             pts += 60
 
@@ -146,27 +159,41 @@ def _discover_rasters(
     directly for input_rasters.
 
     Search order (output rasters):
-    1. ``output_dir/<png_stem>.tif[f]``
+    1. ``png_path.parent/<png_stem>.tif[f]`` and ``output_dir/<png_stem>.tif[f]``
     2. Strip known trailing tokens from stem, then try ``.tif[f]``
-    3. All ``*.tif``/``*.tiff`` in ``output_dir`` sorted by mtime (newest first)
+    3. All ``*.tif``/``*.tiff`` in ``png_path.parent``, ``output_dir``, and ``attempt_*/outputs``
     4. Repeat step 3 for ``output_dir.parent``
 
     Returns
     -------
-    (input_rasters, output_rasters) — each up to 3 paths, may be empty.
+    (input_rasters, output_rasters) — ranked by relevance to *png_path*.
     """
     stem = png_path.stem
     candidates: List[Path] = []
 
-    # 1 & 2 — exact and stripped stem matches
-    for try_stem in _stem_variants(stem):
-        for ext in (".tif", ".tiff"):
-            p = output_dir / (try_stem + ext)
-            if p.is_file():
-                candidates.append(p)
+    search_dirs: List[Path] = []
+    if png_path.parent.is_dir() and png_path.parent.name != "thumbs":
+        search_dirs.append(png_path.parent)
+    if output_dir.is_dir() and output_dir not in search_dirs:
+        search_dirs.append(output_dir)
+    # Also scan attempt_*/outputs inside output_dir (newest attempt first)
+    if output_dir.is_dir():
+        for ad in sorted(output_dir.glob("attempt_*"), reverse=True):
+            out_sub = ad / "outputs"
+            if out_sub.is_dir() and out_sub not in search_dirs:
+                search_dirs.append(out_sub)
 
-    # 3 — scan output_dir
-    candidates.extend(_tifs_by_mtime(output_dir))
+    # 1 & 2 — exact and stripped stem matches across search_dirs
+    for sdir in search_dirs:
+        for try_stem in _stem_variants(stem):
+            for ext in (".tif", ".tiff"):
+                p = sdir / (try_stem + ext)
+                if p.is_file():
+                    candidates.append(p)
+
+    # 3 — scan all search_dirs for GeoTIFFs
+    for sdir in search_dirs:
+        candidates.extend(_tifs_by_mtime(sdir))
 
     # 4 — scan parent
     if output_dir.parent != output_dir:
@@ -187,7 +214,7 @@ def _discover_rasters(
     if real_inputs:
         valid_inputs = [Path(p) for p in real_inputs if Path(p).is_file()]
         ranked_inputs = _rank_rasters(valid_inputs, png_path, context_keywords=context_keywords)
-        input_rasters = ranked_inputs[:3]
+        input_rasters = ranked_inputs
     else:
         # Heuristic fallback: treat discovered TIFFs as input candidates
         input_rasters = ranked_outputs[:3]
@@ -207,12 +234,12 @@ def _stem_variants(stem: str) -> List[str]:
 
 
 def _tifs_by_mtime(directory: Path) -> List[Path]:
-    """Return up to 3 GeoTIFF files in *directory* sorted by mtime descending."""
+    """Return all GeoTIFF files in *directory* sorted by mtime descending."""
     try:
         tifs = [p for p in directory.iterdir()
                 if p.suffix.lower() in (".tif", ".tiff") and p.is_file()]
         tifs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return tifs[:3]
+        return tifs
     except (OSError, PermissionError):
         return []
 
@@ -864,25 +891,94 @@ def validate_artifacts(
 
     sorted_pngs = sorted(pngs, key=_priority)
     target_pngs = sorted_pngs[:_cfg.max_images_per_run]
+
+    def _resolve_gif_frame_dates(gif_p: Path, n_frames: int) -> Dict[int, str]:
+        """Resolve observation date tokens for GIF frame indices without hardcoding."""
+        frame_dates: Dict[int, str] = {}
+        # 1. Check timeline.json in the GIF's directory or attempt_*/outputs
+        tl_candidates: List[Path] = []
+        if gif_p.parent.is_dir():
+            tl_candidates.append(gif_p.parent / "timeline.json")
+        if _output_dir.is_dir():
+            tl_candidates.append(_output_dir / "timeline.json")
+            for ad in sorted(_output_dir.glob("attempt_*"), reverse=True):
+                tl_candidates.append(ad / "outputs" / "timeline.json")
+
+        for tl_file in tl_candidates:
+            if tl_file.is_file():
+                try:
+                    tl_data = json.loads(tl_file.read_text(encoding="utf-8"))
+                    frames_list = tl_data.get("frames") or []
+                    if isinstance(frames_list, list) and frames_list:
+                        for idx, fr in enumerate(frames_list):
+                            if not isinstance(fr, dict):
+                                continue
+                            raw_txt = " ".join(
+                                str(fr.get(k) or "") for k in ("date", "label", "file")
+                            )
+                            dts, yrs = _extract_date_tokens(raw_txt)
+                            full_dts = sorted((d for d in dts if len(d) >= 7), key=len, reverse=True)
+                            if full_dts:
+                                frame_dates[idx] = full_dts[0]
+                            elif yrs:
+                                frame_dates[idx] = sorted(yrs)[0]
+                        if frame_dates:
+                            return frame_dates
+                except Exception:
+                    pass
+
+        # 2. Check sorted unique dates from output rasters in gif_p.parent and real input_files
+        candidate_files: List[Path] = []
+        if gif_p.parent.is_dir():
+            candidate_files.extend(
+                p for p in gif_p.parent.iterdir()
+                if p.is_file() and p.suffix.lower() in (".tif", ".tiff", ".png")
+            )
+        if input_files:
+            candidate_files.extend(Path(p) for p in input_files)
+
+        all_ym_dates: set[str] = set()
+        all_years: set[str] = set()
+        for cf in candidate_files:
+            dts, yrs = _extract_date_tokens(cf.stem)
+            # Prefer most specific date token per file (YYYY-MM-DD over YYYY-MM)
+            specific = sorted(dts, key=len, reverse=True)
+            if specific:
+                all_ym_dates.add(specific[0])
+            all_years.update(yrs)
+
+        sorted_dates = sorted(all_ym_dates) if all_ym_dates else sorted(all_years)
+        if len(sorted_dates) == n_frames:
+            for idx, dt in enumerate(sorted_dates):
+                frame_dates[idx] = dt
+        elif len(sorted_dates) >= 2 and n_frames >= 2:
+            frame_dates[0] = sorted_dates[0]
+            frame_dates[n_frames - 1] = sorted_dates[-1]
+            frame_dates[n_frames // 2] = sorted_dates[len(sorted_dates) // 2]
+
+        return frame_dates
+
     # Expand GIF files into sampled frames (first, middle, last)
     expanded = []
     source_artifact_map: Dict[str, str] = {}
     for rel in target_pngs:
         if str(rel).lower().endswith(".gif"):
-            gif_path = output_dir / rel
+            gif_path = _output_dir / rel
             try:
                 from PIL import Image as _PILImage
                 gif = _PILImage.open(gif_path)
                 n = getattr(gif, "n_frames", 1)
                 indices = sorted({0, n // 2, n - 1})
                 stem = Path(rel).stem
+                frame_date_map = _resolve_gif_frame_dates(gif_path, n)
                 for idx in indices:
                     gif.seek(idx)
-                    frame_name = f"thumbs/{stem}_frame_{idx}.png"
-                    frame_path = feedback_dir / frame_name
+                    dt_suffix = f"_{frame_date_map[idx]}" if idx in frame_date_map else ""
+                    frame_name = f"thumbs/{stem}_frame_{idx}{dt_suffix}.png"
+                    frame_path = _feedback_dir / frame_name
                     frame_path.parent.mkdir(parents=True, exist_ok=True)
                     gif.convert("RGB").save(frame_path)
-                    exp_rel = str(frame_path.relative_to(output_dir)) if frame_path.is_relative_to(output_dir) else frame_name
+                    exp_rel = str(frame_path.relative_to(_output_dir)) if frame_path.is_relative_to(_output_dir) else frame_name
                     expanded.append(exp_rel)
                     source_artifact_map[exp_rel] = rel
             except Exception as _gif_err:

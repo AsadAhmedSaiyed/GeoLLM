@@ -29,14 +29,10 @@ export function QueryConsole({
       if (onNotify) onNotify('Please enter a task description before running.', 'warning');
       return;
     }
-    if (!selectedFiles || selectedFiles.length === 0) {
-      if (onNotify) onNotify('Please select at least one dataset from the sidebar.', 'warning');
-      return;
-    }
 
-    // Preserve task data before resetting state
+    // Preserve task data before resetting state (empty array triggers Autonomous STAC Discovery)
     const currentPrompt = trimmedPrompt;
-    const currentFiles = [...selectedFiles];
+    const currentFiles = [...(selectedFiles || [])];
 
     // Submit task
     onSubmitTask(currentPrompt, currentFiles);
@@ -52,7 +48,7 @@ export function QueryConsole({
 
       <textarea
         id="q"
-        placeholder="Describe the geospatial task (e.g. Compare 2016 and 2024 Sentinel-1 radar backscatter over Dubai, run Otsu thresholding, save change GeoTIFF and summary)..."
+        placeholder="Describe your task or location & dates in plain English (e.g. 'Show how green farming area changed near Basra, Iraq between May 2020 and May 2025')..."
         value=${prompt}
         onInput=${(e) => setPrompt(e.target.value)}
         onKeyDown=${handleKeyDown}
@@ -61,8 +57,8 @@ export function QueryConsole({
 
       <div className="att">
         ${selectedFiles.length === 0 ? html`
-          <span style=${{ fontSize: '12px', color: '#5B6B64', fontStyle: 'italic' }}>
-            No datasets attached · select files in sidebar to attach
+          <span style=${{ fontSize: '12px', color: '#0F766E', fontWeight: 500 }}>
+            \ud83d\udef0\ufe0f Autonomous STAC Mode \u2014 Agent will search & preview satellite imagery for your query (or select local files in sidebar)
           </span>
         ` : selectedFiles.map(fn => html`
           <span key=${fn} className="at mono">
@@ -72,7 +68,7 @@ export function QueryConsole({
               onClick=${() => removeSelectedFile(fn)}
               title="Remove dataset"
             >
-              ✕
+              \u2715
             </span>
           </span>
         `)}
@@ -84,7 +80,7 @@ export function QueryConsole({
         <button
           className="btn p"
           onClick=${handleRun}
-          disabled=${isSubmitting || !prompt.trim() || selectedFiles.length === 0}
+          disabled=${isSubmitting || !prompt.trim()}
           type="button"
           style=${{ height: '40px', padding: '0 20px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
         >

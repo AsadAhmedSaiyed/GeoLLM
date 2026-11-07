@@ -26,9 +26,10 @@ export function TimeSeriesPanel({
     setLoading(true);
     setError(null);
 
-    const timelineUrl = taskId
+    const baseTimelineUrl = taskId
       ? `/api/runs/${encodeURIComponent(taskId)}/timeline.json`
       : `/api/artifacts/timeline.json?dir=${encodeURIComponent(runDir)}`;
+    const timelineUrl = `${baseTimelineUrl}?t=${Date.now()}`;
 
     fetch(timelineUrl)
       .then((res) => {
@@ -40,10 +41,14 @@ export function TimeSeriesPanel({
       .then((data) => {
         if (!isMounted) return;
         if (data && data.frames && data.frames.length > 0) {
-          setTimeline(data);
+          const framesWithGif = data.frames.map(fr => ({
+            ...fr,
+            gif_url: fr.gif_url || data.gif_url
+          }));
+          setTimeline({ ...data, frames: framesWithGif });
           setCurrentIndex(0);
           if (onFrameChange) {
-            onFrameChange(data.frames[0], 0);
+            onFrameChange(framesWithGif[0], 0);
           }
         } else {
           setError('Timeline has no frames');

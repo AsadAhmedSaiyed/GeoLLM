@@ -228,7 +228,11 @@ def main():
     out = {"ok": False, "attempt": 0, "message": "runner failed before starting", "artifacts": []}
     try:
         run_dir = Path(os.environ["GEOLLM_RUN_DIR"])
-        allowed = json.loads(os.environ["GEOLLM_ALLOWED_FILES"])
+        allowed_override = run_dir / "allowed_files.json"
+        if allowed_override.exists():
+            allowed = json.loads(allowed_override.read_text(encoding="utf-8"))
+        else:
+            allowed = json.loads(os.environ["GEOLLM_ALLOWED_FILES"])
         payload = json.loads(sys.stdin.read())
         attempt, attempt_dir = _next_attempt(run_dir)
         out["attempt"] = attempt

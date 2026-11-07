@@ -48,6 +48,7 @@ class TaskSubmission(BaseModel):
     question: str
     files: str = ""
     bands: str = ""
+    bbox: Optional[List[float]] = None
 
 class RevisionPayload(BaseModel):
     feedback: str
@@ -107,8 +108,6 @@ async def upload_file(files: List[UploadFile] = File(...)):
 @app.post("/api/tasks")
 async def submit_task(payload: TaskSubmission):
     selected_files = [f.strip() for f in payload.files.split(",") if f.strip()]
-    if not selected_files:
-        return JSONResponse({"error": "Please select at least one dataset file to analyze."}, status_code=400)
 
     file_args = []
     for f in selected_files:
@@ -118,6 +117,8 @@ async def submit_task(payload: TaskSubmission):
         file_args.append(str(p))
 
     overrides = {}
+    if payload.bbox and len(payload.bbox) >= 4:
+        overrides["bbox"] = [float(x) for x in payload.bbox[:4]]
     if payload.bands:
         for part in filter(None, payload.bands.split(",")):
             role, _, num = part.partition("=")
@@ -146,6 +147,7 @@ async def list_tasks():
             "error": ts.error,
             "elapsed": round((ts.ended or time.time()) - ts.started, 1) if ts.started else 0,
             "plan": ts.plan,
+            "stac_preview": ts.stac_preview,
         })
     return JSONResponse({"tasks": tasks})
 
@@ -225,11 +227,12 @@ async def get_timeline(task_id: str):
     if not run_dir:
         return JSONResponse({"error": "No run_dir"}, status_code=404)
     p = Path(run_dir)
-    cands = list(p.rglob("timeline.json"))
+    cands = sorted(p.rglob("timeline.json"), key=lambda x: str(x), reverse=True)
     if cands and cands[0].exists():
         try:
-            data = json.loads(cands[0].read_text(encoding="utf-8"))
-            timeline_dir = cands[0].parent
+            chosen_tl = cands[0]
+            data = json.loads(chosen_tl.read_text(encoding="utf-8"))
+            timeline_dir = chosen_tl.parent
             try:
                 rel_base = timeline_dir.relative_to(Path.cwd()).as_posix()
             except ValueError:
@@ -237,7 +240,23 @@ async def get_timeline(task_id: str):
                 idx = parts.index("runs") if "runs" in parts else 0
                 rel_base = "/".join(parts[idx:])
 
-            # Dynamically resolve png_url so frontend gets direct HTTP 200 URLs
+            # Check if there is an animated .gif in the attempt outputs or run directory
+            gif_cands = sorted(timeline_dir.glob("*.gif")) or sorted(p.rglob("*.gif"), key=lambda x: str(x), reverse=True)
+            gif_stem = gif_cands[0].stem if gif_cands else "animation"
+            if gif_cands:
+                try:
+                    gif_rel = "/" + gif_cands[0].relative_to(Path.cwd()).as_posix()
+                except ValueError:
+                    parts = gif_cands[0].parts
+                    idx = parts.index("runs") if "runs" in parts else 0
+                    gif_rel = "/" + "/".join(parts[idx:])
+                try:
+                    gif_rel = f"{gif_rel}?v={int(gif_cands[0].stat().st_mtime_ns)}"
+                except Exception:
+                    pass
+                data["gif_url"] = gif_rel
+
+            # Dynamically resolve png_url so frontend gets direct HTTP 200 URLs with cache-busting
             normalized_frames = []
             dates = data.get("dates", [])
             series_values = data.get("series_values", [])
@@ -252,15 +271,36 @@ async def get_timeline(task_id: str):
                         "label": f"{dates[i] if i < len(dates) else fname}: {series_values[i] if i < len(series_values) else ''}".strip(),
                     }
                 elif isinstance(frame, dict):
-                    frame_obj = frame
+                    frame_obj = dict(frame)
                     fname = frame_obj.get("file") or ""
                 else:
                     continue
 
+                # If no file was explicitly specified in frame dict (e.g. Gaza Task 3),
+                # synthesize or discover the frame PNG
+                if not fname:
+                    frame_date = str(frame_obj.get("date") or frame_obj.get("year") or "")[:10]
+                    matched_png = None
+                    if frame_date:
+                        date_candidates = [
+                            f.name for f in timeline_dir.glob("*.png")
+                            if frame_date in f.name
+                        ]
+                        if date_candidates:
+                            matched_png = date_candidates[0]
+                    if not matched_png and gif_cands:
+                        matched_png = f"{gif_stem}_frame_{i}.png"
+                    fname = matched_png or f"frame_{i}.png"
+                    frame_obj["file"] = fname
+
                 frame_fname = Path(fname).name if fname else ""
                 if frame_fname and (timeline_dir / frame_fname).exists():
-                    frame_obj["png_url"] = f"/{rel_base}/{frame_fname}"
-                elif frame_fname and not frame_obj.get("png_url"):
+                    try:
+                        mtime_ns = int((timeline_dir / frame_fname).stat().st_mtime_ns)
+                        frame_obj["png_url"] = f"/{rel_base}/{frame_fname}?v={mtime_ns}"
+                    except Exception:
+                        frame_obj["png_url"] = f"/{rel_base}/{frame_fname}"
+                elif frame_fname:
                     frame_obj["png_url"] = f"/api/tasks/{task_id}/artifacts/{frame_fname}"
                 normalized_frames.append(frame_obj)
             data["frames"] = normalized_frames
@@ -444,6 +484,41 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
     fname = Path(artifact_path).name
     # Search run_dir recursively for this artifact file
     cands = list(rd.rglob(fname))
+    if not cands and fname.lower().endswith(".png"):
+        # Fallback for time-series frames that were rendered into /tmp inside the container:
+        # locate timeline.json + animated .gif in the run directory and extract the matching frame on the fly.
+        tl_cands = sorted(rd.rglob("timeline.json"), key=lambda p: str(p), reverse=True)
+        for tl_path in tl_cands:
+            try:
+                tl_data = json.loads(tl_path.read_text(encoding="utf-8"))
+                frames_list = tl_data.get("frames", [])
+                match_idx = None
+                for idx, fr in enumerate(frames_list):
+                    fr_file = Path(fr if isinstance(fr, str) else (fr.get("file") or "")).name
+                    fr_date = str(fr.get("date") or "")[:10] if isinstance(fr, dict) else ""
+                    if (
+                        (fr_file and fr_file == fname)
+                        or fname.endswith(f"_frame_{idx}.png")
+                        or fname == f"frame_{idx}.png"
+                        or (fr_date and fr_date in fname)
+                        or (isinstance(fr, dict) and str(fr.get("animation_frame")) == str(idx) and f"_{idx}.png" in fname)
+                    ):
+                        match_idx = idx
+                        break
+                if match_idx is not None:
+                    gif_cands = sorted(tl_path.parent.glob("*.gif")) or sorted(rd.rglob("*.gif"), key=lambda p: str(p), reverse=True)
+                    if gif_cands:
+                        from PIL import Image
+                        with Image.open(gif_cands[0]) as gif_im:
+                            n_frames = getattr(gif_im, "n_frames", 1)
+                            target_frame = min(match_idx, n_frames - 1)
+                            gif_im.seek(target_frame)
+                            extracted_path = tl_path.parent / fname
+                            gif_im.convert("RGBA").save(extracted_path, format="PNG")
+                            cands = [extracted_path]
+                            break
+            except Exception:
+                pass
     if cands:
         # Prefer latest attempt outputs
         chosen = sorted(cands, key=lambda p: str(p), reverse=True)[0]
@@ -456,7 +531,8 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
             else "application/json" if ext == ".json"
             else "application/octet-stream"
         )
-        return FileResponse(chosen, media_type=media_type)
+        headers = {"Cache-Control": "no-cache, must-revalidate"}
+        return FileResponse(chosen, media_type=media_type, headers=headers)
     raise HTTPException(status_code=404, detail=f"Artifact '{fname}' not found in task run")
 
 

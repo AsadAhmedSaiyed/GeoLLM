@@ -462,4 +462,119 @@ def test_multi_attempt_artifact_retention_and_bad_removal(tmp_path):
     assert by_name["water_mask_2020.tif"]["attempt"] == 2
 
 
+def test_crop_attempt_scoped_thumbnail_and_cache_buster(tmp_path):
+    """Verify crop() generates distinct attempt-scoped URLs and cache-busters across attempts."""
+    from harness.validation.tools import crop
+
+    att3_png = tmp_path / "attempt_03" / "outputs" / "regional_change_map.png"
+    att4_png = tmp_path / "attempt_04" / "outputs" / "regional_change_map.png"
+    att3_png.parent.mkdir(parents=True)
+    att4_png.parent.mkdir(parents=True)
+    Image.fromarray(np.full((64, 64, 3), 50, dtype=np.uint8)).save(att3_png)
+    Image.fromarray(np.full((64, 64, 3), 200, dtype=np.uint8)).save(att4_png)
+
+    fb_dir = tmp_path / "feedback"
+
+    s3 = InspectionSession(
+        image_name="attempt_03/outputs/regional_change_map.png",
+        output_dir=tmp_path,
+        input_raster_paths=[],
+        output_raster_paths=[],
+        png_map_path=att3_png,
+        feedback_dir=fb_dir,
+        cfg=get_validation_config(),
+    )
+    make_grid(s3, 1, 1)
+    res3 = crop(s3, tile_id="T0_0")
+
+    s4 = InspectionSession(
+        image_name="attempt_04/outputs/regional_change_map.png",
+        output_dir=tmp_path,
+        input_raster_paths=[],
+        output_raster_paths=[],
+        png_map_path=att4_png,
+        feedback_dir=fb_dir,
+        cfg=get_validation_config(),
+    )
+    make_grid(s4, 1, 1)
+    res4 = crop(s4, tile_id="T0_0")
+
+    assert res3["ok"] is True and res4["ok"] is True
+    assert "attempt_03_regional_change_map_T0_0_z1.png?v=" in res3["thumb_url"]
+    assert "attempt_04_regional_change_map_T0_0_z1.png?v=" in res4["thumb_url"]
+    assert res3["thumb_url"] != res4["thumb_url"]
+    assert (fb_dir / "thumbs" / "attempt_03_regional_change_map_T0_0_z1.png").is_file()
+    assert (fb_dir / "thumbs" / "attempt_04_regional_change_map_T0_0_z1.png").is_file()
+
+
+def test_gif_expansion_and_multi_date_alignment_no_hardcoding(tmp_path):
+    """Verify 14-date time-series GIF expands with date tokens and aligns exact input/output rasters."""
+    from harness.validation.agent import _discover_rasters
+    from harness.validation.tools import _select_best_input_raster, _select_best_output_raster
+
+    dates = [
+        f"{yr}-{mo}"
+        for yr in range(2020, 2027)
+        for mo in ("06", "10")
+    ]
+    assert len(dates) == 14
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    att3_out = tmp_path / "attempt_03" / "outputs"
+    att3_out.mkdir(parents=True)
+
+    input_paths = []
+    for dt in dates:
+        in_p = data_dir / f"aral_{dt}.tif"
+        in_p.write_bytes(b"in_" + dt.encode())
+        input_paths.append(in_p)
+
+        out_p = att3_out / f"water_mask_{dt}.tif"
+        out_p.write_bytes(b"out_" + dt.encode())
+
+    # Scramble input_paths so 2026-10 is first (simulating arbitrary file order)
+    scrambled_inputs = list(reversed(input_paths))
+    assert scrambled_inputs[0].name == "aral_2026-10.tif"
+
+    # Create 14-frame GIF inside attempt_03/outputs
+    frames = [Image.fromarray(np.full((32, 32, 3), i * 15, dtype=np.uint8)) for i in range(14)]
+    gif_path = att3_out / "water_timeseries.gif"
+    frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=100, loop=0)
+
+    task = SimpleNamespace(name="t", description="d", expected_outputs=["water_timeseries.gif"])
+    with mock.patch("harness.llm.vision_available", return_value=False):
+        verdicts = validate_artifacts(
+            task,
+            tmp_path,
+            ["attempt_03/outputs/water_timeseries.gif"],
+            tmp_path / "feedback",
+            input_files=scrambled_inputs,
+        )
+
+    assert len(verdicts) == 3
+    f0, f7, f13 = verdicts[0]["file"], verdicts[1]["file"], verdicts[2]["file"]
+    assert "frame_0_2020-06" in f0
+    assert "frame_7_2023-10" in f7
+    assert "frame_13_2026-10" in f13
+
+    # Verify _discover_rasters + _select_best_input/output_raster align dates for all 3 frames
+    for frame_rel, expected_dt in [(f0, "2020-06"), (f7, "2023-10"), (f13, "2026-10")]:
+        frame_p = tmp_path / frame_rel
+        in_rasters, out_rasters = _discover_rasters(frame_p, tmp_path, real_inputs=scrambled_inputs)
+        sess = InspectionSession(
+            image_name=frame_rel,
+            output_dir=tmp_path,
+            input_raster_paths=in_rasters,
+            output_raster_paths=out_rasters,
+            png_map_path=frame_p,
+            feedback_dir=tmp_path / "feedback",
+        )
+        best_out = _select_best_output_raster(sess)
+        best_in = _select_best_input_raster(sess, reference_output=best_out)
+        assert best_out is not None and best_out.name == f"water_mask_{expected_dt}.tif"
+        assert best_in is not None and best_in.name == f"aral_{expected_dt}.tif"
+
+
+
 
