@@ -77,8 +77,6 @@ export function SupervisorDrawer({
 
   const dynamicFeedItems = feedItems.filter((item) => {
     if (!item.taskId && item.type === 'assistant') return false;
-    // Skip raw tool invocation execution spam (no hardcoded passes)
-    if (item.type === 'tool_start' || item.type === 'tool_end') return false;
     return true;
   });
 
@@ -176,6 +174,18 @@ export function SupervisorDrawer({
 
               if (item.type === 'text') {
                 content = item.text || '';
+                isMarkdown = true;
+              } else if (item.type === 'thinking') {
+                const words = item.text ? item.text.trim().split(/\s+/).filter(Boolean).length : 0;
+                const snippet = (item.text || '').replace(/\s+/g, ' ').trim();
+                content = `🧠 Reasoning (${words} words): ${snippet.length > 140 ? snippet.slice(-140) + '…' : snippet}`;
+              } else if (item.type === 'tool_start') {
+                content = `🛠️ Running tool \`${item.toolName || 'tool'}\`${item.attempt ? ` (attempt ${item.attempt})` : ''}…`;
+                isMarkdown = true;
+              } else if (item.type === 'tool_end') {
+                const statusIcon = item.ok !== false ? '✅' : '❌';
+                const dur = item.duration_s != null ? `${item.duration_s}s · ` : '';
+                content = `${statusIcon} Tool \`${item.toolName || 'execution'}\` finished (${dur}exit ${item.exit_code ?? 0})${item.ok === false && item.error ? ' — ' + String(item.error).slice(0, 120) : ''}`;
                 isMarkdown = true;
               } else if (item.type === 'progress' || item.type === 'milestone') {
                 content = item.text || '';

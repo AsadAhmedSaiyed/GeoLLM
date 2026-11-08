@@ -164,6 +164,15 @@ def _stage_approved_stac_scenes(stac_data: dict, step) -> tuple:
                     "status": "running",
                     "step": f"Staging {custom_name} at native resolution...",
                 })
+                step({
+                    "type": "stac_download_start",
+                    "filename": custom_name,
+                    "collection": col,
+                    "item_id": item_id,
+                    "asset_key": asset_key,
+                    "date": dt_str,
+                })
+                t_dl0 = time.time()
                 res = await stage_stac_aoi_native(
                     collection=col,
                     item_id=item_id,
@@ -172,10 +181,36 @@ def _stage_approved_stac_scenes(stac_data: dict, step) -> tuple:
                     output_dir=data_dir,
                     custom_filename=custom_name,
                 )
+                dl_dur = round(time.time() - t_dl0, 2)
                 if res.get("ok") and res.get("path"):
                     staged_files.append(str(res["path"]))
+                    step({
+                        "type": "stac_download_done",
+                        "filename": custom_name,
+                        "collection": col,
+                        "asset_key": asset_key,
+                        "date": dt_str,
+                        "ok": True,
+                        "path": str(res["path"]),
+                        "size_mb": res.get("size_mb"),
+                        "width": res.get("width"),
+                        "height": res.get("height"),
+                        "resolution": res.get("resolution"),
+                        "duration_s": dl_dur,
+                    })
                 else:
-                    errors.append(f"{custom_name}: {res.get('error', 'staging failed')}")
+                    err_str = res.get("error", "staging failed")
+                    errors.append(f"{custom_name}: {err_str}")
+                    step({
+                        "type": "stac_download_done",
+                        "filename": custom_name,
+                        "collection": col,
+                        "asset_key": asset_key,
+                        "date": dt_str,
+                        "ok": False,
+                        "error": err_str,
+                        "duration_s": dl_dur,
+                    })
 
     asyncio.run(_run_all())
     return staged_files, errors
@@ -328,6 +363,13 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 "code_attempt": code_attempt,
                 "max_attempts": getattr(cfg, "max_tool_calls", 4),
             })
+            try:
+                from harness.orchestrator import find_artifacts
+                cur_arts = find_artifacts(run_dir)
+                if cur_arts:
+                    step({"type": "artifacts", "artifacts": cur_arts})
+            except Exception:
+                pass
             if cfg.verbose:
                 print(f"[pi] tool finished (isError={is_err})", flush=True)
 

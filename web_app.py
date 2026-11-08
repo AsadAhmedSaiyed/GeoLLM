@@ -1,11 +1,15 @@
 """GeoLLM Web UI Server (FastAPI + SSE + Multi-Task)."""
 import asyncio
 import json
+import mimetypes
 import os
 import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+
+# Ensure .jsx files are served with application/javascript MIME type
+mimetypes.add_type("application/javascript", ".jsx")
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse
@@ -49,6 +53,7 @@ class TaskSubmission(BaseModel):
     files: str = ""
     bands: str = ""
     bbox: Optional[List[float]] = None
+    task_id: Optional[str] = None
 
 class RevisionPayload(BaseModel):
     feedback: str
@@ -85,7 +90,11 @@ async def index():
 async def list_data_files():
     valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5", ".laz", ".png", ".jpg", ".jpeg", ".csv", ".zip"}
     files = [
-        {"name": f.name, "size_mb": round(f.stat().st_size / (1024 * 1024), 2)}
+        {
+            "name": f.name,
+            "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+            "modified": time.strftime("%Y-%m-%d", time.localtime(f.stat().st_mtime))
+        }
         for f in sorted(DATA_DIR.glob("*"))
         if f.suffix.lower() in valid_exts
     ]
@@ -128,7 +137,7 @@ async def submit_task(payload: TaskSubmission):
                 return JSONResponse({"error": f"Invalid band format '{part}'. Use role=number with {ROLES}"}, status_code=400)
             overrides[role] = int(num)
 
-    task_id = task_manager.submit_task(payload.question, file_args, overrides=overrides)
+    task_id = task_manager.submit_task(payload.question, file_args, task_id=payload.task_id, overrides=overrides)
     if task_id is None:
         return JSONResponse({"error": "All 3 task slots are busy."}, status_code=429)
     return JSONResponse({"task_id": task_id, "status": "running"})
@@ -216,6 +225,28 @@ async def cancel_task(task_id: str):
     if not task_manager.cancel_task(task_id):
         return JSONResponse({"error": "Task not running."}, status_code=400)
     return JSONResponse({"task_id": task_id, "status": "cancelled"})
+
+
+@app.post("/api/tasks/{task_id}/reset")
+async def reset_task(task_id: str):
+    if task_id in task_manager.tasks:
+        ts = task_manager.tasks[task_id]
+        if ts.status in ("running", "pending_approval", "pending_stac_approval"):
+            task_manager.cancel_task(task_id)
+        with task_manager._lock:
+            ts.status = "idle"
+            ts.question = ""
+            ts.step = "Ready"
+            ts.error = None
+            ts.plan = None
+            ts.stac_preview = None
+            ts.events = []
+            ts.event_log = []
+            ts.started = None
+            ts.ended = None
+            ts.state = {}
+            ts.result = None
+    return JSONResponse({"task_id": task_id, "status": "idle"})
 
 
 @app.get("/api/runs/{task_id}/timeline.json")
@@ -468,7 +499,8 @@ async def get_task_artifacts(task_id: str):
     if not ts:
         return JSONResponse({"artifacts": []})
     run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
-    return JSONResponse({"artifacts": find_artifacts(run_dir)})
+    ans = ts.result.get("answer") if isinstance(ts.result, dict) else None
+    return JSONResponse({"artifacts": find_artifacts(run_dir), "answer": ans})
 
 
 @app.get("/api/tasks/{task_id}/artifacts/{artifact_path:path}")

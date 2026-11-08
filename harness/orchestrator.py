@@ -59,19 +59,16 @@ def find_artifacts(run_dir) -> list:
             pass
 
     # Check if last_status records the final attempt / success
-    if status_data:
-        if status_data.get("ok"):
-            final_attempt = status_data.get("attempt")
-        else:
-            # If no attempt succeeded, return an empty list and do not show files from failed attempts
-            return []
+    if status_data and status_data.get("ok"):
+        final_attempt = status_data.get("attempt")
 
-    # If last_status wasn't there or didn't specify attempt, find highest attempt_XX with outputs
+    # If last_status wasn't there, didn't specify attempt, or latest attempt failed,
+    # find highest attempt_XX with outputs so generated deliverables are always visible
     if final_attempt is None:
         attempts = sorted(rd.glob("attempt_*"), reverse=True)
         for ad in attempts:
             out_dir = ad / "outputs"
-            if out_dir.exists() and any(out_dir.iterdir()):
+            if out_dir.exists() and any(p.is_file() for p in out_dir.iterdir()):
                 try:
                     num = int(ad.name.split("_")[-1])
                     final_attempt = num
@@ -116,11 +113,10 @@ def find_artifacts(run_dir) -> list:
             if p.is_file():
                 candidate_entries.append((p, int(final_attempt)))
 
-    # Also retain valid outputs from earlier completed attempts (those with result.json)
-    # if the latest attempt only re-generated a subset of files during revision.
+    # Also retain valid outputs from earlier attempts if the latest attempt only re-generated a subset
     for prev_num in range(int(final_attempt) - 1, 0, -1):
         prev_out = rd / f"attempt_{prev_num:02d}" / "outputs"
-        if prev_out.is_dir() and (prev_out / "result.json").is_file():
+        if prev_out.is_dir():
             for p in sorted(prev_out.iterdir()):
                 if p.is_file():
                     candidate_entries.append((p, prev_num))
@@ -134,10 +130,9 @@ def find_artifacts(run_dir) -> list:
             continue
         if p.name in seen_names:
             continue
-        # Exclude wrong outputs flagged by Vision QA unless replaced in a newer attempt
-        if p.name in bad_files:
-            if unfixed_bad or bad_attempt is None or att_num <= int(bad_attempt):
-                continue
+        if p.name in bad_files and not unfixed_bad and (bad_attempt is None or att_num <= int(bad_attempt)):
+            continue
+        is_flagged = bool(p.name in bad_files and unfixed_bad)
         seen_names.add(p.name)
 
         try:
@@ -160,6 +155,7 @@ def find_artifacts(run_dir) -> list:
             "type": "image" if ext in (".png", ".svg") else "raster" if ext in (".tif", ".tiff") else "file",
             "ext": ext,
             "attempt": att_num,
+            "vision_flagged": is_flagged,
         })
 
     return artifacts
@@ -178,10 +174,11 @@ class TaskManager:
 
     # ---- public API ----
 
-    def submit_task(self, question: str, files: list, **kw) -> Optional[str]:
-        """Find a free slot, start the job. Returns task_id or None if all busy."""
+    def submit_task(self, question: str, files: list, task_id: Optional[str] = None, **kw) -> Optional[str]:
+        """Find a free slot (or use specific task_id), start the job. Returns task_id or None if all busy."""
         with self._lock:
-            for tid in TASK_IDS:
+            target_ids = [task_id] if task_id and task_id in TASK_IDS else TASK_IDS
+            for tid in target_ids:
                 ts = self.tasks[tid]
                 if ts.status in ("idle", "done", "partial", "failed"):
                     ts.run_id += 1
@@ -383,7 +380,7 @@ class TaskManager:
             arts = find_artifacts(rd) if rd else []
             if arts:
                 self._on_step(task_id, {"type": "artifacts", "task_id": task_id, "artifacts": arts}, run_id)
-            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": ts.status, "error": ts.error}, run_id)
+            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": ts.status, "ok": ts.status in ("done", "partial"), "error": ts.error}, run_id)
 
         except Exception as e:
             with self._lock:
@@ -391,7 +388,7 @@ class TaskManager:
                     return
                 ts.error = str(e)
                 ts.status = "failed"
-            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "error": ts.error}, run_id)
+            self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "ok": False, "error": ts.error}, run_id)
 
         finally:
             ts.ended = time.time()

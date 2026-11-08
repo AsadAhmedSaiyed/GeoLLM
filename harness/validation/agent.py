@@ -350,11 +350,14 @@ _TOOL_SUMMARIES: Dict[str, str] = {
 
 def _build_system_prompt(task_name: str, task_description: str, image_name: str, input_gate_summary: str = "") -> str:
     tool_lines = "\n".join(f"  • {v}" for v in _TOOL_SUMMARIES.values())
-    is_3d_or_chart = any(kw in image_name.lower() for kw in ("3d", "chart", "graph", "timeline", "trend"))
+    is_3d_or_chart = any(
+        kw in image_name.lower()
+        for kw in ("3d", "chart", "graph", "timeline", "timeseries", "time_series", "trend", "plot", "hist", "profile")
+    )
     extra_guidance = ""
     if is_3d_or_chart:
         extra_guidance = (
-            "\nNOTE ON 3D / CHARTS: This image is a 3D visualization or data chart. "
+            "\nNOTE ON 3D / CHARTS: This image is a 3D visualization or statistical data chart/plot. "
             "Do not expect 2D planimetric GeoTIFF pixel alignment. Inspect visual readability, "
             "axes, labels, and rendering quality, and call mark_result(verdict='correct' or 'not_verifiable').\n"
         )
@@ -373,8 +376,11 @@ def _build_system_prompt(task_name: str, task_description: str, image_name: str,
         "• Single Deliverable Scope: You are inspecting ONLY the single file named in 'Image under inspection'. "
         "If the user's task asks for multiple outputs (e.g., a regional map, a trend chart, and a time-lapse animation), "
         "each output is saved as a separate file. NEVER mark this image 'wrong' because other requested outputs "
-        "(like a trend chart or animation) are not inside this single image. Also, side-by-side comparison wrapper headers "
-        "like 'Input Crop (...)' and 'Deliverable (...)' are diagnostic panel labels, NOT the map's own title.\n"
+        "(like a trend chart or animation) are not inside this single image.\n"
+        "• Diagnostic Panel Wrapper: When you call crop(), our verification tool automatically generates a 2x2 or side-by-side "
+        "inspection composite showing 'Input Crop', 'Output GeoTIFF', 'Deliverable', and 'Discrepancy / Overlay' so you can compare them. "
+        "The actual user deliverable on disk is ONLY the 'Deliverable' panel (and the initial overview image). "
+        "NEVER mark an image 'wrong' for 'being a diagnostic panel showing input crop, output GeoTIFF, and discrepancy'!\n"
         "• Full overview: Overall elements (figure title, legend, colorbar, date annotations) "
         "apply to the whole image. If the legend or title is present anywhere on the full overview image, "
         "that requirement is met. For standard images, make_grid(rows=1, cols=1) allows verifying the entire "
