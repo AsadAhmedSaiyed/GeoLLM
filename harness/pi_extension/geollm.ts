@@ -58,8 +58,18 @@ export default function (pi: ExtensionAPI) {
           });
         };
 
+        const childEnv = { ...process.env };
+        if (childEnv.PYTHONUTF8 !== undefined) {
+          const val = childEnv.PYTHONUTF8.trim();
+          if (val === "1" || val === "0") {
+            childEnv.PYTHONUTF8 = val;
+          } else {
+            delete childEnv.PYTHONUTF8;
+          }
+        }
+
         const child = spawn(python, [runner], {
-          env: process.env,
+          env: childEnv,
           stdio: ["pipe", "pipe", "pipe"],
         });
 

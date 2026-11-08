@@ -256,7 +256,11 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                  tool_calls=0, pi_text="", last_tool="")
 
 
-    env = {**os.environ,
+    clean_env = {**os.environ}
+    if clean_env.get("PYTHONUTF8", "").strip() not in ("1", "0"):
+        clean_env["PYTHONUTF8"] = "1"
+
+    env = {**clean_env,
            "GEOLLM_PYTHON": sys.executable,
            "GEOLLM_RUNNER": str(RUNNER),
            "GEOLLM_RUN_DIR": str(run_dir),

@@ -5,6 +5,10 @@ import mimetypes
 import os
 import sys
 import time
+
+# Clean up environment variables to prevent child process / container failures
+if os.environ.get("PYTHONUTF8", "").strip() not in ("1", "0"):
+    os.environ["PYTHONUTF8"] = "1"
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -30,6 +34,9 @@ DATA_DIR = Path("data")
 RUNS_DIR = Path("runs")
 STATIC_DIR = Path("static")
 TEMPLATES_DIR = Path("templates")
+DIST_DIR = STATIC_DIR / "dist"
+DIST_HTML = DIST_DIR / "index.html"
+LEGACY_HTML = TEMPLATES_DIR / "index.html"
 
 DATA_DIR.mkdir(exist_ok=True)
 RUNS_DIR.mkdir(exist_ok=True)
@@ -79,11 +86,45 @@ def _parse_milestone(task_id, ev_text):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    html_file = TEMPLATES_DIR / "index.html"
-    if not html_file.exists():
+async def index(request: Request, ui: Optional[str] = None):
+    # Query parameter toggle ?ui=classic or ?legacy=1 serves the original interface
+    if ui in ("classic", "legacy") or request.query_params.get("legacy") == "1":
+        if LEGACY_HTML.exists():
+            return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>Error: templates/index.html not found</h1>", status_code=404)
-    return html_file.read_text(encoding="utf-8")
+
+    # Modern Vite + shadcn/ui interface
+    if DIST_HTML.exists():
+        return HTMLResponse(
+            DIST_HTML.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    # Fallback to classic template if dist has not been built
+    if LEGACY_HTML.exists():
+        return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
+
+    return HTMLResponse("<h1>Error: No UI index.html found</h1>", status_code=404)
+
+
+@app.get("/classic", response_class=HTMLResponse)
+@app.get("/legacy", response_class=HTMLResponse)
+async def legacy_index():
+    """Direct route to access the classic pre-migration interface."""
+    if LEGACY_HTML.exists():
+        return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Error: templates/index.html not found</h1>", status_code=404)
+
+
+@app.get("/modern", response_class=HTMLResponse)
+async def modern_index():
+    """Direct route to access the modern Vite + shadcn/ui interface."""
+    if DIST_HTML.exists():
+        return HTMLResponse(
+            DIST_HTML.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+    return HTMLResponse("<h1>Error: static/dist/index.html not built</h1>", status_code=404)
 
 
 @app.get("/api/files")
