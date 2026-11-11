@@ -124,6 +124,15 @@ export function App() {
     loadFiles();
   }, [loadFiles]);
 
+  const handleTaskResumed = useCallback((taskId: string, question: string, step: string) => {
+    const slotNum = taskId.replace('task_', '#');
+    const shortQ = question ? (question.length > 55 ? question.slice(0, 52) + '...' : question) : '';
+    toast.info(`Container ${slotNum} resumed from checkpoint`, {
+      description: step || shortQ || 'Auto-resuming task execution...',
+      duration: 5000,
+    });
+  }, []);
+
   // 3. Multi-container SSE streaming & state across task_1, task_2, task_3
   const {
     tasks,
@@ -135,6 +144,7 @@ export function App() {
     resetSlotState,
   } = useMultiTaskStreams({
     onStacStaged: loadFiles,
+    onTaskResumed: handleTaskResumed,
   });
 
   const activeTask = tasks[activeContainerId] || DEFAULT_TASK_STATE;
@@ -172,6 +182,10 @@ export function App() {
       path: rawPath,
       type: isTif ? 'tif' : 'img',
     });
+  }, []);
+
+  const handleClosePreview = useCallback(() => {
+    setPreviewTarget(null);
   }, []);
 
   // Handlers for Workspaces
@@ -379,6 +393,16 @@ export function App() {
     }
   };
 
+  const handleResetTask = async (tid: string) => {
+    try {
+      await api.resetTask(tid);
+      resetSlotState(tid);
+      toast.success(`Container ${tid.replace('task_', '#')} reset to clean idle state.`);
+    } catch (err) {
+      toast.error(`Failed to reset task: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const tasksStatus = useMemo<Record<string, { status: TaskStatus; step?: string }>>(() => {
     const map: Record<string, { status: TaskStatus; step?: string }> = {};
     Object.entries(tasks).forEach(([tid, t]) => {
@@ -401,6 +425,7 @@ export function App() {
           setIsCollapsed(false);
         }}
         onCreateWorkspace={handleCreateWorkspace}
+        onDeleteWorkspace={handleDeleteWorkspace}
         isConsoleOpen={!isCollapsed}
         onToggleConsole={toggleCollapse}
         onOpenStac={() => {
@@ -519,6 +544,7 @@ export function App() {
                           onClearAllFiles={() => setSelectedFiles([])}
                           onSubmit={handleSubmitTask}
                           isSubmitting={isSubmitting}
+                          isRunning={isSubmitting || activeTask.status === 'running'}
                           hasActiveWorkspace={Boolean(activeWorkspace)}
                           injectedPrompt={injectedPrompt}
                           onInjectedPromptConsumed={() => setInjectedPrompt(null)}
@@ -545,6 +571,7 @@ export function App() {
                               onApprovePlan={handleApprovePlan}
                               onRevisePlan={handleRevisePlan}
                               onCancelTask={handleCancelTask}
+                              onResetTask={handleResetTask}
                               onPreviewFile={(art) => openArtifactPreview(art)}
                               onSwitchToGlobe={(art) => {
                                 if (art) {
@@ -633,7 +660,7 @@ export function App() {
       {/* GeoTIFF & Deliverable Scientific Inspector Modal */}
       <TiffPreviewModal
         previewTarget={previewTarget}
-        onClose={() => setPreviewTarget(null)}
+        onClose={handleClosePreview}
         onOverlayOnGlobe={(target) => {
           setPendingGlobeOverlay(target.path || target.url);
           toast.info(`Projecting ${target.name} onto 3D Globe...`);

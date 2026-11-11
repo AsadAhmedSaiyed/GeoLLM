@@ -31,8 +31,8 @@ class PiRPC:
 
     def __init__(self, args, cwd, env, stderr_path):
         self._stderr = open(stderr_path, "w", encoding="utf-8")
-        # every raw Pi event is saved next to pi_stderr.log
-        self._events = open(Path(stderr_path).with_name("events.jsonl"),
+        # raw internal Pi RPC events are saved to pi_events.jsonl (keeping events.jsonl for UI SSE events)
+        self._events = open(Path(stderr_path).with_name("pi_events.jsonl"),
                             "a", encoding="utf-8")
 
         self.proc = subprocess.Popen(
@@ -178,8 +178,11 @@ class PiRPC:
     def send(self, cmd):
         print(f"[PiRPC SEND] {cmd.get('type')}", flush=True)
         with self._lock:
-            self.proc.stdin.write(json.dumps(cmd) + "\n")
-            self.proc.stdin.flush()
+            try:
+                self.proc.stdin.write(json.dumps(cmd) + "\n")
+                self.proc.stdin.flush()
+            except (OSError, BrokenPipeError, ValueError) as e:
+                print(f"[PiRPC] Cannot send command (process pipe closed): {e}", flush=True)
 
     def _next(self, idle_s, deadline):
         remaining = deadline - time.time()
@@ -260,13 +263,16 @@ class PiRPC:
             pass
 
     def last_assistant_text(self, timeout_s=30):
-        req = uuid.uuid4().hex
-        self.send({"id": req, "type": "get_last_assistant_text"})
-        deadline = time.time() + timeout_s
-        while True:
-            ev = self._next(timeout_s, deadline)
-            if ev.get("type") == "response" and ev.get("id") == req:
-                return (ev.get("data") or {}).get("text") or ""
+        try:
+            req = uuid.uuid4().hex
+            self.send({"id": req, "type": "get_last_assistant_text"})
+            deadline = time.time() + timeout_s
+            while True:
+                ev = self._next(timeout_s, deadline)
+                if ev.get("type") == "response" and ev.get("id") == req:
+                    return (ev.get("data") or {}).get("text") or ""
+        except Exception:
+            return ""
 
     def close(self):
         try:

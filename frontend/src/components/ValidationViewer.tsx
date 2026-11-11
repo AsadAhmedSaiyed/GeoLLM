@@ -184,7 +184,8 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
           <img
             src={ev.thumb_url}
             alt={`Tile inspection ${ev.tile_id}`}
-            className="w-full h-auto mt-1.5 rounded border border-[#334155]"
+            loading="lazy"
+            className="w-full max-h-[260px] object-contain mt-1.5 rounded border border-[#334155] bg-[#06090E]"
           />
         )}
       </div>

@@ -246,7 +246,7 @@ def generate_lidar_3d_payload(
     from scipy.ndimage import gaussian_filter, maximum_filter, median_filter
 
     p = Path(raster_path)
-    is_chm = "chm" in p.name.lower()
+    is_chm = any(k in p.name.lower() for k in ("chm", "canopy", "above_ground", "tree_height", "height"))
 
     with rasterio.open(p) as src:
         scale_x = max_dim / float(src.width)

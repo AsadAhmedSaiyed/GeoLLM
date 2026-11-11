@@ -191,6 +191,7 @@ def test_syntax_error_sets_flag(tmp_path):
     }
     env = {
         **os.environ,
+        "PYTHONUTF8": "1",
         "GEOLLM_RUN_DIR": str(tmp_path),
         "GEOLLM_ALLOWED_FILES": json.dumps([]),
     }

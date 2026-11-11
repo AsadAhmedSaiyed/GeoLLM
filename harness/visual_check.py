@@ -30,7 +30,10 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None, input_files
     target_pngs = pngs[:get_validation_config().max_images_per_run]
     total = len(target_pngs)
     mode = get_mode()
+    run_root = Path(feedback_dir).parent if feedback_dir else Path(output_dir)
     for i, rel in enumerate(target_pngs):
+        if (run_root / "cancelled.flag").exists():
+            break
         p = Path(output_dir) / rel
         step({
             "type": "vision_check",

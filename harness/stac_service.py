@@ -85,25 +85,35 @@ def _sync_post_json(url: str, payload: dict, timeout: float = 30.0) -> Dict[str,
 
 def _sync_download(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None, cancel_check=None):
     req = urllib.request.Request(url, headers={"User-Agent": "GeoLLM/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as response, open(dest_path, "wb") as out_f:
-        cl = response.headers.get("Content-Length")
-        total = int(cl) if cl and cl.isdigit() else None
-        downloaded = 0
-        last_cb = 0.0
-        while True:
-            if cancel_check and cancel_check():
-                raise asyncio.CancelledError("Download cancelled by user")
-            chunk = response.read(65536)
-            if not chunk:
-                break
-            out_f.write(chunk)
-            downloaded += len(chunk)
-            now = time.time()
-            if progress_callback and (now - last_cb > 0.3 or (total and downloaded >= total)):
-                progress_callback(downloaded, total)
-                last_cb = now
-        if progress_callback:
-            progress_callback(downloaded, total or downloaded)
+    tmp_path = dest_path.with_name(f"{dest_path.name}.tmp")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response, open(tmp_path, "wb") as out_f:
+            cl = response.headers.get("Content-Length")
+            total = int(cl) if cl and cl.isdigit() else None
+            downloaded = 0
+            last_cb = 0.0
+            while True:
+                if cancel_check and cancel_check():
+                    raise asyncio.CancelledError("Download cancelled by user")
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                downloaded += len(chunk)
+                now = time.time()
+                if progress_callback and (now - last_cb > 0.3 or (total and downloaded >= total)):
+                    progress_callback(downloaded, total)
+                    last_cb = now
+            if progress_callback:
+                progress_callback(downloaded, total or downloaded)
+        tmp_path.replace(dest_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
 
 async def http_get_json(url: str, timeout: float = 30.0) -> Dict[str, Any]:
     if HAS_HTTPX:
@@ -128,26 +138,36 @@ async def http_post_json(url: str, payload: dict, timeout: float = 30.0) -> Dict
 
 async def http_download_file(url: str, dest_path: Path, timeout: float = 300.0, progress_callback=None, cancel_check=None):
     if HAS_HTTPX:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("GET", url) as stream_resp:
-                stream_resp.raise_for_status()
-                cl = stream_resp.headers.get("content-length")
-                total = int(cl) if cl and cl.isdigit() else None
-                downloaded = 0
-                last_cb = 0.0
-                with open(dest_path, "wb") as f:
-                    async for chunk in stream_resp.aiter_bytes(chunk_size=65536):
-                        if cancel_check and cancel_check():
-                            raise asyncio.CancelledError("Download cancelled by user")
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        now = time.time()
-                        if progress_callback and (now - last_cb > 0.3 or (total and downloaded >= total)):
-                            progress_callback(downloaded, total)
-                            last_cb = now
-                if progress_callback:
-                    progress_callback(downloaded, total or downloaded)
-                return
+        tmp_path = dest_path.with_name(f"{dest_path.name}.tmp")
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url) as stream_resp:
+                    stream_resp.raise_for_status()
+                    cl = stream_resp.headers.get("content-length")
+                    total = int(cl) if cl and cl.isdigit() else None
+                    downloaded = 0
+                    last_cb = 0.0
+                    with open(tmp_path, "wb") as f:
+                        async for chunk in stream_resp.aiter_bytes(chunk_size=65536):
+                            if cancel_check and cancel_check():
+                                raise asyncio.CancelledError("Download cancelled by user")
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            now = time.time()
+                            if progress_callback and (now - last_cb > 0.3 or (total and downloaded >= total)):
+                                progress_callback(downloaded, total)
+                                last_cb = now
+                    if progress_callback:
+                        progress_callback(downloaded, total or downloaded)
+            tmp_path.replace(dest_path)
+            return
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            raise
     await asyncio.to_thread(_sync_download, url, dest_path, timeout, progress_callback, cancel_check)
 
 
@@ -702,26 +722,36 @@ def _sync_stage_cog_window_native(
                 profile["blockysize"] = 256
 
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with rasterio.open(dest_path, "w", **profile) as dst:
-                dst.write(data)
-                has_desc = False
-                if src.descriptions:
-                    for b_idx, desc in enumerate(src.descriptions, start=1):
-                        if desc:
-                            dst.set_band_description(b_idx, desc)
-                            has_desc = True
-                if not has_desc and metadata_tags and metadata_tags.get("asset_key") and dst.count == 1:
-                    dst.set_band_description(1, str(metadata_tags["asset_key"]))
-                merged_tags = {}
-                try:
-                    if src.tags():
-                        merged_tags.update({k: str(v) for k, v in src.tags().items() if v is not None})
-                except Exception:
-                    pass
-                if metadata_tags:
-                    merged_tags.update({k: str(v) for k, v in metadata_tags.items() if v is not None})
-                if merged_tags:
-                    dst.update_tags(**merged_tags)
+            tmp_path = dest_path.with_name(f"{dest_path.name}.tmp")
+            try:
+                with rasterio.open(tmp_path, "w", **profile) as dst:
+                    dst.write(data)
+                    has_desc = False
+                    if src.descriptions:
+                        for b_idx, desc in enumerate(src.descriptions, start=1):
+                            if desc:
+                                dst.set_band_description(b_idx, desc)
+                                has_desc = True
+                    if not has_desc and metadata_tags and metadata_tags.get("asset_key") and dst.count == 1:
+                        dst.set_band_description(1, str(metadata_tags["asset_key"]))
+                    merged_tags = {}
+                    try:
+                        if src.tags():
+                            merged_tags.update({k: str(v) for k, v in src.tags().items() if v is not None})
+                    except Exception:
+                        pass
+                    if metadata_tags:
+                        merged_tags.update({k: str(v) for k, v in metadata_tags.items() if v is not None})
+                    if merged_tags:
+                        dst.update_tags(**merged_tags)
+                tmp_path.replace(dest_path)
+            except Exception:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
+                raise
 
             # Calculate valid data percentage inside the clipped native window
             nodata_val = src.nodata
@@ -762,6 +792,31 @@ async def stage_stac_aoi_native(
     Stages a STAC asset cropped to the user's AOI bounding box at 100% original native resolution.
     If bbox_wgs84 is None, falls back to stage_stac_asset.
     """
+    if custom_filename:
+        dest_path = output_dir / custom_filename
+        if dest_path.is_file() and dest_path.stat().st_size > 1000:
+            is_valid = False
+            try:
+                import rasterio
+                with rasterio.open(dest_path) as chk:
+                    if chk.width > 0 and chk.height > 0:
+                        is_valid = True
+            except Exception:
+                try:
+                    dest_path.unlink()
+                except Exception:
+                    pass
+
+            if is_valid:
+                size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
+                return {
+                    "ok": True,
+                    "path": str(dest_path),
+                    "filename": dest_path.name,
+                    "size_mb": size_mb,
+                    "cached": True,
+                }
+
     if not bbox_wgs84 or len(bbox_wgs84) < 4:
         return await stage_stac_asset(collection, item_id, asset_key, output_dir, custom_filename)
 

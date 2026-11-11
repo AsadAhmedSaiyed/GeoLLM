@@ -381,14 +381,13 @@ def _build_system_prompt(task_name: str, task_description: str, image_name: str,
         "inspection composite showing 'Input Crop', 'Output GeoTIFF', 'Deliverable', and 'Discrepancy / Overlay' so you can compare them. "
         "The actual user deliverable on disk is ONLY the 'Deliverable' panel (and the initial overview image). "
         "NEVER mark an image 'wrong' for 'being a diagnostic panel showing input crop, output GeoTIFF, and discrepancy'!\n"
-        "• Full overview: Overall elements (figure title, legend, colorbar, date annotations) "
-        "apply to the whole image. If the legend or title is present anywhere on the full overview image, "
-        "that requirement is met. For standard images, make_grid(rows=1, cols=1) allows verifying the entire "
-        "deliverable at once with mark_result('T0_0') without cutting through titles or margins.\n"
-        "• Tile crops: crop() evaluates spatial data correctness (water/land boundaries, classification masks, artifacts). "
-        "CRITICAL: When inspecting a cropped tile, the title and legend will naturally be cut off or outside this tile. "
-        "NEVER mark an individual cropped tile 'wrong' for 'missing legend', 'cut-off title', or 'blank margins'. "
-        "Evaluate ONLY whether the geographic features in that crop match the reference satellite image.\n"
+        "• Overview vs. Zoomed Tile Inspection:\n"
+        "  - The full overview image allows verifying global elements (figure title, legend, scale bar, layout).\n"
+        "  - However, macroscopic downscaling can obscure local misclassifications, boundary shifts, or pixel artifacts. "
+        "When validating spatial maps, reason carefully about whether fine-scale inspection is needed to verify local accuracy. "
+        "Divide the image with make_grid() and use crop(tile_id) to zoom in at full native resolution on critical regions. "
+        "crop() generates an aligned multi-panel diagnostic composite (Input Crop, Output GeoTIFF, Deliverable, and Discrepancy Overlay) to verify ground-truth alignment.\n"
+        "  - Full overview: Overall elements (figure title, legend, scale bar, layout) belong to the full image. NEVER mark an individual cropped tile 'wrong' for 'missing legend'; outer titles and legends belong to the overall figure and may be outside the crop. Evaluate whether geographic features in the crop match the reference imagery.\n"
         + extra_guidance +
         f"\nAvailable tools:\n{tool_lines}\n\n"
         "Respond ONLY with a ```json ... ``` block:\n"
@@ -599,21 +598,17 @@ def _run_agentic_loop(
     except Exception:
         _img_w, _img_h = 1000, 1000
 
-    _is_standard_res = max(_img_w, _img_h) <= 2500
-
-    if _is_standard_res:
-        _initial_user_msg = (
-            f"Image under inspection: {rel} ({_img_w}×{_img_h} px).\n"
-            "This image is standard resolution and attached in full as the overview.\n"
-            "1. Inspect the full overview image to verify global elements: title, legend/colorbar, labels, and overall spatial correctness.\n"
-            "2. Plan your inspection with make_grid(). For standard images, make_grid(rows=1, cols=1) validates the whole map together without edge cuts. If you need to zoom in on a specific region, use make_grid(rows=2, cols=2) and crop().\n"
-            "3. Record your verdict with mark_result() and finish()."
-        )
-    else:
-        _initial_user_msg = (
-            f"Image under inspection: {rel} ({_img_w}×{_img_h} px, high-resolution).\n"
-            "Begin by calling make_grid() to plan your inspection, then crop() tiles to inspect at full resolution."
-        )
+    _initial_user_msg = (
+        f"Image under inspection: {rel} ({_img_w}×{_img_h} px).\n"
+        "An overview of this deliverable is attached.\n"
+        "1. Examine the overview for global presentation (title, legend/colorbar, spatial coverage, and overall validity).\n"
+        "2. Reason about spatial complexity: Determine whether the overview alone gives you enough visual resolution to verify data accuracy, or whether fine-scale features (boundaries, classification transitions, localized artifacts) require closer inspection.\n"
+        "3. Call make_grid(rows, cols) to set up your inspection plan:\n"
+        "   - If the macroscopic overview is fully sufficient to judge the entire deliverable with certainty, call make_grid(rows=1, cols=1).\n"
+        "   - If the task involves localized spatial variations, classifications, or boundaries that require closer verification, divide into sub-tiles (e.g. make_grid(rows=2, cols=2)).\n"
+        "4. When multiple tiles exist, call crop(tile_id) to zoom in and inspect the full-resolution diagnostic comparison panel for each tile, then mark_result(tile_id, ...).\n"
+        "5. Conclude your validation by calling finish(summary=...)."
+    )
 
     # The conversation is the REAL multi-turn history.  It is sent in full on
     # every turn so the model remembers make_grid / crop / mark_result from
@@ -632,6 +627,12 @@ def _run_agentic_loop(
     max_nudges = 1
 
     for turn_idx in range(max_turns):
+        run_root = feedback_dir.parent if feedback_dir else output_dir
+        if (run_root / "cancelled.flag").exists():
+            session.not_verified = True
+            session.not_verified_reason = "Cancelled by user"
+            _emit_stopped(on_step, rel, "not_verified", "Cancelled by user")
+            break
         if session.finish_called or session.aborted:
             break
         if session.budget_exceeded():
@@ -1016,6 +1017,10 @@ def validate_artifacts(
         ]
 
     for i, rel in enumerate(target_pngs):
+        run_root = _feedback_dir.parent if _feedback_dir else _output_dir
+        if (run_root / "cancelled.flag").exists():
+            break
+
         png_path = _output_dir / rel
         if not png_path.is_file() and (_feedback_dir / rel).is_file():
             png_path = _feedback_dir / rel

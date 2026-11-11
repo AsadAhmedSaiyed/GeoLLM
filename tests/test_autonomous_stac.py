@@ -130,6 +130,9 @@ def test_stac_tool_cli_propose_preview(tmp_path: Path):
     }
 
     env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["SYSTEMROOT"] = os.environ.get("SystemRoot", "C:\\WINDOWS")
+    env["SystemRoot"] = env["SYSTEMROOT"]
     env["GEOLLM_RUN_DIR"] = str(tmp_path)
 
     proc = subprocess.run(
@@ -180,6 +183,9 @@ def test_stac_propose_preview_rejects_half_coverage(tmp_path: Path):
         ],
     }
     env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["SYSTEMROOT"] = os.environ.get("SystemRoot", "C:\\WINDOWS")
+    env["SystemRoot"] = env["SYSTEMROOT"]
     env["GEOLLM_RUN_DIR"] = str(tmp_path)
     proc = subprocess.run(
         [sys.executable, "-m", "harness.stac_tool_cli", "propose_preview"],

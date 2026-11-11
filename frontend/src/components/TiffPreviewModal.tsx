@@ -104,28 +104,37 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
       /\.(png|jpg|jpeg|gif|webp|svg)(\?.*)?$/i.test(previewTarget.name || previewTarget.url)
   );
 
+  const targetPath = previewTarget?.path || previewTarget?.url;
+
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Handle Escape key cleanly without re-running data loader
   useEffect(() => {
     if (!previewTarget) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseRef.current();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [Boolean(previewTarget)]);
+
+  // Load GeoTIFF or Image ONLY when the target path or type actually changes
+  useEffect(() => {
+    if (!targetPath) return;
 
     setZoom(1);
     setColormap('default');
     setError(null);
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-
     if (isTif) {
-      const targetPath = previewTarget.path || previewTarget.url;
       loadGeoTiffViaBackend(targetPath);
     } else {
       setLoading(false);
       setMetadata(null);
     }
-
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [previewTarget, isTif, onClose]);
+  }, [targetPath, isTif]);
 
   const drawCanvasWithColormap = (img: HTMLImageElement, cmap: ColormapId) => {
     const canvas = canvasRef.current;

@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import signal
+import time
 
 # Ensure UTF-8 mode
 os.environ["PYTHONUTF8"] = "1"
@@ -57,14 +58,30 @@ def main():
 
     def cleanup(*_):
         for p in processes:
-            p.terminate()
+            if p.poll() is None:
+                if sys.platform == "win32":
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5,
+                        )
+                    except Exception:
+                        p.terminate()
+                else:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
     try:
-        backend_proc.wait()
+        while backend_proc.poll() is None:
+            time.sleep(0.5)
     except KeyboardInterrupt:
         cleanup()
 

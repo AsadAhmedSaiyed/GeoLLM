@@ -20,6 +20,23 @@ RASTER_EXT = {".tif", ".tiff"}
 
 
 def _next_attempt(run_dir: Path):
+    run_dir = Path(run_dir)
+    if run_dir.name.startswith("task_") or (run_dir / "scratch").exists():
+        scratch = run_dir / "scratch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        attempt_file = scratch / ".attempt_count"
+        curr = 1
+        if attempt_file.is_file():
+            try:
+                curr = int(attempt_file.read_text().strip()) + 1
+            except Exception:
+                curr = 1
+        try:
+            attempt_file.write_text(str(curr))
+        except Exception:
+            pass
+        return curr, scratch
+
     n = 1
     while True:
         d = run_dir / f"attempt_{n:02d}"
@@ -383,6 +400,9 @@ def main():
     if run_dir is not None and not preserve_last_status:
         try:
             (run_dir / "last_status.json").write_text(json.dumps(out, default=str, indent=2), encoding="utf-8")
+            if out.get("ok") and dest_out.is_dir():
+                from harness.workspace import promote_outputs
+                promote_outputs(run_dir.name, dest_out, run_dir.parent)
         except Exception:
             pass
     sys.stdout.write(json.dumps(out, default=str) + "\n")

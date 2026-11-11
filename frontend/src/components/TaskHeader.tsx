@@ -3,7 +3,7 @@ import { Workspace } from '@/types/task';
 import { TaskStatus } from '@/types/sse';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Layers, Plus, Terminal, Satellite, Bot, CheckCircle2, AlertCircle, Clock } from 'lucide-react';
+import { Layers, Plus, Terminal, Satellite, Bot, CheckCircle2, AlertCircle, Clock, X } from 'lucide-react';
 
 interface TaskHeaderProps {
   workspaces: Workspace[];
@@ -11,6 +11,7 @@ interface TaskHeaderProps {
   tasksStatus: Record<string, { status: TaskStatus; step?: string }>;
   onSelectWorkspace: (id: string) => void;
   onCreateWorkspace: (name: string) => void;
+  onDeleteWorkspace?: (id: string) => void;
   isConsoleOpen: boolean;
   onToggleConsole: () => void;
   onOpenStac: () => void;
@@ -23,6 +24,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
   tasksStatus,
   onSelectWorkspace,
   onCreateWorkspace,
+  onDeleteWorkspace,
   isConsoleOpen,
   onToggleConsole,
   onOpenStac,
@@ -81,10 +83,10 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           const containerNum = ws.containerId.replace('task_', '#');
 
           return (
-            <button
+            <div
               key={ws.id}
               onClick={() => onSelectWorkspace(ws.id)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium border transition-all cursor-pointer whitespace-nowrap ${
+              className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-all cursor-pointer whitespace-nowrap ${
                 isActive
                   ? 'bg-[#111827] border-sky-500/50 text-slate-100 shadow-sm'
                   : 'bg-transparent border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111827]/50'
@@ -95,7 +97,20 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
                 {containerNum}
               </span>
               <span className="max-w-[120px] truncate">{ws.name}</span>
-            </button>
+              {onDeleteWorkspace && workspaces.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteWorkspace(ws.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-0.5 rounded transition-opacity cursor-pointer ml-0.5"
+                  title={`Close workspace "${ws.name}"`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           );
         })}
 

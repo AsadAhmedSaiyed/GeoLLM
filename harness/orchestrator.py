@@ -7,10 +7,19 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from harness.pi_harness import solve
-
-
-MAX_TASKS = 3
-TASK_IDS = [f"task_{i+1}" for i in range(MAX_TASKS)]
+from harness.workspace import (
+    MAX_TASKS,
+    TASK_IDS,
+    get_workspace_dir,
+    init_workspace_layout,
+    clean_workspace,
+    promote_outputs,
+)
+from harness.checkpoint import (
+    save_checkpoint,
+    load_checkpoint,
+    delete_checkpoint,
+)
 
 
 @dataclass
@@ -29,6 +38,7 @@ class TaskState:
     state: dict = field(default_factory=dict)
     question: str = ""
     files: list = field(default_factory=list)
+    artifacts: list = field(default_factory=list)
     plan: Optional[str] = None            # Phase 3: holds draft plan markdown
     stac_preview: Optional[dict] = None   # Phase 0: holds STAC preview card data
     approval_event: threading.Event = field(default_factory=threading.Event)
@@ -41,13 +51,51 @@ class TaskState:
 
 
 def find_artifacts(run_dir) -> list:
-    """Find deliverables from the final succeeded attempt only. No duplicates."""
+    """Find deliverables from canonical outputs or the final succeeded attempt. No duplicates."""
     artifacts = []
     if not run_dir:
         return artifacts
     rd = Path(run_dir)
     if not rd.exists():
         return artifacts
+
+    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".gpkg", ".csv", ".json", ".gif", ".svg"}
+    excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", "vision_revision.json", ".flag", "checkpoint.json", "task.lock"}
+
+    # Auto-promote any live scratch outputs so deliverables are immediately visible as they are generated
+    scratch_outputs = rd / "scratch" / "outputs"
+    if scratch_outputs.is_dir() and any(p.is_file() for p in scratch_outputs.iterdir()):
+        try:
+            promote_outputs(rd.name, scratch_outputs, rd.parent)
+        except Exception:
+            pass
+
+    # 1. Canonical outputs directory in runs/task_X/outputs
+    canonical_outputs = rd / "outputs"
+    if canonical_outputs.is_dir() and any(p.is_file() for p in canonical_outputs.iterdir()):
+        for p in sorted(canonical_outputs.iterdir()):
+            if p.is_file() and p.suffix.lower() in valid_exts and not any(x in p.name.lower() for x in excluded_names):
+                try:
+                    rel = p.relative_to(Path.cwd()).as_posix()
+                except ValueError:
+                    parts = p.parts
+                    idx = parts.index("runs") if "runs" in parts else 0
+                    rel = "/".join(parts[idx:])
+                url_with_ts = f"/{rel}"
+                try:
+                    url_with_ts = f"/{rel}?v={int(p.stat().st_mtime_ns)}"
+                except Exception:
+                    pass
+                artifacts.append({
+                    "name": p.name,
+                    "url": url_with_ts,
+                    "type": "image" if p.suffix.lower() in (".png", ".svg") else "raster" if p.suffix.lower() in (".tif", ".tiff") else "file",
+                    "ext": p.suffix.lower(),
+                    "attempt": 1,
+                    "vision_flagged": False,
+                })
+        if artifacts:
+            return artifacts
 
     final_attempt = None
     sf = rd / "last_status.json"
@@ -164,13 +212,205 @@ def find_artifacts(run_dir) -> list:
 class TaskManager:
     """Manages up to MAX_TASKS concurrent geospatial analysis jobs."""
 
-    def __init__(self, on_finish: Optional[Callable] = None, auto_approve: bool = False):
+    def __init__(self, on_finish: Optional[Callable] = None, auto_approve: bool = False, runs_dir: Optional[Path] = None):
         self._lock = threading.Lock()
         self.on_finish = on_finish
         self.auto_approve = auto_approve
+        self.runs_dir = runs_dir if runs_dir is not None else Path("runs")
         self.tasks: dict[str, TaskState] = {
             tid: TaskState(task_id=tid) for tid in TASK_IDS
         }
+        self._restore_from_disk()
+
+    def _restore_from_disk(self):
+        """Restore task states and event logs from disk on server startup, and auto-resume incomplete tasks."""
+        tasks_to_resume = []
+        with self._lock:
+            for tid in TASK_IDS:
+                ts = self.tasks[tid]
+                ws_dir = get_workspace_dir(tid, self.runs_dir)
+                ts.state["run_dir"] = str(ws_dir)
+
+                # 1. Load historical events from events.jsonl FIRST so event_log is available
+                events_file = ws_dir / "events.jsonl"
+                if events_file.is_file():
+                    try:
+                        seq_id = 1
+                        with open(events_file, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line:
+                                    try:
+                                        ev = json.loads(line)
+                                        raw_id = ev.get("id")
+                                        if isinstance(raw_id, int):
+                                            seq_id = max(seq_id, raw_id + 1)
+                                        else:
+                                            try:
+                                                ev["id"] = int(raw_id)
+                                                seq_id = max(seq_id, ev["id"] + 1)
+                                            except (ValueError, TypeError):
+                                                ev["id"] = seq_id
+                                                seq_id += 1
+                                        ts.event_log.append(ev)
+                                    except Exception:
+                                        pass
+                        ts.next_event_id = seq_id
+                        ts._flushed_events = len(ts.event_log)
+                    except Exception:
+                        pass
+
+                # Inspect event log for finish and start events
+                last_finish = next(
+                    (ev for ev in reversed(ts.event_log) if ev.get("type") == "finish"),
+                    None,
+                )
+                start_ev = next(
+                    (ev for ev in ts.event_log if ev.get("type") == "start" and ev.get("question")),
+                    None,
+                )
+
+                # Inspect disk artifacts
+                arts = find_artifacts(ws_dir)
+
+                # Inspect last_status.json
+                status_file = ws_dir / "last_status.json"
+                last_status_ok = False
+                if status_file.is_file():
+                    try:
+                        sdata = json.loads(status_file.read_text(encoding="utf-8"))
+                        last_status_ok = bool(sdata.get("ok"))
+                    except Exception:
+                        pass
+
+                # Load checkpoint if present
+                cp = load_checkpoint(tid, self.runs_dir)
+                current_stage = cp.get("current_stage") if cp else None
+                status = cp.get("status", "idle") if cp else "idle"
+                question = (cp.get("question") if cp else "") or (start_ev.get("question") if start_ev else "")
+
+                # Check if failed or cancelled
+                is_cancelled = (ws_dir / "cancelled.flag").exists()
+                is_failed = is_cancelled or status == "failed" or current_stage == "failed" or (
+                    last_finish is not None and (last_finish.get("status") == "failed" or last_finish.get("ok") is False)
+                )
+
+                # Check if ALREADY complete
+                has_finish_success = last_finish is not None and (
+                    last_finish.get("status") in ("done", "partial") or last_finish.get("ok") is True
+                )
+                is_already_complete = not is_failed and (
+                    current_stage in ("task_completed", "vision_validation_completed")
+                    or status in ("done", "partial")
+                    or has_finish_success
+                    or (bool(arts) and (last_status_ok or current_stage in ("code_executed", "vision_validation_started")))
+                )
+
+                if is_failed:
+                    ts.status = "failed"
+                    ts.question = question
+                    ts.step = "Cancelled by user" if is_cancelled else ((cp.get("step") if cp else None) or (last_finish.get("error") if last_finish else "Failed"))
+                    ts.error = "Cancelled by user" if is_cancelled else ((cp.get("error") if cp else None) or "Task failed")
+                    if arts:
+                        ts.artifacts = arts
+                    if cp:
+                        ts.plan = cp.get("plan")
+                        ts.files = cp.get("files", [])
+                        ts.started = cp.get("created_at")
+                        ts.ended = cp.get("updated_at")
+
+                elif is_already_complete:
+                    effective_status = status if status in ("done", "partial") else (
+                        last_finish.get("status") if last_finish and last_finish.get("status") in ("done", "partial") else "done"
+                    )
+                    ts.status = effective_status
+                    ts.question = question
+                    ts.step = "Completed"
+                    if arts:
+                        ts.artifacts = arts
+                    if cp:
+                        ts.plan = cp.get("plan")
+                        ts.files = cp.get("files", [])
+                        ts.started = cp.get("created_at")
+                        ts.ended = cp.get("updated_at")
+                        ans = cp.get("answer")
+                        if ans:
+                            ts.result = {"answer": ans, "run_dir": str(ws_dir), "status": ts.status}
+                    # Update checkpoint on disk if it was still at an intermediate stage
+                    if current_stage != "task_completed":
+                        try:
+                            save_checkpoint(tid, "task_completed", {
+                                "status": ts.status,
+                                "step": "Completed",
+                                "question": ts.question,
+                                "answer": ts.result.get("answer") if isinstance(ts.result, dict) else None,
+                                "plan": ts.plan,
+                                "verified_outputs": [a["name"] for a in arts],
+                            }, self.runs_dir)
+                        except Exception:
+                            pass
+
+                elif question:
+                    # Interrupted or crashed midway before completion — auto-resume!
+                    ts.question = question
+                    ts.plan = cp.get("plan") if cp else None
+                    ts.files = list(cp.get("files", [])) if cp else []
+                    ts.started = (cp.get("created_at") if cp else None) or time.time()
+                    ts.run_id += 1
+                    current_run_id = ts.run_id
+                    ts.approval_event = threading.Event()
+                    if arts:
+                        ts.artifacts = arts
+
+                    # Re-scan staged inputs on disk only if staging was already completed
+                    # (do NOT populate incomplete partial files if interrupted during STAC downloading)
+                    staged_dir = ws_dir / "staged_inputs"
+                    is_stac_resuming = (ws_dir / "stac_approved.flag").exists() or current_stage == "stac_approved"
+                    if staged_dir.is_dir() and not is_stac_resuming:
+                        staged_files = [str(p) for p in sorted(staged_dir.glob("*.tif")) if p.stat().st_size > 1000]
+                        if staged_files and not ts.files:
+                            ts.files = staged_files
+
+                    was_approved = (cp.get("plan_approved", False) if cp else False) or (ws_dir / "plan_approved.flag").exists()
+                    if current_stage in ("stac_preview_ready", "stac_search_completed"):
+                        ts.status = "pending_stac_approval"
+                        ts.step = "STAC satellite preview ready — review required"
+                        if cp and cp.get("preview"):
+                            ts.stac_preview = cp.get("preview")
+                    elif current_stage in ("plan_generated", "plan_ready") and ts.plan:
+                        ts.status = "pending_approval"
+                        ts.step = "Plan review required"
+                    elif current_stage == "stac_approved" or (ws_dir / "stac_approved.flag").exists():
+                        ts.status = "running"
+                        ts.step = "Resuming satellite image downloads..."
+                        tasks_to_resume.append((tid, ts.question, ts.files, current_run_id))
+                    elif was_approved:
+                        (ws_dir / "plan_approved.flag").touch()
+                        ts.status = "running"
+                        ts.step = f"Resuming execution from checkpoint ({current_stage or 'plan_approved'})..."
+                        tasks_to_resume.append((tid, ts.question, ts.files, current_run_id))
+                    else:
+                        ts.status = "running"
+                        ts.step = f"Resuming task {tid} from checkpoint..."
+                        tasks_to_resume.append((tid, ts.question, ts.files, current_run_id))
+
+                # If this task is resuming, mark any trailing finish events in memory as superseded
+                # so connected SSE streams do not prematurely terminate historical replay
+                if tid in [t[0] for t in tasks_to_resume]:
+                    for ev in reversed(ts.event_log):
+                        if ev.get("type") == "finish":
+                            ev["type"] = "superseded_finish"
+                            break
+
+        # OUTSIDE LOCK: Launch auto-resumed background worker threads
+        for tid, q, files, run_id in tasks_to_resume:
+            print(f"[TaskManager] Auto-resuming task {tid} from disk checkpoint...", flush=True)
+            ts = self.tasks[tid]
+            t = threading.Thread(
+                target=self._work, args=(tid, q, files, {}, run_id), daemon=True
+            )
+            ts._thread = t
+            t.start()
 
     # ---- public API ----
 
@@ -193,7 +433,19 @@ class TaskManager:
                     ts.event_log = []
                     ts.next_event_id = 1
                     ts._flushed_events = 0
-                    ts.state = {}
+
+                    ws_dir = get_workspace_dir(tid, self.runs_dir)
+                    ts.state = {"run_dir": str(ws_dir)}
+                    init_workspace_layout(tid, self.runs_dir)
+                    clean_workspace(tid, self.runs_dir, preserve_outputs=False)
+
+                    # Truncate / recreate events.jsonl for new task
+                    events_file = ws_dir / "events.jsonl"
+                    try:
+                        events_file.write_text("", encoding="utf-8")
+                    except Exception:
+                        pass
+
                     ts.question = question
                     ts.files = list(files)
                     ts.plan = None
@@ -202,6 +454,15 @@ class TaskManager:
                     ts.approval_event = threading.Event()
                     ts.revision_feedback = None
                     ts.pi_rpc = None
+
+                    save_checkpoint(tid, "task_created", {
+                        "question": question,
+                        "files": files,
+                        "status": "running",
+                        "step": "starting",
+                        "bbox": kw.get("bbox")
+                    }, self.runs_dir)
+
                     t = threading.Thread(
                         target=self._work, args=(tid, question, files, kw, current_run_id), daemon=True
                     )
@@ -247,12 +508,20 @@ class TaskManager:
         try:
             import docker
             client = docker.from_env()
-            for c in client.containers.list(filters={"name": f"geollm_{task_id}_"}):
-                c.kill()
+            for c in client.containers.list(all=True, filters={"name": f"geollm_{task_id}_"}):
+                try:
+                    c.kill()
+                except Exception:
+                    pass
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    pass
         except Exception:
             pass
 
         self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "error": "Cancelled by user"}, ts.run_id)
+        save_checkpoint(task_id, "failed", {"status": "failed", "error": "Cancelled by user", "step": "Aborted"}, self.runs_dir)
 
         if self.on_finish:
             self.on_finish(task_id)
@@ -328,6 +597,8 @@ class TaskManager:
                 step_str = f"Turn {ev_data.get('turn', '')}".strip()
             elif t == "artifacts":
                 step_str = f"Generated {len(ev_data.get('artifacts', []))} artifacts"
+            elif t == "start":
+                step_str = ev_data.get("step") or ts.step or "Starting analysis"
             elif t == "finish":
                 step_str = f"Finished ({ev_data.get('status')})"
             else:
@@ -337,18 +608,15 @@ class TaskManager:
                 ts.step = step_str
                 ts.events.append(f"[{time.strftime('%H:%M:%S')}] {step_str}")
 
-            # Flush events to runs/<run>/events.jsonl
+            # Immediately flush event to events.jsonl
             rd = ts.state.get("run_dir")
             if rd:
                 try:
                     events_file = Path(rd) / "events.jsonl"
-                    flushed = getattr(ts, "_flushed_events", 0)
-                    to_flush = ts.event_log[flushed:]
-                    if to_flush:
-                        with open(events_file, "a", encoding="utf-8") as f:
-                            for item in to_flush:
-                                f.write(json.dumps(item) + "\n")
-                        ts._flushed_events = len(ts.event_log)
+                    with open(events_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(ev_data) + "\n")
+                        f.flush()
+                    ts._flushed_events = len(ts.event_log)
                 except Exception:
                     pass
 
@@ -357,7 +625,16 @@ class TaskManager:
 
     def _work(self, task_id: str, question: str, files: list, kw: dict, run_id: int):
         ts = self.tasks[task_id]
-        self._on_step(task_id, {"type": "start", "task_id": task_id, "question": question}, run_id)
+        with self._lock:
+            ts.status = "running"
+            ts.error = None
+            ts.result = {}
+        self._on_step(task_id, {"type": "start", "task_id": task_id, "question": question, "step": ts.step}, run_id)
+        # Emit existing deliverables immediately on resume so UI displays them
+        rd = ts.state.get("run_dir") or str(self.runs_dir / task_id)
+        existing_arts = find_artifacts(rd)
+        if existing_arts:
+            self._on_step(task_id, {"type": "artifacts", "task_id": task_id, "artifacts": existing_arts}, run_id)
         try:
             r = solve(
                 question, files,
@@ -375,8 +652,14 @@ class TaskManager:
                 if ts.status != "done":
                     ts.error = "; ".join(r["warnings"]) or "run failed"
 
-            # Emit deliverables and finish
+            # Promote scratch deliverables to canonical outputs/
             rd = ts.state.get("run_dir") or (r.get("run_dir") if isinstance(r, dict) else None)
+            if rd:
+                scratch_out = Path(rd) / "scratch" / "outputs"
+                if scratch_out.is_dir():
+                    promote_outputs(task_id, scratch_out, self.runs_dir)
+
+            # Emit deliverables and finish
             arts = find_artifacts(rd) if rd else []
             if arts:
                 self._on_step(task_id, {"type": "artifacts", "task_id": task_id, "artifacts": arts}, run_id)
@@ -388,24 +671,38 @@ class TaskManager:
                     return
                 ts.error = str(e)
                 ts.status = "failed"
+            rd = ts.state.get("run_dir")
+            if rd:
+                scratch_out = Path(rd) / "scratch" / "outputs"
+                if scratch_out.is_dir():
+                    promote_outputs(task_id, scratch_out, self.runs_dir)
+                arts = find_artifacts(rd)
+                if arts:
+                    self._on_step(task_id, {"type": "artifacts", "task_id": task_id, "artifacts": arts}, run_id)
             self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "ok": False, "error": ts.error}, run_id)
 
         finally:
             ts.ended = time.time()
-            with self._lock:
-                rd = ts.state.get("run_dir")
-                if rd:
-                    try:
-                        events_file = Path(rd) / "events.jsonl"
-                        flushed = getattr(ts, "_flushed_events", 0)
-                        to_flush = ts.event_log[flushed:]
-                        if to_flush:
-                            with open(events_file, "a", encoding="utf-8") as f:
-                                for item in to_flush:
-                                    f.write(json.dumps(item) + "\n")
-                            ts._flushed_events = len(ts.event_log)
-                    except Exception:
-                        pass
+            rd = ts.state.get("run_dir")
+            if rd:
+                # Also promote if any outputs exist in scratch
+                scratch_out = Path(rd) / "scratch" / "outputs"
+                if scratch_out.is_dir():
+                    promote_outputs(task_id, scratch_out, self.runs_dir)
+                ans = ts.result.get("answer") if isinstance(ts.result, dict) else None
+                arts = find_artifacts(rd)
+                is_completed = ts.status in ("done", "partial")
+                stage_name = "task_completed" if is_completed else "interrupted"
+                save_checkpoint(task_id, stage_name, {
+                    "status": ts.status,
+                    "step": "Completed" if is_completed else ts.step,
+                    "answer": ans,
+                    "error": ts.error,
+                    "plan": ts.plan,
+                    "plan_approved": (Path(rd) / "plan_approved.flag").exists(),
+                    "verified_outputs": [a["name"] for a in arts]
+                }, self.runs_dir)
+
             if self.on_finish:
                 self.on_finish(task_id)
 

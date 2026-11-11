@@ -70,11 +70,34 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
   const [sending, setSending] = useState(false);
   const [activeSubTab, setActiveSubTab] = useState<'chat' | 'telemetry'>('chat');
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const isChatUserScrolledUp = useRef(false);
+
+  const handleChatWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) {
+      isChatUserScrolledUp.current = true;
+    }
+  };
+
+  const handleChatScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceToBottom <= 24) {
+      isChatUserScrolledUp.current = false;
+    } else if (distanceToBottom > 40) {
+      isChatUserScrolledUp.current = true;
+    }
+  };
 
   useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
+    if (!chatScrollRef.current || isChatUserScrolledUp.current) return;
+    const el = chatScrollRef.current;
+    const rafId = requestAnimationFrame(() => {
+      if (el && !isChatUserScrolledUp.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [messages, feedItems, activeSubTab]);
 
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -182,7 +205,10 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
       {/* Drawer Content */}
       <div
         ref={chatScrollRef}
-        className="flex-1 overflow-y-auto p-3.5 space-y-2.5 select-text"
+        onWheel={handleChatWheel}
+        onScroll={handleChatScroll}
+        className="flex-1 overflow-y-auto p-3.5 space-y-2.5 select-text scroll-smooth"
+        style={{ overscrollBehavior: 'contain' }}
       >
         {activeSubTab === 'chat' ? (
           <div className="space-y-3">

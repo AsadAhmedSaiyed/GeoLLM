@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { TaskState, ActivityItem } from '@/types/task';
 import { ArtifactItem } from '@/types/sse';
 import { MarkdownView } from '@/components/MarkdownView';
@@ -26,6 +26,8 @@ import {
   Eye,
   Microscope,
   Square,
+  RotateCcw,
+  ArrowDown,
 } from 'lucide-react';
 
 const getBasename = (p?: string | null): string => {
@@ -39,6 +41,7 @@ export interface SingleWorkerSlotProps {
   onApprovePlan?: (taskId: string) => void;
   onRevisePlan?: (taskId: string, feedback: string) => void;
   onCancelTask?: (taskId: string) => void;
+  onResetTask?: (taskId: string) => void;
   onPreviewFile?: (artifact: string | ArtifactItem) => void;
   onSwitchToGlobe?: (artifact?: string | ArtifactItem) => void;
   onOpenTerrain3D?: (info: {
@@ -67,6 +70,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   onApprovePlan,
   onRevisePlan,
   onCancelTask,
+  onResetTask,
   onPreviewFile,
   onSwitchToGlobe,
   onOpenTerrain3D,
@@ -85,19 +89,51 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
   const activityRef = useRef<HTMLDivElement | null>(null);
   const isUserScrolledUp = useRef(false);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+  // When user uses the wheel or touches, immediately pause auto-scroll if scrolling upward
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) {
+      isUserScrolledUp.current = true;
+      setShowScrollBottomBtn(true);
+    }
+  }, []);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (!el) return;
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    isUserScrolledUp.current = distanceToBottom > 60;
-  };
-
-  // Auto-scroll activity feed to bottom as new events arrive, only if user hasn't scrolled up
-  useEffect(() => {
-    if (activityRef.current && showLogs && !isUserScrolledUp.current) {
-      activityRef.current.scrollTop = activityRef.current.scrollHeight;
+    // Re-engage auto-scroll when user returns to within 24px of bottom
+    if (distanceToBottom <= 24) {
+      isUserScrolledUp.current = false;
+      setShowScrollBottomBtn(false);
+    } else if (distanceToBottom > 40) {
+      isUserScrolledUp.current = true;
+      setShowScrollBottomBtn(true);
     }
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    if (activityRef.current) {
+      activityRef.current.scrollTo({
+        top: activityRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+      isUserScrolledUp.current = false;
+      setShowScrollBottomBtn(false);
+    }
+  }, []);
+
+  // Smooth auto-scroll activity feed to bottom using rAF without fighting user gestures
+  useEffect(() => {
+    if (!activityRef.current || !showLogs || isUserScrolledUp.current) return;
+    const el = activityRef.current;
+    const rafId = requestAnimationFrame(() => {
+      if (el && !isUserScrolledUp.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [task.activities, showLogs]);
 
   const taskNum = taskId ? taskId.replace('task_', '') : '1';
@@ -207,11 +243,25 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     return textParts.length > 0 ? textParts.join('') : null;
   })();
 
-  const relevantActivities = (task.activities || []).filter((act) => {
-    // Input quality gate is already shown in the dedicated card right below the header
-    if (act.type === 'vision_input_gate') return false;
-    return true;
-  });
+  const relevantActivities = useMemo(() => {
+    const raw = (task.activities || []).filter(
+      (act) => (act as { type: string }).type !== 'vision_input_gate'
+    );
+    const coalesced: ActivityItem[] = [];
+    for (const act of raw) {
+      if (act.type === 'thinking' && 'text' in act) {
+        const last = coalesced[coalesced.length - 1];
+        if (last && last.type === 'thinking' && 'text' in last) {
+          last.text = (last.text || '') + (act.text || '');
+          continue;
+        }
+        coalesced.push({ ...act, text: act.text || '' });
+        continue;
+      }
+      coalesced.push(act);
+    }
+    return coalesced;
+  }, [task.activities]);
 
   const handleOpen3D = () => {
     if (!onOpenTerrain3D) {
@@ -289,6 +339,20 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             >
               <Square className="h-3 w-3 fill-current" />
               <span>Abort Task</span>
+            </Button>
+          )}
+
+          {(task.status === 'failed' || task.status === 'done' || task.status === 'partial') && (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="h-7 px-2.5 text-[11px] bg-[#1E293B] border border-[#334155] text-slate-300 hover:text-white hover:border-slate-400 shrink-0 gap-1 cursor-pointer"
+              onClick={() => onResetTask?.(taskId)}
+              title="Reset this container sandbox and clear outputs"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Reset Slot</span>
             </Button>
           )}
         </div>
@@ -739,49 +803,51 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
           </div>
 
           {showLogs && (
-            <div
-              ref={activityRef}
-              onScroll={handleScroll}
-              className="mt-2.5 max-h-[540px] overflow-y-auto overflow-x-hidden flex flex-col gap-2"
-            >
-              {relevantActivities.map((act: ActivityItem, i: number) => {
-                // A. Claude Thinking Trace
-                if (act.type === 'thinking' && 'text' in act) {
-                  const textStr = act.text || '';
-                  const wordCount = textStr.trim()
-                    ? textStr.trim().split(/\s+/).filter(Boolean).length
-                    : 0;
-                  const charCount = textStr.length;
-                  const isLatestThinking =
-                    task.status === 'running' && i === relevantActivities.length - 1;
+            <div className="relative mt-2.5">
+              <div
+                ref={activityRef}
+                onWheel={handleWheel}
+                onScroll={handleScroll}
+                className="max-h-[540px] overflow-y-auto overflow-x-hidden flex flex-col gap-2 scroll-smooth"
+                style={{ overscrollBehavior: 'contain' }}
+              >
+                {relevantActivities.map((act: ActivityItem, i: number) => {
+                  // A. Claude Thinking Trace
+                  if (act.type === 'thinking' && 'text' in act) {
+                    const textStr = act.text || '';
+                    const wordCount = textStr.trim()
+                      ? textStr.trim().split(/\s+/).filter(Boolean).length
+                      : 0;
+                    const charCount = textStr.length;
+                    const isLatestThinking =
+                      task.status === 'running' && i === relevantActivities.length - 1;
 
-                  return (
-                    <details
-                      key={i}
-                      open={isLatestThinking || undefined}
-                      className="border border-[#1E293B] rounded-md bg-[#090D14] px-3 py-2"
-                    >
-                      <summary className="font-mono text-[11px] cursor-pointer text-sky-400 font-semibold select-none flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Brain className="h-3.5 w-3.5 shrink-0 inline text-teal-400" />
-                          <span>
-                            Reasoning trace ({wordCount} words · {charCount} chars)
-                          </span>
-                        </span>
-                        <span className="text-[10px] text-slate-500 font-normal">
-                          ↕ scrollable
-                        </span>
-                      </summary>
-                      <div
-                        onWheel={(e) => e.stopPropagation()}
-                        className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-slate-200 break-words max-h-[360px] overflow-y-auto p-3 bg-[#06090E] rounded border border-[#1E293B] leading-relaxed select-text overscroll-contain"
-                        style={{
-                          borderLeft: '3px solid #0F766E',
-                        }}
+                    return (
+                      <details
+                        key={i}
+                        open={isLatestThinking || undefined}
+                        className="border border-[#1E293B] rounded-md bg-[#090D14] px-3 py-2"
                       >
-                        {textStr || 'Thinking…'}
-                      </div>
-                    </details>
+                        <summary className="font-mono text-[11px] cursor-pointer text-sky-400 font-semibold select-none flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Brain className="h-3.5 w-3.5 shrink-0 inline text-teal-400" />
+                            <span>
+                              Reasoning trace ({wordCount} words · {charCount} chars)
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-normal">
+                            ↕ scrollable
+                          </span>
+                        </summary>
+                        <div
+                          className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-slate-200 break-words max-h-[360px] overflow-y-auto p-3 bg-[#06090E] rounded border border-[#1E293B] leading-relaxed select-text"
+                          style={{
+                            borderLeft: '3px solid #0F766E',
+                          }}
+                        >
+                          {textStr || 'Thinking…'}
+                        </div>
+                      </details>
                   );
                 }
 
@@ -1198,6 +1264,19 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
                 return null;
               })}
+            </div>
+
+              {/* Floating Jump to Bottom Pill when user scrolled up during active stream */}
+              {showScrollBottomBtn && task.status === 'running' && (
+                <button
+                  type="button"
+                  onClick={scrollToBottom}
+                  className="absolute bottom-2.5 right-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-600/90 hover:bg-sky-500 text-white text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 animate-in fade-in slide-in-from-bottom-2 cursor-pointer border border-sky-400/30"
+                >
+                  <ArrowDown className="h-3.5 w-3.5 animate-bounce" />
+                  <span>Resume auto-scroll</span>
+                </button>
+              )}
             </div>
           )}
         </div>

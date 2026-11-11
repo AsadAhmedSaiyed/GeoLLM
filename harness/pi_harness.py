@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from string import Template
 from types import SimpleNamespace
+from typing import Optional
 
 from geollm_lib.metadata import inspect_dataset
 from harness import api_doc, prompts, llm, visual_check
@@ -63,16 +64,25 @@ def _read_status(run_dir):
 
 
 def _png_rels(run_dir):
-    """PNG/GIF artifact names as recorded by the runner (with fallback across succeeded attempts)."""
+    """PNG/GIF artifact names as recorded by the runner (with fallback across succeeded attempts and durable outputs)."""
     rels = []
     seen_names = set()
     rd = Path(run_dir).resolve()
     status_data = _read_status(run_dir)
+
     for a in status_data.get("artifacts", []):
-        p = Path(a)
-        if not p.is_absolute():
-            p = (rd / p).resolve()
-        if p.suffix.lower() in (".png", ".gif") and p.is_file() and p.name not in seen_names:
+        cand = Path(a)
+        p = None
+        if cand.is_file():
+            p = cand.resolve()
+        elif (rd / cand).is_file():
+            p = (rd / cand).resolve()
+        elif (rd / "scratch" / "outputs" / cand.name).is_file():
+            p = (rd / "scratch" / "outputs" / cand.name).resolve()
+        elif (rd / "outputs" / cand.name).is_file():
+            p = (rd / "outputs" / cand.name).resolve()
+
+        if p and p.suffix.lower() in (".png", ".gif") and p.name not in seen_names:
             seen_names.add(p.name)
             try:
                 rel = str(p.relative_to(rd))
@@ -80,8 +90,19 @@ def _png_rels(run_dir):
                 rel = str(p)
             rels.append(rel)
 
-    # If a revision attempt updated only a subset of files without re-declaring artifacts,
-    # merge PNG/GIF files from the latest attempt outputs and earlier completed attempts.
+    # Durable workspaces fallback: scan scratch/outputs and outputs directly
+    for out_dir in [rd / "scratch" / "outputs", rd / "outputs"]:
+        if out_dir.is_dir():
+            for p in sorted(out_dir.iterdir()):
+                if p.is_file() and p.suffix.lower() in (".png", ".gif") and p.name not in seen_names:
+                    seen_names.add(p.name)
+                    try:
+                        rel = str(p.relative_to(rd))
+                    except ValueError:
+                        rel = str(p)
+                    rels.append(rel)
+
+    # Legacy attempt directories fallback
     if status_data.get("ok"):
         for ad in sorted(rd.glob("attempt_*"), reverse=True):
             out_dir = ad / "outputs"
@@ -106,8 +127,8 @@ def _png_rels(run_dir):
     has_gif = any(Path(r).suffix.lower() == ".gif" for r in rels)
     if has_gif:
         timeline_frame_names = set()
-        for ad in sorted(rd.glob("attempt_*"), reverse=True):
-            tl_file = ad / "outputs" / "timeline.json"
+        for tl_dir in [rd / "scratch" / "outputs", rd / "outputs"] + list(rd.glob("attempt_*/outputs")):
+            tl_file = tl_dir / "timeline.json"
             if tl_file.is_file():
                 try:
                     tl_data = json.loads(tl_file.read_text(encoding="utf-8"))
@@ -139,7 +160,7 @@ def _stderr_tail(run_dir, n=400):
         return ""
 
 
-def _stage_approved_stac_scenes(stac_data: dict, step) -> tuple:
+def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] = None) -> tuple:
     """Download & crop approved STAC scenes to the target AOI bbox at 100% original native resolution."""
     import asyncio
     from harness.stac_service import stage_stac_aoi_native
@@ -148,16 +169,22 @@ def _stage_approved_stac_scenes(stac_data: dict, step) -> tuple:
     scenes = stac_data.get("scenes") or []
     staged_files = []
     errors = []
-    data_dir = Path("data")
+    data_dir = (run_dir / "staged_inputs") if run_dir is not None else Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
 
     async def _run_all():
         for sc in scenes:
+            if run_dir and (run_dir / "cancelled.flag").exists():
+                errors.append("Download cancelled by user")
+                break
             col = sc.get("collection") or "sentinel-2-l2a"
             item_id = sc.get("item_id") or sc.get("id")
             dt_str = str(sc.get("datetime") or "scene")[:10]
             assets = sc.get("assets") or ["B04", "B03", "B02", "B08"]
             for asset_key in assets:
+                if run_dir and (run_dir / "cancelled.flag").exists():
+                    errors.append("Download cancelled by user")
+                    break
                 custom_name = f"{col}_{dt_str}_{asset_key}.tif"
                 step({
                     "type": "status",
@@ -247,13 +274,55 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             ),
         }
     )
-    run_dir = cfg.runs_dir / (time.strftime("%Y%m%d_%H%M%S") + "_" + task_id)
+    from harness.workspace import init_workspace_layout
+    from harness.checkpoint import save_checkpoint, load_checkpoint
 
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # Use configured workspace folder for task slots: runs/task_X (never timestamped!)
+    if state and state.get("run_dir"):
+        run_dir = Path(state["run_dir"])
+        cfg = replace(cfg, runs_dir=run_dir.parent)
+    elif task_id and task_id in ("task_1", "task_2", "task_3"):
+        run_dir = cfg.runs_dir / task_id
+    else:
+        run_dir = cfg.runs_dir / task_id if task_id else cfg.runs_dir / "task_1"
+
+    init_workspace_layout(task_id or "task_1", cfg.runs_dir)
+
+    # Check if resuming from previous checkpoint
+    cp = load_checkpoint(task_id or "task_1", cfg.runs_dir) if task_id else None
+    if cp and cp.get("staged_inputs"):
+        existing_staged = [f for f in cp["staged_inputs"] if Path(f).is_file() and Path(f).stat().st_size > 0]
+        if existing_staged and not files:
+            files = list(existing_staged)
+            facts = inspect_dataset(files)
+    if not files and (run_dir / "staged_inputs").is_dir():
+        disk_staged = [str(p) for p in sorted((run_dir / "staged_inputs").glob("*.tif")) if p.stat().st_size > 1000]
+        if disk_staged:
+            files = disk_staged
+            facts = inspect_dataset(files)
+    if cp and cp.get("plan_approved"):
+        (run_dir / "plan_approved.flag").touch()
+
     if not task_state or getattr(task_state, "auto_approve", False):
         (run_dir / "plan_approved.flag").touch()
     state.update(run_dir=str(run_dir), facts=json.dumps(facts, default=str)[:3000],
                  tool_calls=0, pi_text="", last_tool="")
+
+    # Write allowed_files.json immediately with the active files of this run (unless resuming STAC downloads)
+    is_resuming_stac = (run_dir / "stac_approved.flag").exists() and not (run_dir / "plan_approved.flag").exists()
+    if files and not is_resuming_stac:
+        try:
+            (run_dir / "allowed_files.json").write_text(
+                json.dumps([str(Path(f).resolve()) if Path(f).exists() else str(f) for f in files]),
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+    elif not is_resuming_stac and (run_dir / "allowed_files.json").exists():
+        try:
+            (run_dir / "allowed_files.json").unlink()
+        except Exception:
+            pass
 
 
     clean_env = {**os.environ}
@@ -368,10 +437,33 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 "max_attempts": getattr(cfg, "max_tool_calls", 4),
             })
             try:
+                from harness.workspace import promote_outputs
+                scratch_out = run_dir / "scratch" / "outputs"
+                if scratch_out.is_dir():
+                    promote_outputs(task_id or run_dir.name, scratch_out, run_dir.parent)
+                # Immediately promote outputs from latest attempt directory so deliverables appear live in UI
+                for ad in sorted(run_dir.glob("attempt_*"), reverse=True):
+                    att_out = ad / "outputs"
+                    if att_out.is_dir() and any(p.is_file() for p in att_out.iterdir()):
+                        promote_outputs(task_id or run_dir.name, att_out, run_dir.parent)
+                        break
                 from harness.orchestrator import find_artifacts
                 cur_arts = find_artifacts(run_dir)
                 if cur_arts:
                     step({"type": "artifacts", "artifacts": cur_arts})
+                    if ok:
+                        from harness.checkpoint import save_checkpoint
+                        save_checkpoint(
+                            task_id or "task_1",
+                            "code_executed",
+                            {
+                                "status": "running",
+                                "step": "Code executed successfully — deliverables produced",
+                                "attempt": state.get("code_attempts", 1),
+                                "verified_outputs": [a["name"] for a in cur_arts],
+                            },
+                            cfg.runs_dir,
+                        )
             except Exception:
                 pass
             if cfg.verbose:
@@ -417,197 +509,419 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 warnings.append(f"Input quality gate error: {exc}")
         # ------------------------------------------------------------------------
 
-        stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
-                              cfg.max_tool_calls, on_event)
-        answer = pi.last_assistant_text()
+        is_plan_approved = (run_dir / "plan_approved.flag").exists()
 
-        # ---- Phase 0: STAC Preview & Approval Gate ----
-        stac_preview_file = run_dir / "stac_preview.json"
-        stac_revisions = 0
-        while stac_revisions <= 5 and stac_preview_file.exists():
+        if is_plan_approved:
+            # Plan is already approved and scenes are staged on disk!
+            # Bypass Phase 0 (STAC discovery/download) and Phase 1 (Plan review).
+            saved_plan = ""
+            cp = None
+            current_stage = None
             try:
-                stac_data = json.loads(stac_preview_file.read_text(encoding="utf-8"))
-                stac_preview_file.unlink()
+                cp = load_checkpoint(task_id, cfg.runs_dir) if task_id else None
+                if cp:
+                    current_stage = cp.get("current_stage")
+                    saved_plan = cp.get("plan", "")
+                elif task_state and getattr(task_state, "plan", None):
+                    saved_plan = task_state.plan
             except Exception:
-                break
+                pass
 
-            if task_state and not getattr(task_state, "auto_approve", False):
-                task_state.approval_event.clear()
-                task_state.stac_preview = stac_data
-                task_state.status = "pending_stac_approval"
-                step({"type": "stac_preview_ready", "preview": stac_data})
-                step({"type": "status", "status": "pending_stac_approval"})
+            plan_file = run_dir / "plan.json"
+            if plan_file.exists():
+                try:
+                    plan_file.unlink()
+                except Exception:
+                    pass
 
-                approved = task_state.approval_event.wait(timeout=1800)
-                if not approved or task_state.error == "Cancelled by user":
-                    if not approved:
-                        task_state.error = "STAC preview approval timed out after 30 minutes"
-                    task_state.status = "failed"
-                    return _result("failed", task_state.error, run_dir)
+            from harness.orchestrator import find_artifacts
+            existing_artifacts = find_artifacts(run_dir)
+            last_status = _read_status(run_dir)
+            code_already_done = bool(last_status.get("ok")) and len(existing_artifacts) > 0
 
-                if task_state.revision_feedback:
-                    stac_revisions += 1
-                    step({"type": "status", "status": "running"})
+            if code_already_done:
+                print(f"[pi] code execution already succeeded in previous run ({len(existing_artifacts)} deliverables verified). Fast-forwarding directly to visual validation...", flush=True)
+                step({"type": "artifacts", "artifacts": existing_artifacts})
+                step({"type": "status", "status": "running", "step": "Code already executed — proceeding to visual validation..."})
+                if task_state:
                     task_state.status = "running"
-                    fb = task_state.revision_feedback
-                    task_state.revision_feedback = None
+            else:
+                mounted_list = "\n".join(f"- `/workspace/input/{Path(f).name}` (host: `{f}`)" for f in files)
+                resume_prompt = (
+                    f"You are GeoLLM analyzing: {question}\n\n"
+                    f"The user has already APPROVED your scientific analysis plan:\n{saved_plan}\n\n"
+                    f"All required input rasters are already verified and mounted in `/workspace/input/`:\n{mounted_list}\n\n"
+                    "Proceed immediately to implement and run the analysis code using `run_geospatial_code`. "
+                    "Write all requested GeoTIFF/PNG files and verify deliverables."
+                )
+                step({"type": "status", "status": "running", "step": "Plan approved — resuming container execution..."})
+                if task_state:
+                    task_state.status = "running"
+                pi.drain()
+                stats = pi.run_prompt(
+                    resume_prompt,
+                    cfg.idle_timeout_s,
+                    cfg.total_timeout_s,
+                    cfg.max_tool_calls,
+                    on_event,
+                )
+                answer = pi.last_assistant_text()
+        else:
+            is_stac_approved = (run_dir / "stac_approved.flag").exists() and (run_dir / "stac_approved.json").exists()
+
+            if is_stac_approved:
+                # STAC satellite scenes were already approved in an earlier session!
+                # Bypass Phase 0 search & preview, resume downloads of remaining bands, and advance to Plan generation.
+                stac_approved_file = run_dir / "stac_approved.json"
+                stac_data = None
+                try:
+                    stac_data = json.loads(stac_approved_file.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    warnings.append(f"Failed to read stac_approved.json: {exc}")
+
+                if stac_data:
+                    scenes = stac_data.get("scenes") or []
+                    expected_filenames = set()
+                    for sc in scenes:
+                        col = sc.get("collection") or "sentinel-2-l2a"
+                        dt_str = str(sc.get("datetime") or "scene")[:10]
+                        assets = sc.get("assets") or ["B04", "B03", "B02", "B08"]
+                        for asset_key in assets:
+                            expected_filenames.add(f"{col}_{dt_str}_{asset_key}.tif")
+
+                    allowed_file = run_dir / "allowed_files.json"
+                    all_staged = False
+                    staged_files = []
+                    stage_errors = []
+                    if allowed_file.exists():
+                        try:
+                            cand_files = json.loads(allowed_file.read_text(encoding="utf-8"))
+                            cand_names = {Path(f).name for f in cand_files}
+                            if (
+                                expected_filenames
+                                and expected_filenames.issubset(cand_names)
+                                and all(Path(f).exists() and Path(f).stat().st_size > 1000 for f in cand_files)
+                            ):
+                                staged_files = cand_files
+                                all_staged = True
+                        except Exception:
+                            pass
+
+                    staged_dir = run_dir / "staged_inputs"
+                    if not all_staged and staged_dir.is_dir() and expected_filenames:
+                        existing_staged = [
+                            staged_dir / fname for fname in expected_filenames
+                            if (staged_dir / fname).exists() and (staged_dir / fname).stat().st_size > 1000
+                        ]
+                        if len(existing_staged) == len(expected_filenames):
+                            staged_files = [str(p) for p in existing_staged]
+                            all_staged = True
+
+                    if not all_staged:
+                        step({"type": "status", "status": "running", "step": "Resuming staging approved STAC scenes at native resolution..."})
+                        staged_files, stage_errors = _stage_approved_stac_scenes(stac_data, step, run_dir=run_dir)
+                    else:
+                        step({"type": "status", "status": "running", "step": "Approved STAC rasters already verified on disk."})
+
+                    if staged_files and not stage_errors:
+                        files = list(staged_files)
+                        if task_state:
+                            task_state.files = list(files)
+                        (run_dir / "allowed_files.json").write_text(json.dumps([str(f) for f in files]), encoding="utf-8")
+                        step({"type": "stac_staged", "files": files})
+                        save_checkpoint(task_id, "stac_staged", {"staged_inputs": files, "status": "running", "step": f"Staged {len(files)} native STAC rasters"}, cfg.runs_dir)
+
+                        # Run Input Quality Gate on staged rasters
+                        try:
+                            from harness.validation.input_gate import run_input_gate
+                            gate = run_input_gate(files, on_step=step)
+                        except Exception as exc:
+                            warnings.append(f"Input quality gate error: {exc}")
+
+                        facts = inspect_dataset(files)
+                        state["facts"] = json.dumps(facts, default=str)[:3000]
+                        pi.drain()
+                        mounted_list = "\n".join(f"- `/workspace/input/{Path(f).name}` (host: `{f}`)" for f in files)
+                        resume_stac_prompt = (
+                            f"You are GeoLLM analyzing: {question}\n\n"
+                            "The user approved your STAC satellite scenes! They have been cropped to the AOI at 100% original "
+                            "native resolution, verified by the Input Quality Gate, and mounted in `/workspace/input/`:\n"
+                            f"{mounted_list}\n\n"
+                            f"Inspected dataset metadata:\n{json.dumps(facts, indent=2, default=str)[:4000]}\n\n"
+                            "Now proceed directly to Phase 1: formulate your scientific methodology and call `propose_plan(plan=..., expected_outputs=[...])`."
+                        )
+                        step({"type": "status", "status": "running", "step": "STAC imagery staged — generating analysis plan..."})
+                        if task_state:
+                            task_state.status = "running"
+                        stats = pi.run_prompt(
+                            resume_stac_prompt,
+                            cfg.idle_timeout_s,
+                            cfg.total_timeout_s,
+                            cfg.max_tool_calls,
+                            on_event,
+                        )
+                        answer = pi.last_assistant_text()
+            else:
+                stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
+                                      cfg.max_tool_calls, on_event)
+                answer = pi.last_assistant_text()
+
+                # ---- Phase 0: STAC Preview & Approval Gate ----
+                stac_preview_file = run_dir / "stac_preview.json"
+                stac_revisions = 0
+                while stac_revisions <= 5 and stac_preview_file.exists():
+                    try:
+                        stac_data = json.loads(stac_preview_file.read_text(encoding="utf-8"))
+                        stac_preview_file.unlink()
+                    except Exception:
+                        break
+
+                    if task_state and not getattr(task_state, "auto_approve", False):
+                        task_state.approval_event.clear()
+                        task_state.stac_preview = stac_data
+                        task_state.status = "pending_stac_approval"
+                        save_checkpoint(
+                            task_id,
+                            "stac_search_completed",
+                            {
+                                "status": "pending_stac_approval",
+                                "step": "STAC satellite preview ready — review required",
+                                "preview": stac_data,
+                            },
+                            cfg.runs_dir,
+                        )
+                        step({"type": "stac_preview_ready", "preview": stac_data})
+                        step({"type": "status", "status": "pending_stac_approval"})
+
+                        approved = task_state.approval_event.wait(timeout=1800)
+                        if not approved or task_state.error == "Cancelled by user":
+                            if not approved:
+                                task_state.error = "STAC preview approval timed out after 30 minutes"
+                            task_state.status = "failed"
+                            return _result("failed", task_state.error, run_dir)
+
+                        if task_state.revision_feedback:
+                            stac_revisions += 1
+                            try:
+                                (run_dir / "stac_approved.flag").unlink(missing_ok=True)
+                                (run_dir / "stac_approved.json").unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            step({"type": "status", "status": "running"})
+                            task_state.status = "running"
+                            fb = task_state.revision_feedback
+                            task_state.revision_feedback = None
+                            pi.drain()
+                            stats = pi.run_prompt(
+                                f"The user reviewed your STAC satellite image preview and requested changes:\n{fb}\n\n"
+                                "Use `search_stac` to find updated scenes matching the user's feedback, "
+                                "then call `propose_stac_scenes` again.",
+                                cfg.idle_timeout_s, cfg.total_timeout_s,
+                                cfg.max_tool_calls, on_event,
+                            )
+                            answer = pi.last_assistant_text()
+                            continue
+
+                    # Approved (or CLI auto-approve): stage the scenes cropped to AOI at 100% native resolution
+                    if task_state:
+                        task_state.status = "running"
+                        task_state.stac_preview = None
+
+                    # Persist STAC approval immediately before launching downloads!
+                    stac_approved_flag = run_dir / "stac_approved.flag"
+                    stac_approved_file = run_dir / "stac_approved.json"
+                    try:
+                        stac_approved_file.write_text(json.dumps(stac_data, indent=2), encoding="utf-8")
+                        stac_approved_flag.touch(exist_ok=True)
+                        save_checkpoint(
+                            task_id,
+                            "stac_approved",
+                            {
+                                "stac_data": stac_data,
+                                "status": "running",
+                                "step": "Staging approved STAC scenes at native resolution...",
+                            },
+                            cfg.runs_dir,
+                        )
+                    except Exception as exc:
+                        print(f"[pi] Warning: failed to save stac_approved checkpoint: {exc}", flush=True)
+
+                    step({"type": "status", "status": "running", "step": "Staging approved STAC scenes at native resolution..."})
+                    staged_files, stage_errors = _stage_approved_stac_scenes(stac_data, step, run_dir=run_dir)
+
+                    if not staged_files or stage_errors:
+                        stac_revisions += 1
+                        err_msg = "; ".join(stage_errors) if stage_errors else "No files were staged."
+                        pi.drain()
+                        stats = pi.run_prompt(
+                            f"Staging the selected STAC scenes encountered an issue:\n{err_msg}\n\n"
+                            "Please adjust the bounding box or select alternative scenes/collections with `search_stac` "
+                            "and call `propose_stac_scenes` again.",
+                            cfg.idle_timeout_s, cfg.total_timeout_s,
+                            cfg.max_tool_calls, on_event,
+                        )
+                        answer = pi.last_assistant_text()
+                        continue
+
+                    files = list(staged_files)
+                    if task_state:
+                        task_state.files = list(files)
+                    (run_dir / "allowed_files.json").write_text(json.dumps([str(f) for f in files]), encoding="utf-8")
+                    step({"type": "stac_staged", "files": files})
+                    save_checkpoint(task_id, "stac_staged", {"staged_inputs": files, "status": "running", "step": f"Staged {len(files)} native STAC rasters"}, cfg.runs_dir)
+
+                    # Run Input Quality Gate on the newly staged rasters
+                    gate_passed = True
+                    try:
+                        from harness.validation.input_gate import run_input_gate
+                        gate = run_input_gate(files, on_step=step)
+                        if gate is None:
+                            gate_passed = False
+                    except Exception as exc:
+                        warnings.append(f"Input quality gate error: {exc}")
+
+                    if not gate_passed:
+                        stac_revisions += 1
+                        pi.drain()
+                        stats = pi.run_prompt(
+                            "The staged STAC scenes did not pass the Input Quality Gate (insufficient valid pixels, "
+                            "cloud contamination, or <15% multi-temporal overlap inside the AOI). "
+                            "Please search STAC with `search_stac` for clearer dates or better-overlapping tiles "
+                            "and call `propose_stac_scenes` again.",
+                            cfg.idle_timeout_s, cfg.total_timeout_s,
+                            cfg.max_tool_calls, on_event,
+                        )
+                        answer = pi.last_assistant_text()
+                        continue
+
+                    facts = inspect_dataset(files)
+                    state["facts"] = json.dumps(facts, default=str)[:3000]
                     pi.drain()
+                    mounted_list = "\n".join(f"- `/workspace/input/{Path(f).name}` (host: `{f}`)" for f in files)
                     stats = pi.run_prompt(
-                        f"The user reviewed your STAC satellite image preview and requested changes:\n{fb}\n\n"
-                        "Use `search_stac` to find updated scenes matching the user's feedback, "
-                        "then call `propose_stac_scenes` again.",
+                        "The user approved your STAC satellite scenes! They have been cropped to the AOI at 100% original "
+                        "native resolution, verified by the Input Quality Gate, and mounted in `/workspace/input/`:\n"
+                        f"{mounted_list}\n\n"
+                        f"Inspected dataset metadata:\n{json.dumps(facts, indent=2, default=str)[:4000]}\n\n"
+                        "Now proceed to Phase 1: formulate your scientific methodology and call `propose_plan(plan=..., expected_outputs=[...])`.",
                         cfg.idle_timeout_s, cfg.total_timeout_s,
                         cfg.max_tool_calls, on_event,
                     )
                     answer = pi.last_assistant_text()
-                    continue
-
-            # Approved (or CLI auto-approve): stage the scenes cropped to AOI at 100% native resolution
-            if task_state:
-                task_state.status = "running"
-                task_state.stac_preview = None
-            step({"type": "status", "status": "running", "step": "Staging approved STAC scenes at native resolution..."})
-            staged_files, stage_errors = _stage_approved_stac_scenes(stac_data, step)
-
-            if not staged_files or stage_errors:
-                stac_revisions += 1
-                err_msg = "; ".join(stage_errors) if stage_errors else "No files were staged."
-                pi.drain()
-                stats = pi.run_prompt(
-                    f"Staging the selected STAC scenes encountered an issue:\n{err_msg}\n\n"
-                    "Please adjust the bounding box or select alternative scenes/collections with `search_stac` "
-                    "and call `propose_stac_scenes` again.",
-                    cfg.idle_timeout_s, cfg.total_timeout_s,
-                    cfg.max_tool_calls, on_event,
-                )
-                answer = pi.last_assistant_text()
-                continue
-
-            files = list(staged_files)
-            if task_state:
-                task_state.files = list(files)
-            (run_dir / "allowed_files.json").write_text(json.dumps([str(f) for f in files]), encoding="utf-8")
-            step({"type": "stac_staged", "files": files})
-
-            # Run Input Quality Gate on the newly staged rasters
-            gate_passed = True
-            try:
-                from harness.validation.input_gate import run_input_gate
-                gate = run_input_gate(files, on_step=step)
-                if gate is None:
-                    gate_passed = False
-            except Exception as exc:
-                warnings.append(f"Input quality gate error: {exc}")
-
-            if not gate_passed:
-                stac_revisions += 1
-                pi.drain()
-                stats = pi.run_prompt(
-                    "The staged STAC scenes did not pass the Input Quality Gate (insufficient valid pixels, "
-                    "cloud contamination, or <15% multi-temporal overlap inside the AOI). "
-                    "Please search STAC with `search_stac` for clearer dates or better-overlapping tiles "
-                    "and call `propose_stac_scenes` again.",
-                    cfg.idle_timeout_s, cfg.total_timeout_s,
-                    cfg.max_tool_calls, on_event,
-                )
-                answer = pi.last_assistant_text()
-                continue
-
-            facts = inspect_dataset(files)
-            state["facts"] = json.dumps(facts, default=str)[:3000]
-            pi.drain()
-            mounted_list = "\n".join(f"- `/workspace/input/{Path(f).name}` (host: `{f}`)" for f in files)
-            stats = pi.run_prompt(
-                "The user approved your STAC satellite scenes! They have been cropped to the AOI at 100% original "
-                "native resolution, verified by the Input Quality Gate, and mounted in `/workspace/input/`:\n"
-                f"{mounted_list}\n\n"
-                f"Inspected dataset metadata:\n{json.dumps(facts, indent=2, default=str)[:4000]}\n\n"
-                "Now proceed to Phase 1: formulate your scientific methodology and call `propose_plan(plan=..., expected_outputs=[...])`.",
-                cfg.idle_timeout_s, cfg.total_timeout_s,
-                cfg.max_tool_calls, on_event,
-            )
-            answer = pi.last_assistant_text()
-            break
-
-        # ---- Plan Approval Gate ----
-        plan_file = run_dir / "plan.json"
-        plan_approved = not task_state or getattr(task_state, "auto_approve", False)
-        revisions = 0
-
-        # Case 1: CLI Auto-Approve (executes immediately without blocking)
-        if task_state and getattr(task_state, "auto_approve", False):
-            if plan_file.exists():
-                plan_file.unlink()
-                step({"type": "status", "status": "running"})
-                pi.drain()
-                stats = pi.run_prompt(
-                    "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
-                    "Write all requested GeoTIFF/PNG files and verify deliverables.",
-                    cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls, on_event
-                )
-                answer = pi.last_assistant_text()
-
-        # Case 2: Web UI Human-in-the-Loop Review
-        elif task_state:
-            while revisions <= 3:
-                if not plan_file.exists():
                     break
 
-                try:
-                    pdata = json.loads(plan_file.read_text(encoding="utf-8"))
+            # ---- Plan Approval Gate ----
+            plan_file = run_dir / "plan.json"
+            plan_approved = not task_state or getattr(task_state, "auto_approve", False)
+            revisions = 0
+
+            # Case 1: CLI Auto-Approve (executes immediately without blocking)
+            if task_state and getattr(task_state, "auto_approve", False):
+                if plan_file.exists():
                     plan_file.unlink()
-                except Exception:
-                    break
-
-                task_state.approval_event.clear()
-                task_state.plan = pdata.get("plan", "")
-                task_state.status = "pending_approval"
-                step({"type": "plan_ready", "plan": task_state.plan})
-                step({"type": "status", "status": "pending_approval"})
-
-                approved = task_state.approval_event.wait(timeout=1800)
-                if not approved or task_state.error == "Cancelled by user":
-                    if not approved:
-                        task_state.error = "Approval timed out after 30 minutes"
-                    task_state.status = "failed"
-                    return _result("failed", task_state.error, run_dir)
-
-                if task_state.revision_feedback:
-                    revisions += 1
                     step({"type": "status", "status": "running"})
-                    task_state.status = "running"
-                    fb = task_state.revision_feedback
-                    task_state.revision_feedback = None
                     pi.drain()
                     stats = pi.run_prompt(
-                        f"The user reviewed your plan and requested changes:\n{fb}\n\n"
-                        "Revise your approach and call `propose_plan` again.",
+                        "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
+                        "Write all requested GeoTIFF/PNG files and verify deliverables.",
+                        cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls, on_event
+                    )
+                    answer = pi.last_assistant_text()
+
+            # Case 2: Web UI Human-in-the-Loop Review
+            elif task_state:
+                while not plan_approved and revisions <= 3:
+                    if not plan_file.exists():
+                        break
+
+                    try:
+                        pdata = json.loads(plan_file.read_text(encoding="utf-8"))
+                        plan_file.unlink()
+                    except Exception:
+                        break
+
+                    task_state.approval_event.clear()
+                    task_state.plan = pdata.get("plan", "")
+                    task_state.status = "pending_approval"
+                    save_checkpoint(
+                        task_id,
+                        "plan_generated",
+                        {
+                            "plan": task_state.plan,
+                            "status": "pending_approval",
+                            "step": "Plan review required",
+                        },
+                        cfg.runs_dir,
+                    )
+                    step({"type": "plan_ready", "plan": task_state.plan})
+                    step({"type": "status", "status": "pending_approval"})
+
+                    approved = task_state.approval_event.wait(timeout=1800)
+                    if not approved or task_state.error == "Cancelled by user":
+                        if not approved:
+                            task_state.error = "Approval timed out after 30 minutes"
+                        task_state.status = "failed"
+                        return _result("failed", task_state.error, run_dir)
+
+                    if task_state.revision_feedback:
+                        revisions += 1
+                        step({"type": "status", "status": "running"})
+                        task_state.status = "running"
+                        fb = task_state.revision_feedback
+                        task_state.revision_feedback = None
+                        pi.drain()
+                        stats = pi.run_prompt(
+                            f"The user reviewed your plan and requested changes:\n{fb}\n\n"
+                            "Revise your approach and call `propose_plan` again.",
+                            cfg.idle_timeout_s, cfg.total_timeout_s,
+                            cfg.max_tool_calls, on_event
+                        )
+                        answer = pi.last_assistant_text()
+                        continue
+
+                    plan_approved = True
+                    (run_dir / "plan_approved.flag").touch()
+                    save_checkpoint(task_id, "plan_approved", {"plan": task_state.plan if task_state else "", "plan_approved": True, "status": "running", "step": "Plan Approved — Running Container Pipeline"}, cfg.runs_dir)
+                    step({"type": "status", "status": "running"})
+                    task_state.status = "running"
+                    pi.drain()
+                    stats = pi.run_prompt(
+                        "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
+                        "Write all requested GeoTIFF/PNG files and verify deliverables.",
                         cfg.idle_timeout_s, cfg.total_timeout_s,
                         cfg.max_tool_calls, on_event
                     )
                     answer = pi.last_assistant_text()
-                    continue
+                    break
 
-                plan_approved = True
-                (run_dir / "plan_approved.flag").touch()
-                step({"type": "status", "status": "running"})
-                task_state.status = "running"
-                pi.drain()
-                stats = pi.run_prompt(
-                    "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
-                    "Write all requested GeoTIFF/PNG files and verify deliverables.",
-                    cfg.idle_timeout_s, cfg.total_timeout_s,
-                    cfg.max_tool_calls, on_event
-                )
-                answer = pi.last_assistant_text()
-                break
-
-            if not plan_approved:
-                msg = ("Too many plan revisions" if revisions > 3 else "Agent did not propose a plan")
-                return _result("failed", msg, run_dir, warnings=[msg])
+                if not plan_approved:
+                    msg = ("Too many plan revisions" if revisions > 3 else "Agent did not propose a plan")
+                    return _result("failed", msg, run_dir, warnings=[msg])
 
         # ---- vision loop: check -> Pi fixes -> check again ----
-        if llm.vision_available():
+        cp = load_checkpoint(task_id, cfg.runs_dir) if task_id else None
+        current_stage = cp.get("current_stage") if cp else None
+
+        output_pngs = _png_rels(run_dir)
+        if current_stage == "vision_validation_completed":
+            print("[pi] visual validation already completed in previous checkpoint, skipping vision QA loop", flush=True)
+            step({"type": "status", "status": "running", "step": "Visual validation completed — preparing findings report..."})
+        elif llm.vision_available() and len(output_pngs) > 0:
+            try:
+                from harness.checkpoint import save_checkpoint
+                save_checkpoint(
+                    task_id or "task_1",
+                    "vision_validation_started",
+                    {
+                        "status": "running",
+                        "step": "Visual validation in progress...",
+                        "target_maps": [Path(r).name for r in output_pngs],
+                    },
+                    cfg.runs_dir,
+                )
+            except Exception:
+                pass
+
             max_r = cfg.vision_max_retries
             feedback_memory: list = []
             cached_passed: Dict[str, Dict[str, Any]] = {}
@@ -615,6 +929,10 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             needs_recheck_names: set = set()
 
             for attempt in range(max_r + 1):          # +1 = final re-check after the last fix
+                if (run_dir / "cancelled.flag").exists() or (task_state and task_state.error == "Cancelled by user"):
+                    print("[pi] Visual validation loop aborted due to task cancellation", flush=True)
+                    break
+
                 all_rels = _png_rels(run_dir)
                 if not all_rels:
                     break
@@ -747,6 +1065,22 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                             rev_file.unlink()
                         except Exception:
                             pass
+                    try:
+                        from harness.orchestrator import find_artifacts
+                        final_arts = find_artifacts(run_dir)
+                        from harness.checkpoint import save_checkpoint
+                        save_checkpoint(
+                            task_id or "task_1",
+                            "vision_validation_completed",
+                            {
+                                "status": "running",
+                                "step": "Visual validation completed — deliverables verified",
+                                "verified_outputs": [a["name"] for a in final_arts],
+                            },
+                            cfg.runs_dir,
+                        )
+                    except Exception:
+                        pass
                     break
                 if attempt == max_r:
                     unfixed_names = sorted({
@@ -824,9 +1158,35 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 answer = pi.last_assistant_text()
                 try:
                     from harness.orchestrator import find_artifacts
-                    step({"type": "artifacts", "artifacts": find_artifacts(run_dir)})
+                    final_arts = find_artifacts(run_dir)
+                    step({"type": "artifacts", "artifacts": final_arts})
+                    from harness.checkpoint import save_checkpoint
+                    save_checkpoint(
+                        task_id or "task_1",
+                        "vision_validation_completed",
+                        {
+                            "status": "running",
+                            "step": "Visual validation completed",
+                            "verified_outputs": [a["name"] for a in final_arts],
+                        },
+                        cfg.runs_dir,
+                    )
                 except Exception:
                     pass
+
+            # If resuming after code execution without re-generating text answer, synthesize findings
+            if not answer or "Plan proposed" in answer or "plan is ready" in answer:
+                last_status = _read_status(run_dir)
+                res_dict = last_status.get("result")
+                if isinstance(res_dict, dict) and res_dict.get("summary"):
+                    summary_data = res_dict["summary"]
+                    if isinstance(summary_data, dict):
+                        finding = summary_data.get("finding", "")
+                        evidence = summary_data.get("evidence", [])
+                        evidence_str = "\n".join(f"- {e}" for e in evidence) if isinstance(evidence, list) else str(evidence)
+                        answer = f"### Scientific Analysis Findings\n\n{finding}\n\n**Evidence:**\n{evidence_str}"
+                    else:
+                        answer = str(summary_data)
         else:
             warnings.append("Visual validation not performed (no GEOLLM_VISION_MODEL set).")
     except (PiRPCError, TimeoutError) as e:
@@ -858,17 +1218,19 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
             warnings.append(f"Last execution did not succeed: {last.get('message', '')[:300]}")
     else:
         warnings.append("The model never executed any code.")
-        # Fallback: if last_status is not ok, check if any earlier attempt produced valid outputs
-    if status != "ok":
-        for attempt_dir in sorted(run_dir.glob("attempt_*"), reverse=True):
-            outputs_dir = attempt_dir / "outputs"
-            if outputs_dir.exists():
-                valid_files = [str(f) for f in outputs_dir.iterdir() if f.is_file()]
-                if valid_files:
-                    artifacts = valid_files
-                    status = "partial" if session_problem else "ok"
-                    warnings = [w for w in warnings if "Last execution did not succeed" not in w]
-                    break
+        # Fallback: if latest attempt failed, check if an earlier attempt in THIS run succeeded
+    if status != "ok" and isinstance(sf, Path) and sf.exists():
+        cand_att = last.get("attempt", 0) if isinstance(last, dict) else 0
+        if cand_att > 1:
+            for prev_num in range(cand_att - 1, 0, -1):
+                prev_out = run_dir / f"attempt_{prev_num:02d}" / "outputs"
+                if prev_out.is_dir() and (prev_out / "result.json").is_file():
+                    valid_files = [str(f) for f in prev_out.iterdir() if f.is_file()]
+                    if valid_files:
+                        artifacts = valid_files
+                        status = "partial"
+                        warnings = [w for w in warnings if "Last execution did not succeed" not in w]
+                        break
     
     if stats.get("aborted"):
         warnings.append(f"Stopped after exceeding {cfg.max_tool_calls} tool calls.")

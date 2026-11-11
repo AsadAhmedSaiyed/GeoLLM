@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any
 # Ensure .jsx files are served with application/javascript MIME type
 mimetypes.add_type("application/javascript", ".jsx")
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +29,31 @@ from harness import chat
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-app = FastAPI(title="GeoLLM Web Interface")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from harness.workspace import cleanup_expired_workspaces
+    async def _cleanup_loop():
+        while True:
+            try:
+                await asyncio.sleep(1800)  # every 30 minutes
+                await asyncio.to_thread(cleanup_expired_workspaces, RUNS_DIR, 24.0)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        global _server_shutting_down
+        _server_shutting_down = True
+        print("[GeoLLM] Server shutdown initiated — terminating sub-agents...", flush=True)
+        task_manager.cancel_all()
+
+
+app = FastAPI(title="GeoLLM Web Interface", lifespan=lifespan)
 
 DATA_DIR = Path("data")
 RUNS_DIR = Path("runs")
@@ -48,7 +73,8 @@ app.mount("/data", StaticFiles(directory="data"), name="data")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Web manager requires human plan approval in browser
-task_manager = TaskManager(auto_approve=False)
+task_manager = TaskManager(auto_approve=False, runs_dir=RUNS_DIR)
+_server_shutting_down = False
 
 
 class ChatMessage(BaseModel):
@@ -219,7 +245,7 @@ async def stream_task(task_id: str, request: Request):
         last_keepalive = time.time()
 
         while True:
-            if await request.is_disconnected():
+            if _server_shutting_down or await request.is_disconnected():
                 break
 
             current = task_manager.get_task(task_id)
@@ -229,21 +255,32 @@ async def stream_task(task_id: str, request: Request):
             events_to_send = []
             with task_manager._lock:
                 for ev in current.event_log:
-                    ev_id = ev.get("id", 0)
+                    raw_id = ev.get("id", 0)
+                    try:
+                        ev_id = int(raw_id)
+                    except (ValueError, TypeError):
+                        ev_id = 0
                     if ev_id > last_sent_id:
                         events_to_send.append(ev)
 
             for ev in events_to_send:
-                ev_id = ev.get("id")
+                raw_id = ev.get("id")
+                try:
+                    ev_id = int(raw_id)
+                except (ValueError, TypeError):
+                    ev_id = last_sent_id + 1
                 last_sent_id = ev_id
                 last_keepalive = time.time()
                 yield f"id: {ev_id}\ndata: {json.dumps(ev)}\n\n"
 
-            # Stop streaming only after a finish event
+            # Stop streaming only after the final finish event has been transmitted
             if current.status in ("done", "partial", "failed"):
-                if any(ev.get("type") == "finish" for ev in events_to_send) or (
-                    len(current.event_log) > 0 and current.event_log[-1].get("type") == "finish" and last_sent_id >= current.event_log[-1].get("id", 0)
-                ):
+                last_ev = current.event_log[-1] if current.event_log else {}
+                try:
+                    last_ev_id = int(last_ev.get("id", 0))
+                except (ValueError, TypeError):
+                    last_ev_id = 0
+                if last_ev.get("type") == "finish" and last_sent_id >= last_ev_id:
                     break
 
             now = time.time()
@@ -287,6 +324,43 @@ async def reset_task(task_id: str):
             ts.ended = None
             ts.state = {}
             ts.result = None
+
+        # Clean workspace on disk and delete checkpoint
+        from harness.workspace import clean_workspace
+        from harness.checkpoint import delete_checkpoint
+        clean_workspace(task_id, RUNS_DIR)
+        delete_checkpoint(task_id, RUNS_DIR)
+        ws_path = RUNS_DIR / task_id
+        events_file = ws_path / "events.jsonl"
+        if events_file.exists():
+            try:
+                events_file.unlink()
+            except Exception:
+                pass
+        # Ensure 3D visualization caches are purged on slot reset
+        for fname in ("terrain_3d.json", "lidar_3d.json", "orthophoto.png"):
+            for f in ws_path.rglob(fname):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+
+        # Ensure any lingering Docker container for this slot is pruned
+        try:
+            import docker
+            client = docker.from_env()
+            for c in client.containers.list(all=True, filters={"name": f"geollm_{task_id}_"}):
+                try:
+                    c.kill()
+                except Exception:
+                    pass
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
     return JSONResponse({"task_id": task_id, "status": "idle"})
 
 
@@ -295,7 +369,7 @@ async def get_timeline(task_id: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         return JSONResponse({"error": "Task not found"}, status_code=404)
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     if not run_dir:
         return JSONResponse({"error": "No run_dir"}, status_code=404)
     p = Path(run_dir)
@@ -388,18 +462,33 @@ async def get_terrain_3d(task_id: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         return JSONResponse({"error": "Task not found"}, status_code=404)
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     if not run_dir:
         return JSONResponse({"error": "No run_dir"}, status_code=404)
     p = Path(run_dir)
     cands = list(p.rglob("terrain_3d.json")) + list(p.rglob("lidar_3d.json"))
+
+    # Gather available rasters in outputs/ and scratch/outputs to check staleness
+    output_tifs = [
+        f for f in (list((p / "outputs").glob("*.tif")) + list((p / "scratch" / "outputs").glob("*.tif")))
+        if f.is_file()
+    ]
+    newest_tif_mtime = max((f.stat().st_mtime for f in output_tifs), default=0)
+
     if cands and cands[0].exists():
+        cand_file = cands[0]
+        # Only use cached 3D payload if it is newer than the output GeoTIFFs
+        # and has a valid non-flat elevation range (or no output GeoTIFFs exist)
+        is_stale = newest_tif_mtime > cand_file.stat().st_mtime
         try:
-            data = json.loads(cands[0].read_text(encoding="utf-8"))
-            data["orthophoto_url"] = f"/api/runs/{task_id}/orthophoto.png"
-            return JSONResponse(data)
-        except Exception as e:
-            return JSONResponse({"error": f"Invalid 3D payload: {e}"}, status_code=500)
+            data = json.loads(cand_file.read_text(encoding="utf-8"))
+            elev_range = float(data.get("elevation_range_m", 0) or 0)
+            is_flat_zero = elev_range <= 0.0 and bool(output_tifs)
+            if not is_stale and not is_flat_zero:
+                data["orthophoto_url"] = f"/api/runs/{task_id}/orthophoto.png"
+                return JSONResponse(data)
+        except Exception:
+            pass
 
     # Dynamic on-the-fly generation if an elevation or LiDAR GeoTIFF exists in run outputs or input files
     from geollm_lib.lidar import generate_lidar_3d_payload
@@ -501,7 +590,7 @@ async def get_task_orthophoto(task_id: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         return JSONResponse({"error": "Task not found"}, status_code=404)
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     if not run_dir:
         return JSONResponse({"error": "No run_dir"}, status_code=404)
     p = Path(run_dir)
@@ -539,7 +628,7 @@ async def get_task_artifacts(task_id: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         return JSONResponse({"artifacts": []})
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     ans = ts.result.get("answer") if isinstance(ts.result, dict) else None
     return JSONResponse({"artifacts": find_artifacts(run_dir), "answer": ans})
 
@@ -550,7 +639,7 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         raise HTTPException(status_code=404, detail="Task not found")
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     if not run_dir:
         raise HTTPException(status_code=404, detail="No run_dir for task")
     rd = Path(run_dir)
@@ -620,7 +709,7 @@ async def get_task_thumb(task_id: str, thumb_path: str):
     ts = task_manager.get_task(task_id)
     if not ts:
         raise HTTPException(status_code=404, detail="Task not found")
-    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None)
+    run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     if not run_dir:
         raise HTTPException(status_code=404, detail="No run_dir for task")
     rd = Path(run_dir)
@@ -982,4 +1071,4 @@ async def send_chat_message(payload: ChatMessage):
 if __name__ == "__main__":
     import uvicorn
     print("Starting GeoLLM Web UI on http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=1)

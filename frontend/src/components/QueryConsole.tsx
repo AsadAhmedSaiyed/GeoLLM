@@ -8,6 +8,7 @@ interface QueryConsoleProps {
   onClearAllFiles?: () => void;
   onSubmit: (question: string) => void;
   isSubmitting: boolean;
+  isRunning?: boolean;
   hasActiveWorkspace: boolean;
   injectedPrompt?: string | null;
   onInjectedPromptConsumed?: () => void;
@@ -21,6 +22,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   onClearAllFiles,
   onSubmit,
   isSubmitting,
+  isRunning = false,
   hasActiveWorkspace,
   injectedPrompt,
   onInjectedPromptConsumed,
@@ -40,7 +42,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!hasActiveWorkspace || !question.trim() || isSubmitting) return;
+    if (!hasActiveWorkspace || !question.trim() || isSubmitting || isRunning) return;
     const q = question.trim();
     setQuestion('');
     onSubmit(q);
@@ -138,15 +140,20 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
 
             <Button
               onClick={() => handleSubmit()}
-              disabled={!hasActiveWorkspace || !question.trim() || isSubmitting}
+              disabled={!hasActiveWorkspace || !question.trim() || isSubmitting || isRunning}
               size="sm"
               variant="teal"
-              className="gap-1.5 h-8 px-4 text-xs font-semibold"
+              className="gap-1.5 h-8 px-4 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   <span>Dispatching…</span>
+                </>
+              ) : isRunning ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Analysis Running…</span>
                 </>
               ) : (
                 <>

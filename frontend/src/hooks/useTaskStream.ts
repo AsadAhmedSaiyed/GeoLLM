@@ -35,6 +35,16 @@ export function reduceTaskSSEEvent(
       status: 'running',
       question: msg.question || prev.question,
       step: 'Starting analysis',
+      error: null,
+      answer: null,
+    };
+  }
+
+  // 0b. Superseded finish (from auto-resumed run after crash)
+  if ((eventType as string) === 'superseded_finish') {
+    return {
+      ...prev,
+      step: 'Resuming container execution from checkpoint…',
     };
   }
 
@@ -312,8 +322,37 @@ export function reduceTaskSSEEvent(
     };
   }
 
-  // 14. All other vision_* events and generic fallback
-  activities.push(msg as ActivityItem);
+  // 14. Vision Progress (update in place to avoid stacking dozens of progress bars)
+  if (eventType === 'vision_progress') {
+    const lastAct = activities[activities.length - 1];
+    if (lastAct && (lastAct as { type: string }).type === 'vision_progress') {
+      activities[activities.length - 1] = msg as ActivityItem;
+    } else {
+      activities.push(msg as ActivityItem);
+    }
+    return {
+      ...prev,
+      activities,
+    };
+  }
+
+  // 15. All other vision_* events and generic fallback
+  const internalEventTypes = new Set([
+    'message_update',
+    'message_start',
+    'message_end',
+    'turn',
+    'turn_start',
+    'turn_end',
+    'response',
+    'agent_start',
+    'agent_end',
+    'extension_error',
+    'compaction_start',
+  ]);
+  if (!internalEventTypes.has(eventType)) {
+    activities.push(msg as ActivityItem);
+  }
   return {
     ...prev,
     step:
@@ -435,7 +474,10 @@ export function useTaskStream(taskId: string, initialTask?: Partial<TaskState>) 
   };
 }
 
-export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
+export function useMultiTaskStreams(options?: {
+  onStacStaged?: () => void;
+  onTaskResumed?: (taskId: string, question: string, step: string) => void;
+}) {
   const [tasks, setTasks] = useState<Record<string, TaskState>>({
     task_1: { ...DEFAULT_TASK_STATE },
     task_2: { ...DEFAULT_TASK_STATE },
@@ -452,6 +494,9 @@ export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
   const streamsRef = useRef<Record<string, TaskStreamSubscription | null>>({});
   const onStacStagedRef = useRef(options?.onStacStaged);
   onStacStagedRef.current = options?.onStacStaged;
+  const onTaskResumedRef = useRef(options?.onTaskResumed);
+  onTaskResumedRef.current = options?.onTaskResumed;
+  const notifiedResumedRef = useRef<Set<string>>(new Set());
 
   const fetchArtifacts = useCallback(async (taskId: string) => {
     try {
@@ -605,6 +650,7 @@ export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
             }
             if (
               msg.type === 'tool_end' ||
+              msg.type === 'artifacts' ||
               msg.type === 'finish' ||
               msg.type === 'vision_summary' ||
               msg.type === 'vision_stopped'
@@ -635,6 +681,7 @@ export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
   const resetSlotState = useCallback(
     (taskId: string) => {
       stopSlotStream(taskId);
+      notifiedResumedRef.current.delete(taskId);
       setTasks((prev) => ({
         ...prev,
         [taskId]: { ...DEFAULT_TASK_STATE },
@@ -669,6 +716,13 @@ export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
           if (t.status && t.status !== 'idle') {
             startSlotStream(t.task_id, 0);
             fetchArtifacts(t.task_id);
+            if (
+              (t.status === 'running' || t.status === 'pending_approval' || t.status === 'pending_stac_approval') &&
+              !notifiedResumedRef.current.has(t.task_id)
+            ) {
+              notifiedResumedRef.current.add(t.task_id);
+              onTaskResumedRef.current?.(t.task_id, t.question || '', t.step || '');
+            }
           }
         });
       } catch {
@@ -702,9 +756,18 @@ export function useMultiTaskStreams(options?: { onStacStaged?: () => void }) {
             const current = next[t.task_id];
             if (!current || current.status === 'idle') return;
             const isNowTerminal = ['done', 'partial', 'failed'].includes(t.status);
-            if (isNowTerminal && streamsRef.current[t.task_id]) {
-              streamsRef.current[t.task_id]?.close();
-              streamsRef.current[t.task_id] = null;
+            if (isNowTerminal) {
+              notifiedResumedRef.current.delete(t.task_id);
+              if (streamsRef.current[t.task_id]) {
+                streamsRef.current[t.task_id]?.close();
+                streamsRef.current[t.task_id] = null;
+              }
+            } else if (
+              (t.status === 'running' || t.status === 'pending_approval' || t.status === 'pending_stac_approval') &&
+              !notifiedResumedRef.current.has(t.task_id)
+            ) {
+              notifiedResumedRef.current.add(t.task_id);
+              onTaskResumedRef.current?.(t.task_id, t.question || '', t.step || '');
             }
             next[t.task_id] = {
               ...current,

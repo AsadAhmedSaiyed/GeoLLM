@@ -54,10 +54,12 @@ export function connectTaskStream(
 
         handlers.onEvent(sseEvent);
 
-        // Auto-close on terminal finish event
+        // Auto-close on terminal finish event with slight delay to ensure trailing microtasks resolve
         if (sseEvent.type === 'finish') {
-          cleanup();
-          if (handlers.onClose) handlers.onClose();
+          setTimeout(() => {
+            cleanup();
+            if (handlers.onClose) handlers.onClose();
+          }, 100);
         }
       } catch (err) {
         console.warn(`[SSE:${taskId}] Failed to parse incoming event JSON:`, err, e.data);
