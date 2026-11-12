@@ -1,15 +1,13 @@
 // GeoLLM Modern Frontend - Phase 5 Complete Geospatial Workbench
-// Assembles TaskHeader, DatasetSidebar, QueryConsole, SingleWorkerSlot (with Vision QA & TimeSeriesPanel),
+// Assembles TaskHeader, QueryConsole, SingleWorkerSlot (with Vision QA & TimeSeriesPanel),
 // GlobeView (MapLibre 3D Globe), Terrain3DViewer (Three.js DEM/LiDAR), TiffPreviewModal, StacModal, and SupervisorDrawer.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Workspace } from '@/types/task';
-import { FileInfo } from '@/types/geospatial';
 import { ArtifactItem, TaskStatus } from '@/types/sse';
 import { api } from '@/services/api';
 import { useMultiTaskStreams, DEFAULT_TASK_STATE } from '@/hooks/useTaskStream';
 import { TaskHeader } from '@/components/TaskHeader';
-import { DatasetSidebar } from '@/components/DatasetSidebar';
 import { QueryConsole } from '@/components/QueryConsole';
 import { SingleWorkerSlot } from '@/components/SingleWorkerSlot';
 import { GlobeView } from '@/components/GlobeView';
@@ -72,8 +70,7 @@ export function App() {
   );
   const activeContainerId = activeWorkspace ? activeWorkspace.containerId : 'task_1';
 
-  // 2. Data Catalog files, selections, & modal states
-  const [files, setFiles] = useState<FileInfo[]>([]);
+  // 2. Selected input files & modal states
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [stacModalOpen, setStacModalOpen] = useState(false);
@@ -110,21 +107,6 @@ export function App() {
     title: '3D Digital Elevation Model',
   });
 
-  const loadFiles = useCallback(async () => {
-    try {
-      const fileList = await api.getFiles();
-      setFiles(fileList);
-    } catch (err) {
-      toast.error('Failed to load dataset files', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    loadFiles();
-  }, [loadFiles]);
-
   const handleTaskResumed = useCallback((taskId: string, question: string, step: string) => {
     const slotNum = taskId.replace('task_', '#');
     const shortQ = question ? (question.length > 55 ? question.slice(0, 52) + '...' : question) : '';
@@ -144,7 +126,6 @@ export function App() {
     stopSlotStream,
     resetSlotState,
   } = useMultiTaskStreams({
-    onStacStaged: loadFiles,
     onTaskResumed: handleTaskResumed,
   });
 
@@ -246,11 +227,13 @@ export function App() {
   };
 
   const handleUploadFiles = async (fileList: FileList) => {
-    toast.info(`Uploading ${fileList.length} dataset file(s)...`);
+    toast.info(`Uploading ${fileList.length} file(s)...`);
     try {
       const res = await api.uploadFiles(fileList);
-      toast.success(`Uploaded ${res.uploaded.length} file(s) to storage.`);
-      loadFiles();
+      if (res.uploaded && res.uploaded.length > 0) {
+        setSelectedFiles((prev) => Array.from(new Set([...prev, ...res.uploaded])));
+        toast.success(`Uploaded and attached ${res.uploaded.length} file(s).`);
+      }
     } catch (err) {
       toast.error('File upload failed', {
         description: err instanceof Error ? err.message : String(err),
@@ -436,29 +419,9 @@ export function App() {
         onOpenSupervisor={() => setSupervisorOpen((prev) => !prev)}
       />
 
-      {/* Main Responsive Viewport: Catalog on Left, Full-Size 3D Map with Floating Overlay on Right */}
+      {/* Main Responsive Viewport: Full-Size 3D Map with Floating Chat Overlay */}
       <div className="flex-1 overflow-hidden">
-        <ResizablePanelGroup direction="horizontal">
-          {/* Panel 1: Data Catalog Sidebar */}
-          <ResizablePanel defaultSize={20} minSize={14} maxSize={30} id="catalog-sidebar">
-            <DatasetSidebar
-              files={files}
-              selectedFiles={selectedFiles}
-              onToggleFile={handleToggleFile}
-              onClearSelectedFiles={() => setSelectedFiles([])}
-              onRefreshFiles={loadFiles}
-              onUploadFiles={handleUploadFiles}
-              activeWorkspace={activeWorkspace}
-              onDeleteWorkspace={handleDeleteWorkspace}
-              onInspectTiff={(filePath) => openArtifactPreview(filePath)}
-            />
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          {/* Panel 2: Full-Size 3D Map Stage with Floating Chat Overlay */}
-          <ResizablePanel defaultSize={80} minSize={70} id="workspace-stage">
-            <div className="relative w-full h-full overflow-hidden bg-background">
+        <div className="relative w-full h-full overflow-hidden bg-background">
               {/* Layer 0: 3D MapLibre Globe occupies 100% full size underneath. NEVER RESIZES DURING CHAT DRAG. */}
               <div className="absolute inset-0 w-full h-full">
                 <GlobeView
@@ -545,6 +508,7 @@ export function App() {
                           selectedFiles={selectedFiles}
                           onRemoveFile={handleToggleFile}
                           onClearAllFiles={() => setSelectedFiles([])}
+                          onUploadFiles={handleUploadFiles}
                           onSubmit={handleSubmitTask}
                           isSubmitting={isSubmitting}
                           isRunning={isSubmitting || activeTask.status === 'running'}
@@ -627,9 +591,7 @@ export function App() {
                   <div className="w-[3px] h-7 rounded-none-none bg-slate-600 hover:bg-[#2DD4BF] transition-colors" />
                 </div>
               </div>
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        </div>
       </div>
 
       {/* Planetary Computer STAC Explorer Modal */}
@@ -639,7 +601,6 @@ export function App() {
         initialBbox={stacInitialBbox}
         onAssetStaged={(info) => {
           toast.success(`Staged ${info.filename || 'GeoTIFF'} (${info.size_mb ?? '?'} MB) to /data`);
-          loadFiles();
         }}
         onNotify={handleNotify}
       />

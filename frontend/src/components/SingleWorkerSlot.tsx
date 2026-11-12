@@ -23,6 +23,7 @@ import {
   Square,
   RotateCcw,
   ArrowDown,
+  ArrowUp,
 } from 'lucide-react';
 
 const getBasename = (p?: string | null): string => {
@@ -87,6 +88,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   const activityRef = useRef<HTMLDivElement | null>(null);
   const isUserScrolledUp = useRef(false);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
+  const [showScrollTopBtn, setShowScrollTopBtn] = useState(false);
 
   // When user uses the wheel or touches, immediately pause auto-scroll if scrolling upward
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -99,6 +101,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (!el) return;
+    setShowScrollTopBtn(el.scrollTop > 40);
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     // Re-engage auto-scroll when user returns to within 24px of bottom
     if (distanceToBottom <= 24) {
@@ -107,6 +110,17 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     } else if (distanceToBottom > 40) {
       isUserScrolledUp.current = true;
       setShowScrollBottomBtn(true);
+    }
+  }, []);
+
+  const scrollToTop = useCallback(() => {
+    if (activityRef.current) {
+      isUserScrolledUp.current = true;
+      setShowScrollBottomBtn(true);
+      activityRef.current.scrollTo({
+        top: 0,
+        behavior: 'smooth',
+      });
     }
   }, []);
 
@@ -1400,6 +1414,19 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 return null;
               })}
             </div>
+
+              {/* Floating Jump to Top Pill when scrolled down */}
+              {showScrollTopBtn && (
+                <button
+                  type="button"
+                  onClick={scrollToTop}
+                  title="Scroll to top of activity log"
+                  className="absolute top-2.5 right-4 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-none bg-card/90 hover:bg-muted text-foreground text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 cursor-pointer border border-border"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" />
+                  <span>Scroll to top</span>
+                </button>
+              )}
 
               {/* Floating Jump to Bottom Pill when user scrolled up during active stream */}
               {showScrollBottomBtn && task.status === 'running' && (

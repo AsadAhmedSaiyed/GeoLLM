@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Play, X, Satellite, Loader2, AlertCircle, ChevronUp, ChevronDown } from 'lucide-react';
+import { Play, X, Satellite, Loader2, AlertCircle, ChevronUp, ChevronDown, Upload } from 'lucide-react';
 
 interface QueryConsoleProps {
   selectedFiles: string[];
   onRemoveFile: (fileName: string) => void;
   onClearAllFiles?: () => void;
+  onUploadFiles?: (files: FileList) => Promise<void> | void;
   onSubmit: (question: string) => void;
   isSubmitting: boolean;
   isRunning?: boolean;
@@ -20,6 +21,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   selectedFiles,
   onRemoveFile,
   onClearAllFiles,
+  onUploadFiles,
   onSubmit,
   isSubmitting,
   isRunning = false,
@@ -30,6 +32,20 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   onToggleFold,
 }) => {
   const [question, setQuestion] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !onUploadFiles) return;
+    setIsUploading(true);
+    try {
+      await onUploadFiles(files);
+    } finally {
+      setIsUploading(false);
+      e.target.value = '';
+    }
+  };
 
   useEffect(() => {
     if (injectedPrompt) {
@@ -133,10 +149,44 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
           </div>
 
           {/* Submit Action Bar */}
-          <div className="shrink-0 flex items-center justify-between pt-0.5">
-            <span className="text-[11px] text-muted-foreground font-mono">
-              {question.length > 0 ? `${question.length} chars` : 'Ready to analyze'}
-            </span>
+          <div className="shrink-0 flex items-center justify-between gap-2 pt-0.5">
+            <div className="flex items-center gap-2 min-w-0">
+              {onUploadFiles && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!hasActiveWorkspace || isUploading || isSubmitting}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="h-8 px-2.5 text-xs gap-1.5"
+                    title="Upload GeoTIFF, LAZ/LAS, PNG, or any input file"
+                  >
+                    {isUploading ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Uploading…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="h-3.5 w-3.5" />
+                        <span>Upload</span>
+                      </>
+                    )}
+                  </Button>
+                </>
+              )}
+              <span className="text-[11px] text-muted-foreground font-mono truncate">
+                {question.length > 0 ? `${question.length} chars` : 'Ready to analyze'}
+              </span>
+            </div>
 
             <Button
               onClick={() => handleSubmit()}

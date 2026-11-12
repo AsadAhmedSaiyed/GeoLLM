@@ -170,9 +170,14 @@ async def list_data_files():
 
 @app.post("/api/upload")
 async def upload_file(files: List[UploadFile] = File(...)):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     uploaded = []
     for file in files:
+        if not file.filename:
+            continue
         safe_name = Path(file.filename).name
+        if not safe_name:
+            continue
         dest = DATA_DIR / safe_name
         with dest.open("wb") as buffer:
             while chunk := await file.read(1024 * 1024):
