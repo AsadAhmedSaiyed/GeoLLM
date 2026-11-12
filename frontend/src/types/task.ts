@@ -44,6 +44,12 @@ export type ActivityItem =
       item_id?: string;
       asset_key?: string;
       date?: string;
+      band_index?: number;
+      total_bands?: number;
+      band_pct?: number;
+      overall_pct?: number;
+      elapsed_s?: number;
+      cached?: boolean;
       running: boolean;
       ok?: boolean;
       path?: string;

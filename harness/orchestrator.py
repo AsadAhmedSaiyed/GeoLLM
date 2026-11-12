@@ -591,6 +591,8 @@ class TaskManager:
                 step_str = "Plan proposed"
             elif t == "stac_preview_ready":
                 step_str = "STAC Satellite Preview Ready"
+            elif t == "stac_download_progress":
+                step_str = f"Downloading {ev_data.get('filename')} ({ev_data.get('band_index', '?')}/{ev_data.get('total_bands', '?')} · {ev_data.get('band_pct', 0)}%)"
             elif t == "stac_staged":
                 step_str = f"Staged {len(ev_data.get('files', []))} native-resolution STAC files"
             elif t == "turn":
@@ -606,11 +608,12 @@ class TaskManager:
 
             if step_str:
                 ts.step = step_str
-                ts.events.append(f"[{time.strftime('%H:%M:%S')}] {step_str}")
+                if t != "stac_download_progress":
+                    ts.events.append(f"[{time.strftime('%H:%M:%S')}] {step_str}")
 
-            # Immediately flush event to events.jsonl
+            # Immediately flush event to events.jsonl (skip transient download progress ticks)
             rd = ts.state.get("run_dir")
-            if rd:
+            if rd and t != "stac_download_progress":
                 try:
                     events_file = Path(rd) / "events.jsonl"
                     with open(events_file, "a", encoding="utf-8") as f:
@@ -620,7 +623,7 @@ class TaskManager:
                 except Exception:
                     pass
 
-        if ev_data.get("type") not in ("text", "thinking"):
+        if ev_data.get("type") not in ("text", "thinking", "stac_download_progress"):
             print(f"\n[GeoLLM:{task_id}] {ts.step}", flush=True)
 
     def _work(self, task_id: str, question: str, files: list, kw: dict, run_id: int):

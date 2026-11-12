@@ -163,22 +163,78 @@ export function reduceTaskSSEEvent(
     };
   }
 
-  // 6. STAC Download start
+  // 6. STAC Download start (upsert by filename to prevent duplicates on server restart/resume)
   if (eventType === 'stac_download_start') {
-    activities.push({
+    const existingIdx = activities.findIndex(
+      (act) => act.type === 'stac_download' && act.filename === msg.filename
+    );
+    const nextItem: ActivityItem = {
       type: 'stac_download',
       filename: msg.filename,
       collection: msg.collection,
       item_id: msg.item_id,
       asset_key: msg.asset_key,
       date: msg.date,
+      band_index: msg.band_index,
+      total_bands: msg.total_bands,
+      band_pct: 0,
       running: true,
-    });
+    };
+    if (existingIdx >= 0) {
+      activities[existingIdx] = nextItem;
+    } else {
+      activities.push(nextItem);
+    }
 
     return {
       ...prev,
-      step: `Downloading ${msg.filename} at native resolution…`,
+      step: msg.total_bands
+        ? `Downloading ${msg.filename} (${msg.band_index}/${msg.total_bands})…`
+        : `Downloading ${msg.filename} at native resolution…`,
       activities,
+    };
+  }
+
+  // 6b. STAC Download real-time progress
+  if (eventType === 'stac_download_progress') {
+    let matched = false;
+    const updatedActs = activities.map((act) => {
+      if (act.type === 'stac_download' && act.filename === msg.filename) {
+        matched = true;
+        return {
+          ...act,
+          running: true,
+          band_index: msg.band_index ?? act.band_index,
+          total_bands: msg.total_bands ?? act.total_bands,
+          band_pct: msg.band_pct,
+          overall_pct: msg.overall_pct,
+          elapsed_s: msg.elapsed_s,
+        };
+      }
+      return act;
+    });
+
+    if (!matched) {
+      updatedActs.push({
+        type: 'stac_download',
+        filename: msg.filename,
+        collection: msg.collection,
+        item_id: msg.item_id,
+        asset_key: msg.asset_key,
+        date: msg.date,
+        band_index: msg.band_index,
+        total_bands: msg.total_bands,
+        band_pct: msg.band_pct,
+        overall_pct: msg.overall_pct,
+        elapsed_s: msg.elapsed_s,
+        running: true,
+      });
+    }
+
+    return {
+      ...prev,
+      step: `Downloading ${msg.filename} (${msg.band_index ?? '?'}/${msg.total_bands ?? '?'} · ${msg.band_pct}%)`,
+      activities: updatedActs,
     };
   }
 
@@ -186,12 +242,16 @@ export function reduceTaskSSEEvent(
   if (eventType === 'stac_download_done') {
     let matched = false;
     const updatedActs = activities.map((act) => {
-      if (act.type === 'stac_download' && act.filename === msg.filename && act.running) {
+      if (act.type === 'stac_download' && act.filename === msg.filename) {
         matched = true;
         return {
           ...act,
           running: false,
           ok: msg.ok,
+          cached: msg.cached,
+          band_index: msg.band_index ?? act.band_index,
+          total_bands: msg.total_bands ?? act.total_bands,
+          band_pct: msg.ok ? 100 : act.band_pct,
           path: msg.path,
           size_mb: msg.size_mb,
           width: msg.width,
@@ -211,6 +271,10 @@ export function reduceTaskSSEEvent(
         collection: msg.collection,
         asset_key: msg.asset_key,
         date: msg.date,
+        band_index: msg.band_index,
+        total_bands: msg.total_bands,
+        band_pct: msg.ok ? 100 : 0,
+        cached: msg.cached,
         running: false,
         ok: msg.ok,
         path: msg.path,
@@ -230,9 +294,26 @@ export function reduceTaskSSEEvent(
     };
   }
 
-  // 8. STAC Staged
+  // 8. STAC Staged (reconcile any stale running downloads from pre-crash replay)
   if (eventType === 'stac_staged') {
-    activities.push({
+    const stagedBasenames = new Set(
+      (msg.files || []).map((p) => p.replace(/\\/g, '/').split('/').pop() || p)
+    );
+    const reconciled: ActivityItem[] = activities
+      .filter((a) => a.type !== 'stac_staged')
+      .map((act): ActivityItem => {
+        if (act.type === 'stac_download' && act.running) {
+          const isStaged = stagedBasenames.has(act.filename);
+          return {
+            ...act,
+            running: false,
+            ok: isStaged ? true : act.ok ?? false,
+            band_pct: isStaged ? 100 : act.band_pct,
+          };
+        }
+        return act;
+      });
+    reconciled.push({
       type: 'stac_staged',
       files: msg.files,
     });
@@ -241,7 +322,7 @@ export function reduceTaskSSEEvent(
       ...prev,
       files: msg.files,
       step: `Staged ${msg.files.length} native-resolution GeoTIFFs`,
-      activities,
+      activities: reconciled,
     };
   }
 
@@ -281,6 +362,16 @@ export function reduceTaskSSEEvent(
       .filter((a): a is { type: 'text'; text: string; timestamp: number } => a.type === 'text')
       .map((a) => a.text);
     const answer = textParts.length > 0 ? textParts.join('') : prev.answer;
+    const finalizedActivities = activities.map((act) => {
+      if ((act.type === 'stac_download' || act.type === 'tool') && act.running) {
+        return {
+          ...act,
+          running: false,
+          ok: act.ok ?? (finalStatus === 'done'),
+        };
+      }
+      return act;
+    });
 
     return {
       ...prev,
@@ -288,6 +379,7 @@ export function reduceTaskSSEEvent(
       error: msg.error || null,
       answer: answer || null,
       step: finalStatus === 'done' ? 'Completed' : msg.error || String(finalStatus),
+      activities: finalizedActivities,
     };
   }
 

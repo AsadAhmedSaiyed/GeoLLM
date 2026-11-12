@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -223,6 +224,56 @@ def extract_png_crop(
         return None
 
 
+def _resolve_rgb_siblings(raster_path: Path) -> Optional[Tuple[Path, Path, Path]]:
+    """If raster_path is a single optical band (e.g. *_B02.tif), locate sibling R/G/B bands in the same folder."""
+    name = raster_path.name
+    m = re.match(r"^(.+?_)B0?([1-9]\d?)(\.[^.]+)$", name, re.IGNORECASE)
+    if not m:
+        return None
+    prefix, _band, ext = m.groups()
+    parent = raster_path.parent
+    for r_tok, g_tok, b_tok in (("B04", "B03", "B02"), ("B4", "B3", "B2")):
+        rp = parent / f"{prefix}{r_tok}{ext}"
+        gp = parent / f"{prefix}{g_tok}{ext}"
+        bp = parent / f"{prefix}{b_tok}{ext}"
+        if rp.is_file() and gp.is_file() and bp.is_file():
+            return (rp, gp, bp)
+    return None
+
+
+def _extract_rgb_composite_crop(
+    rgb_paths: Tuple[Path, Path, Path],
+    bbox_geo: Optional[Tuple[float, float, float, float]] = None,
+    bbox_norm: Optional[Tuple[float, float, float, float]] = None,
+    max_dimension: int = 1024,
+    cfg: Optional[ValidationConfig] = None,
+) -> ExtractedCrop:
+    """Stack separate R, G, B single-band GeoTIFFs into a 3-band ExtractedCrop over the same spatial window."""
+    r_crop = extract_raster_crop(rgb_paths[0], bbox_geo=bbox_geo, bbox_norm=bbox_norm, target_bands=[1], max_dimension=max_dimension, cfg=cfg)
+    g_crop = extract_raster_crop(rgb_paths[1], bbox_geo=r_crop.bounds_geo, bbox_crs=r_crop.crs, target_bands=[1], max_dimension=max_dimension, cfg=cfg)
+    b_crop = extract_raster_crop(rgb_paths[2], bbox_geo=r_crop.bounds_geo, bbox_crs=r_crop.crs, target_bands=[1], max_dimension=max_dimension, cfg=cfg)
+
+    h, w = r_crop.array.shape[1], r_crop.array.shape[2]
+    g_band = g_crop.array[0]
+    b_band = b_crop.array[0]
+    if g_band.shape != (h, w):
+        g_band = np.array(Image.fromarray(g_band).resize((w, h), Image.Resampling.BILINEAR))
+    if b_band.shape != (h, w):
+        b_band = np.array(Image.fromarray(b_band).resize((w, h), Image.Resampling.BILINEAR))
+
+    stacked = np.stack([r_crop.array[0], g_band, b_band], axis=0)
+    return ExtractedCrop(
+        source_path=r_crop.source_path,
+        array=stacked,
+        crs=r_crop.crs,
+        bounds_geo=r_crop.bounds_geo,
+        window=r_crop.window,
+        nodata=r_crop.nodata,
+        is_mask=False,
+        is_continuous=False,
+    )
+
+
 def generate_side_by_side_comparison(
     input_raster_path: Union[str, Path],
     output_raster_path: Optional[Union[str, Path]] = None,
@@ -235,22 +286,33 @@ def generate_side_by_side_comparison(
     """Generates a side-by-side multi-panel comparison image for visual inspection.
 
     Panels:
-    1. Input Satellite Source Crop (Raw Optical / SAR)
+    1. Input Satellite Source Crop (True-Color RGB if sibling bands exist, else single-band)
     2. Output GeoTIFF Re-rendered Crop (Ground-Truth Cartography)
     3. Output PNG Map Crop (Sub-Agent Rendered Figure, if available)
-    4. Difference / Discrepancy View
+    4. Alignment Overlay / Difference View
 
     Returns:
         Path to the saved PNG comparison image.
     """
     config = cfg or get_validation_config()
 
-    # 1. Extract input satellite crop (capped at 1024px for quick multi-panel comparison)
-    input_crop = extract_raster_crop(input_raster_path, bbox_geo=bbox_geo, bbox_norm=bbox_norm, max_dimension=1024, cfg=config)
-    input_rgb = render_crop_to_rgb(input_crop)
+    # 1. Extract input satellite crop (automatically compose RGB if single optical band has R/G/B siblings)
+    in_path = Path(input_raster_path)
+    rgb_siblings = _resolve_rgb_siblings(in_path)
+    if rgb_siblings is not None:
+        try:
+            input_crop = _extract_rgb_composite_crop(
+                rgb_siblings, bbox_geo=bbox_geo, bbox_norm=bbox_norm, max_dimension=1024, cfg=config
+            )
+            input_name = f"{in_path.name} (RGB)"
+        except Exception:
+            input_crop = extract_raster_crop(in_path, bbox_geo=bbox_geo, bbox_norm=bbox_norm, max_dimension=1024, cfg=config)
+            input_name = in_path.name
+    else:
+        input_crop = extract_raster_crop(in_path, bbox_geo=bbox_geo, bbox_norm=bbox_norm, max_dimension=1024, cfg=config)
+        input_name = in_path.name
 
-    # Use input raster filename for accurate title instead of generic "Source Satellite Crop"
-    input_name = Path(input_raster_path).name
+    input_rgb = render_crop_to_rgb(input_crop)
     panels: List[Tuple[str, np.ndarray]] = [(f"Input Crop ({input_name})", input_rgb)]
 
     # 2. Extract and re-render output GeoTIFF crop using shared geographic bounds
@@ -277,14 +339,23 @@ def generate_side_by_side_comparison(
             png_name = Path(png_map_path).name
             panels.append((f"Deliverable ({png_name})", png_crop))
 
-    # 4. Generate Difference Overlay if both input and output crops are available
+    # 4. Generate Alignment / Difference Overlay if both input and output crops are available
     if out_crop is not None:
         try:
-            # Rescale out_rgb to match input_rgb dimensions for overlay
             h, w = input_rgb.shape[:2]
-            out_resized = np.array(Image.fromarray(render_crop_to_rgb(out_crop)).resize((w, h), Image.Resampling.NEAREST))
-            diff = np.clip(np.abs(input_rgb.astype(int) - out_resized.astype(int)), 0, 255).astype(np.uint8)
-            panels.append(("Discrepancy / Overlay", diff))
+            out_resized = np.array(Image.fromarray(out_rgb).resize((w, h), Image.Resampling.NEAREST))
+            same_modality = (
+                input_crop.array.shape[0] == out_crop.array.shape[0]
+                and input_crop.is_mask == out_crop.is_mask
+                and not out_crop.is_continuous
+            )
+            if same_modality:
+                diff = np.clip(np.abs(input_rgb.astype(int) - out_resized.astype(int)), 0, 255).astype(np.uint8)
+                panels.append(("Discrepancy / Overlay", diff))
+            else:
+                # Cross-modality (e.g. optical RGB vs continuous index/classification): 50% spatial blend
+                blended = np.clip(0.5 * input_rgb.astype(np.float32) + 0.5 * out_resized.astype(np.float32), 0, 255).astype(np.uint8)
+                panels.append(("Spatial Alignment Blend", blended))
         except Exception:
             pass
 

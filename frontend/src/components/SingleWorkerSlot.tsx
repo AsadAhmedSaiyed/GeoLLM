@@ -22,7 +22,6 @@ import {
   Code2,
   FolderOpen,
   Download,
-  Inbox,
   Eye,
   Microscope,
   Square,
@@ -177,51 +176,20 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     }) || !!gifArt;
 
   const terrain3dArt = artifacts.find((a) => {
-    const name = typeof a === 'string' ? a : a.name || '';
-    return name.toLowerCase().includes('terrain_3d.json');
+    const name = getBasename(typeof a === 'string' ? a : a.name || '').toLowerCase();
+    return name === 'terrain_3d.json' || name === 'lidar_3d.json';
   });
 
+  const lidarPattern = /\b(lidar|chm|canopy_height|autzen)\b|\.(las|laz)$/i;
   const isLidar =
     artifacts.some((a) => {
       const name = typeof a === 'string' ? a : a.name || '';
-      return ['lidar', 'chm', 'las', 'laz', 'canopy_height'].some((k) =>
-        name.toLowerCase().includes(k)
-      );
+      return lidarPattern.test(name);
     }) ||
-    (task.files || []).some((f) =>
-      ['lidar', 'chm', 'las', 'laz', 'autzen'].some((k) => (f || '').toLowerCase().includes(k))
-    ) ||
-    (task.question || '').toLowerCase().includes('lidar') ||
-    (task.question || '').toLowerCase().includes('canopy height') ||
-    (task.question || '').toLowerCase().includes('point cloud');
+    (task.files || []).some((f) => lidarPattern.test(f || '')) ||
+    /\b(lidar|canopy height|point cloud)\b/i.test(task.question || '');
 
-  const isElevation =
-    artifacts.some((a) => {
-      const name = typeof a === 'string' ? a : a.name || '';
-      return [
-        'dem',
-        'elevation',
-        'dsm',
-        'dtm',
-        'cop-dem',
-        'srtm',
-        'nasadem',
-        'topography',
-        'terrain',
-      ].some((k) => name.toLowerCase().includes(k));
-    }) ||
-    (task.files || []).some((f) =>
-      ['dem', 'elevation', 'dsm', 'dtm', 'cop-dem', 'srtm', 'nasadem'].some((k) =>
-        (f || '').toLowerCase().includes(k)
-      )
-    ) ||
-    (task.question || '').toLowerCase().includes('elevation') ||
-    (task.question || '').toLowerCase().includes('terrain') ||
-    (task.question || '').toLowerCase().includes('topography') ||
-    (task.question || '').toLowerCase().includes('dem') ||
-    (task.question || '').toLowerCase().includes('slope');
-
-  const canShow3D = !!terrain3dArt || isLidar || isElevation;
+  const canShow3D = Boolean(terrain3dArt);
 
   const profileSvgArt = artifacts.find((a) => {
     const name = typeof a === 'string' ? a : a.name || '';
@@ -262,6 +230,93 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     }
     return coalesced;
   }, [task.activities]);
+
+  const stacStagingSummary = useMemo(() => {
+    type StacDlItem = Extract<ActivityItem, { type: 'stac_download' }>;
+    const downloads = relevantActivities.filter(
+      (a): a is StacDlItem => a.type === 'stac_download'
+    );
+    const stagedItem = relevantActivities.find(
+      (a): a is Extract<ActivityItem, { type: 'stac_staged' }> => a.type === 'stac_staged'
+    );
+    const firstStacIndex = relevantActivities.findIndex(
+      (a) => a.type === 'stac_download' || a.type === 'stac_staged'
+    );
+
+    const totalBands = Math.max(
+      downloads.length,
+      stagedItem?.files?.length || 0,
+      ...downloads.map((d) => d.total_bands || 0)
+    );
+    const doneDownloads = downloads.filter((d) => !d.running && d.ok);
+    const failedDownloads = downloads.filter((d) => !d.running && d.ok === false);
+    const activeDownload = downloads.find((d) => d.running) || null;
+    const totalSizeMb = Math.round(
+      doneDownloads.reduce((sum, d) => sum + (Number(d.size_mb) || 0), 0) * 10
+    ) / 10;
+    const totalDurationS = Math.round(
+      doneDownloads.reduce((sum, d) => sum + (Number(d.duration_s) || 0), 0) * 10
+    ) / 10;
+
+    // Group bands by collection + date
+    interface StacSceneGroup {
+      key: string;
+      label: string;
+      bands: string[];
+      sizeMb: number;
+      durationS: number;
+      allOk: boolean;
+    }
+    const sceneMap: Record<string, StacSceneGroup> = {};
+    for (const d of downloads) {
+      const dateStr = d.date || 'scene';
+      const colStr = d.collection || 'STAC';
+      const key = `${colStr}_${dateStr}`;
+      const existing = sceneMap[key];
+      if (existing) {
+        if (d.asset_key) existing.bands.push(d.asset_key);
+        existing.sizeMb = Math.round((existing.sizeMb + (Number(d.size_mb) || 0)) * 100) / 100;
+        existing.durationS = Math.round((existing.durationS + (Number(d.duration_s) || 0)) * 10) / 10;
+        existing.allOk = existing.allOk && d.ok !== false;
+      } else {
+        sceneMap[key] = {
+          key,
+          label: `${colStr} (${dateStr})`,
+          bands: d.asset_key ? [d.asset_key] : [],
+          sizeMb: Math.round((Number(d.size_mb) || 0) * 100) / 100,
+          durationS: Math.round((Number(d.duration_s) || 0) * 10) / 10,
+          allOk: d.ok !== false,
+        };
+      }
+    }
+
+    const isStagingActive =
+      Boolean(activeDownload) ||
+      (!stagedItem &&
+        task.status === 'running' &&
+        totalBands > 0 &&
+        doneDownloads.length + failedDownloads.length < totalBands);
+
+    const overallPct = isStagingActive
+      ? activeDownload?.overall_pct ??
+        Math.round((doneDownloads.length / Math.max(1, totalBands)) * 100)
+      : 100;
+
+    return {
+      firstStacIndex,
+      downloads,
+      stagedFiles: stagedItem?.files || [],
+      totalBands,
+      doneCount: stagedItem && doneDownloads.length === 0 ? stagedItem.files.length : doneDownloads.length,
+      failedDownloads,
+      activeDownload,
+      totalSizeMb,
+      totalDurationS,
+      scenes: Object.values(sceneMap),
+      isStagingActive,
+      overallPct,
+    };
+  }, [relevantActivities, task.status]);
 
   const handleOpen3D = () => {
     if (!onOpenTerrain3D) {
@@ -663,8 +718,8 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               <Package className="h-4 w-4 text-sky-400 shrink-0" />
               <span>Generated Deliverables ({artifacts.length} files)</span>
             </span>
-            <div className="flex items-center gap-1.5">
-              {canShow3D && (
+            {canShow3D && (
+              <div className="flex items-center gap-1.5">
                 <Button
                   type="button"
                   size="sm"
@@ -689,19 +744,8 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     </>
                   )}
                 </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="teal"
-                className="h-7 text-[11px] px-2.5 gap-1"
-                onClick={() => onSwitchToGlobe?.()}
-                title="View all outputs overlaid on the 3D Globe"
-              >
-                <Globe className="h-3.5 w-3.5" />
-                <span>View on 3D Globe</span>
-              </Button>
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Embedded Elevation Cross-Section Chart if available */}
@@ -819,13 +863,10 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       ? textStr.trim().split(/\s+/).filter(Boolean).length
                       : 0;
                     const charCount = textStr.length;
-                    const isLatestThinking =
-                      task.status === 'running' && i === relevantActivities.length - 1;
 
                     return (
                       <details
                         key={i}
-                        open={isLatestThinking || undefined}
                         className="border border-border rounded-none bg-background px-3 py-2"
                       >
                         <summary className="font-mono text-[11px] cursor-pointer text-sky-400 font-semibold select-none flex items-center justify-between">
@@ -920,12 +961,27 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                               : act.toolName}
                           </span>
                         </span>
-                        {act.attempt && (
-                          <span className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none">
-                            att {act.attempt}
-                            {act.max_attempts ? `/${act.max_attempts}` : ''}
-                          </span>
-                        )}
+                        {(act.code_attempt || act.attempt) && (() => {
+                          const isCodeTool =
+                            act.toolName === 'run_geospatial_code' ||
+                            act.toolName === 'run_sandbox_python_code';
+                          const shownAtt = isCodeTool
+                            ? act.code_attempt || act.attempt
+                            : act.attempt;
+                          if (!shownAtt) return null;
+                          const label = isCodeTool
+                            ? act.max_attempts
+                              ? shownAtt <= act.max_attempts
+                                ? `att ${shownAtt}/${act.max_attempts}`
+                                : `fix #${shownAtt - act.max_attempts}`
+                              : `att ${shownAtt}`
+                            : `step #${shownAtt}`;
+                          return (
+                            <span className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none">
+                              {label}
+                            </span>
+                          );
+                        })()}
                         <span
                           className="font-mono ml-auto text-[10.5px] font-semibold"
                           style={{
@@ -1018,10 +1074,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       )}
 
                       {codeStr && (
-                        <details
-                          open={act.running || undefined}
-                          className="mt-1.5 text-[10.5px]"
-                        >
+                        <details className="mt-1.5 text-[10.5px]">
                           <summary className="font-mono cursor-pointer text-[#14B8A6] font-semibold select-none flex items-center gap-1">
                             <Code2 className="h-3.5 w-3.5 shrink-0 inline" />
                             <span>
@@ -1042,7 +1095,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
                       {(act.error || act.stdout) && (
                         <details
-                          open={act.ok === false || isStacSearch || undefined}
+                          open={act.ok === false || undefined}
                           className="mt-1.5 text-[10.5px]"
                         >
                           <summary
@@ -1063,109 +1116,198 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   );
                 }
 
-                // D. STAC Band Download Card
-                if (act.type === 'stac_download') {
-                  const borderColor = act.running
+                // D. Unified STAC Satellite Imagery Staging Card (real-time progress + auto-collapsing summary)
+                if (act.type === 'stac_download' || act.type === 'stac_staged') {
+                  if (i !== stacStagingSummary.firstStacIndex) {
+                    return null;
+                  }
+                  const {
+                    totalBands,
+                    doneCount,
+                    failedDownloads,
+                    activeDownload,
+                    totalSizeMb,
+                    totalDurationS,
+                    scenes,
+                    isStagingActive,
+                    overallPct,
+                    stagedFiles,
+                  } = stacStagingSummary;
+                  const hasFailure = failedDownloads.length > 0 && !isStagingActive;
+                  const borderColor = isStagingActive
                     ? '#38BDF8'
-                    : act.ok
-                    ? '#0F766E'
-                    : '#EF4444';
-                  const leftBorderColor = act.running
+                    : hasFailure
+                    ? '#EF4444'
+                    : '#0F766E';
+                  const leftBorderColor = isStagingActive
                     ? '#38BDF8'
-                    : act.ok
-                    ? '#10B981'
-                    : '#EF4444';
+                    : hasFailure
+                    ? '#EF4444'
+                    : '#10B981';
 
                   return (
                     <div
-                      key={i}
-                      className="bg-card rounded-none px-2.5 py-2"
+                      key="stac-staging-unified"
+                      className="bg-card rounded-none p-3 text-foreground"
                       style={{
                         border: `1px solid ${borderColor}`,
-                        borderLeft: `3px solid ${leftBorderColor}`,
+                        borderLeft: `4px solid ${leftBorderColor}`,
                       }}
                     >
-                      <div className="flex items-center gap-2 text-[11.5px] flex-wrap">
-                        <span className="font-mono font-semibold text-sky-400 flex items-center gap-1.5">
-                          <Download className="h-3.5 w-3.5 shrink-0" />
-                          <span>
-                            {act.running
-                              ? 'Downloading STAC Band:'
-                              : act.ok
-                              ? 'Staged STAC Band:'
-                              : 'STAC Download Failed:'}{' '}
-                            {act.filename}
-                          </span>
+                      <div className="flex items-center gap-2 text-xs font-bold mb-1">
+                        <Download
+                          className={`h-4 w-4 shrink-0 ${
+                            isStagingActive
+                              ? 'text-sky-400 animate-pulse'
+                              : hasFailure
+                              ? 'text-rose-400'
+                              : 'text-emerald-400'
+                          }`}
+                        />
+                        <span>
+                          {isStagingActive
+                            ? 'Staging Satellite Imagery'
+                            : 'Satellite Imagery Staged'}
+                        </span>
+                        <span className="font-mono text-[10.5px] text-muted-foreground font-medium">
+                          ({doneCount}/{totalBands || stagedFiles.length} bands)
                         </span>
                         <span
-                          className="font-mono ml-auto text-[10.5px] font-semibold"
+                          className="ml-auto font-mono text-[10px] px-2 py-0.5 rounded-none font-bold uppercase"
                           style={{
-                            color: act.running
+                            background: isStagingActive
+                              ? 'rgba(56, 189, 248, 0.15)'
+                              : hasFailure
+                              ? 'rgba(239, 68, 68, 0.15)'
+                              : 'rgba(16, 185, 129, 0.15)',
+                            color: isStagingActive
                               ? '#38BDF8'
-                              : act.ok
-                              ? '#10B981'
-                              : '#F87171',
+                              : hasFailure
+                              ? '#FCA5A5'
+                              : '#34D399',
                           }}
                         >
-                          {act.running
-                            ? '⏳ Cropping & downloading at 100% native resolution…'
-                            : act.ok
-                            ? `${act.size_mb != null ? `${act.size_mb} MB · ` : ''}${
-                                act.duration_s != null ? `${act.duration_s}s` : 'done'
-                              }`
-                            : act.error || 'failed'}
+                          {isStagingActive
+                            ? `${overallPct}%`
+                            : hasFailure
+                            ? 'PARTIAL'
+                            : 'STAGED'}
                         </span>
                       </div>
-                      {(act.collection || act.asset_key || act.width) && (
-                        <div className="font-mono text-[10px] text-muted-foreground mt-1 flex flex-wrap gap-2.5">
-                          {act.collection && (
+
+                      {/* Real-time active download progress bar */}
+                      {isStagingActive ? (
+                        <div className="mt-1.5 space-y-1.5">
+                          <div className="w-full h-1.5 bg-muted overflow-hidden">
+                            <div
+                              className="h-full bg-sky-400 transition-all duration-300"
+                              style={{ width: `${Math.max(4, Math.min(100, overallPct))}%` }}
+                            />
+                          </div>
+                          {activeDownload && (
+                            <div className="font-mono text-[10.5px] text-muted-foreground flex items-center justify-between gap-2">
+                              <span className="truncate text-sky-400">
+                                {activeDownload.filename}
+                              </span>
+                              <span className="shrink-0">
+                                {activeDownload.band_pct != null
+                                  ? `${activeDownload.band_pct}%`
+                                  : 'reading…'}
+                                {activeDownload.elapsed_s != null
+                                  ? ` · ${activeDownload.elapsed_s}s`
+                                  : ''}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="font-mono text-[10.5px] text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                          <span>
+                            <strong className={hasFailure ? 'text-rose-400' : 'text-emerald-400'}>
+                              {doneCount}/{totalBands || stagedFiles.length}
+                            </strong>{' '}
+                            staged
+                          </span>
+                          {totalSizeMb > 0 && (
                             <span>
-                              <strong>Collection:</strong> {act.collection}
+                              Size: <strong className="text-foreground">{totalSizeMb} MB</strong>
                             </span>
                           )}
-                          {act.asset_key && (
+                          {totalDurationS > 0 && (
                             <span>
-                              <strong>Band:</strong> {act.asset_key}
+                              Time:{' '}
+                              <strong className="text-foreground">
+                                {totalDurationS >= 60
+                                  ? `${Math.floor(totalDurationS / 60)}m ${Math.round(totalDurationS % 60)}s`
+                                  : `${totalDurationS}s`}
+                              </strong>
                             </span>
                           )}
-                          {act.date && (
+                          {scenes.length > 0 && (
                             <span>
-                              <strong>Date:</strong> {act.date}
-                            </span>
-                          )}
-                          {act.width && act.height && (
-                            <span>
-                              <strong>Grid:</strong> {act.width}×{act.height} px
+                              Scenes: <strong className="text-foreground">{scenes.length}</strong>
                             </span>
                           )}
                         </div>
                       )}
-                    </div>
-                  );
-                }
 
-                // E. STAC Staged Summary
-                if (act.type === 'stac_staged' && 'files' in act) {
-                  const stagedList = act.files || [];
-                  return (
-                    <div
-                      key={i}
-                      className="bg-muted rounded-none px-2.5 py-2"
-                      style={{
-                        border: '1px solid #0F766E',
-                        borderLeft: '3px solid #10B981',
-                      }}
-                    >
-                      <div className="font-mono font-semibold text-[11.5px] text-emerald-400 flex items-center gap-1.5">
-                        <Inbox className="h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          Staged {stagedList.length} Native-Resolution GeoTIFFs to Workspace
-                        </span>
-                      </div>
-                      {stagedList.length > 0 && (
-                        <div className="font-mono text-[10px] text-foreground mt-1 leading-relaxed">
-                          {stagedList.map(getBasename).join(', ')}
+                      {/* Immediately surface failed bands if any */}
+                      {failedDownloads.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {failedDownloads.map((fd) => (
+                            <div
+                              key={fd.filename}
+                              className="text-[11px] border border-rose-500/40 bg-rose-500/10 px-2 py-1 font-mono flex justify-between gap-2"
+                            >
+                              <span className="truncate text-foreground">{fd.filename}</span>
+                              <span className="text-rose-400 shrink-0">{fd.error || 'failed'}</span>
+                            </div>
+                          ))}
                         </div>
+                      )}
+
+                      {/* Collapsed Details Dropdown (Grouped by Scene/Date) */}
+                      {(scenes.length > 0 || stagedFiles.length > 0) && (
+                        <details className="mt-2 text-[10.5px]">
+                          <summary className="font-mono cursor-pointer text-muted-foreground hover:text-foreground select-none">
+                            Details ({scenes.length > 0 ? `${scenes.length} scene${scenes.length === 1 ? '' : 's'}` : `${stagedFiles.length} files`})
+                          </summary>
+                          <div className="mt-1.5 border-t border-border pt-1 space-y-1 max-h-[240px] overflow-y-auto">
+                            {scenes.length > 0
+                              ? scenes.map((sc) => (
+                                  <div
+                                    key={sc.key}
+                                    className="text-[11px] text-foreground border-b border-border/60 last:border-none pb-1.5 pt-1"
+                                  >
+                                    <div className="flex justify-between items-center gap-2">
+                                      <span className="font-mono font-semibold text-foreground truncate">
+                                        {sc.label}
+                                        {sc.bands.length > 0 && (
+                                          <span className="text-muted-foreground font-normal ml-1.5">
+                                            ({sc.bands.length} bands: {sc.bands.join(', ')})
+                                          </span>
+                                        )}
+                                      </span>
+                                      <span
+                                        className="font-mono font-bold text-[10.5px] shrink-0"
+                                        style={{ color: sc.allOk ? '#34D399' : '#F87171' }}
+                                      >
+                                        {sc.allOk ? 'STAGED' : 'ERROR'}
+                                      </span>
+                                    </div>
+                                    <div className="flex gap-4 mt-0.5 text-muted-foreground font-mono text-[10px]">
+                                      <span>Size: {sc.sizeMb} MB</span>
+                                      <span>Duration: {sc.durationS}s</span>
+                                    </div>
+                                  </div>
+                                ))
+                              : stagedFiles.map((sf) => (
+                                  <div key={sf} className="font-mono text-[10.5px] text-foreground py-0.5 truncate">
+                                    {getBasename(sf)}
+                                  </div>
+                                ))}
+                          </div>
+                        </details>
                       )}
                     </div>
                   );

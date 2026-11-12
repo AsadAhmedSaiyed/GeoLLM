@@ -116,6 +116,22 @@ export interface SSEStacDownloadStartEvent extends BaseSSEEvent {
   item_id?: string;
   asset_key?: string;
   date?: string;
+  band_index?: number;
+  total_bands?: number;
+}
+
+export interface SSEStacDownloadProgressEvent extends BaseSSEEvent {
+  type: 'stac_download_progress';
+  filename: string;
+  collection?: string;
+  item_id?: string;
+  asset_key?: string;
+  date?: string;
+  band_index?: number;
+  total_bands?: number;
+  band_pct: number;
+  overall_pct: number;
+  elapsed_s?: number;
 }
 
 export interface SSEStacDownloadDoneEvent extends BaseSSEEvent {
@@ -124,7 +140,10 @@ export interface SSEStacDownloadDoneEvent extends BaseSSEEvent {
   collection?: string;
   asset_key?: string;
   date?: string;
+  band_index?: number;
+  total_bands?: number;
   ok: boolean;
+  cached?: boolean;
   path?: string;
   size_mb?: number | null;
   width?: number | null;
@@ -319,6 +338,7 @@ export type GeoLLMSSEEvent =
   | SSEPlanReadyEvent
   | SSEStacPreviewReadyEvent
   | SSEStacDownloadStartEvent
+  | SSEStacDownloadProgressEvent
   | SSEStacDownloadDoneEvent
   | SSEStacStagedEvent
   | SSEVisionInputGateEvent

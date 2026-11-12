@@ -171,8 +171,10 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
     errors = []
     data_dir = (run_dir / "staged_inputs") if run_dir is not None else Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
+    total_bands = sum(len(sc.get("assets") or ["B04", "B03", "B02", "B08"]) for sc in scenes)
 
     async def _run_all():
+        band_index = 0
         for sc in scenes:
             if run_dir and (run_dir / "cancelled.flag").exists():
                 errors.append("Download cancelled by user")
@@ -185,11 +187,12 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                 if run_dir and (run_dir / "cancelled.flag").exists():
                     errors.append("Download cancelled by user")
                     break
+                band_index += 1
                 custom_name = f"{col}_{dt_str}_{asset_key}.tif"
                 step({
                     "type": "status",
                     "status": "running",
-                    "step": f"Staging {custom_name} at native resolution...",
+                    "step": f"Staging {custom_name} ({band_index}/{total_bands}) at native resolution...",
                 })
                 step({
                     "type": "stac_download_start",
@@ -198,8 +201,45 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                     "item_id": item_id,
                     "asset_key": asset_key,
                     "date": dt_str,
+                    "band_index": band_index,
+                    "total_bands": total_bands,
                 })
                 t_dl0 = time.time()
+                last_emit = [0.0]
+
+                def _on_band_progress(
+                    band_pct: float,
+                    _fname=custom_name,
+                    _col=col,
+                    _item=item_id,
+                    _asset=asset_key,
+                    _dt=dt_str,
+                    _idx=band_index,
+                    _t0=t_dl0,
+                    _last=last_emit,
+                ):
+                    now = time.time()
+                    if band_pct < 100.0 and (now - _last[0]) < 0.35:
+                        return
+                    _last[0] = now
+                    overall_pct = round(
+                        ((_idx - 1) + (max(0.0, min(100.0, band_pct)) / 100.0)) / max(1, total_bands) * 100.0,
+                        1,
+                    )
+                    step({
+                        "type": "stac_download_progress",
+                        "filename": _fname,
+                        "collection": _col,
+                        "item_id": _item,
+                        "asset_key": _asset,
+                        "date": _dt,
+                        "band_index": _idx,
+                        "total_bands": total_bands,
+                        "band_pct": round(band_pct, 1),
+                        "overall_pct": overall_pct,
+                        "elapsed_s": round(now - _t0, 1),
+                    })
+
                 res = await stage_stac_aoi_native(
                     collection=col,
                     item_id=item_id,
@@ -207,6 +247,8 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                     bbox_wgs84=bbox,
                     output_dir=data_dir,
                     custom_filename=custom_name,
+                    progress_callback=_on_band_progress,
+                    cancel_check=lambda: bool(run_dir and (run_dir / "cancelled.flag").exists()),
                 )
                 dl_dur = round(time.time() - t_dl0, 2)
                 if res.get("ok") and res.get("path"):
@@ -217,7 +259,10 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                         "collection": col,
                         "asset_key": asset_key,
                         "date": dt_str,
+                        "band_index": band_index,
+                        "total_bands": total_bands,
                         "ok": True,
+                        "cached": bool(res.get("cached", False)),
                         "path": str(res["path"]),
                         "size_mb": res.get("size_mb"),
                         "width": res.get("width"),
@@ -234,6 +279,8 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                         "collection": col,
                         "asset_key": asset_key,
                         "date": dt_str,
+                        "band_index": band_index,
+                        "total_bands": total_bands,
                         "ok": False,
                         "error": err_str,
                         "duration_s": dl_dur,

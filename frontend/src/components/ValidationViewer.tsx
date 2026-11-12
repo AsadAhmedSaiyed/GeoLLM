@@ -11,6 +11,7 @@ import {
   SSEVisionFeedbackEvent,
   SSEVisionConsensusDoneEvent,
   SSEVisionInsufficientDataEvent,
+  VisionFileSummary,
 } from '@/types/sse';
 import {
   ShieldCheck,
@@ -36,6 +37,45 @@ const cleanName = (p?: string | null): string => {
   return p.split(/[\\/]/).pop() || p;
 };
 
+interface GroupedGateScene {
+  key: string;
+  label: string;
+  bands: string[];
+  maxNodata: number;
+  maxCloud: number;
+  allUsable: boolean;
+  count: number;
+}
+
+const groupGateFiles = (files: VisionFileSummary[]): GroupedGateScene[] => {
+  const groups = new Map<string, GroupedGateScene>();
+  for (const f of files) {
+    const base = cleanName(f.name);
+    const match = base.match(/^(.+?_(\d{4}-\d{2}-\d{2}))_([^.]+)\.[^.]+$/);
+    const key = match ? match[1] : base;
+    const band = match ? match[3] : '';
+    const existing = groups.get(key);
+    if (existing) {
+      if (band) existing.bands.push(band);
+      existing.maxNodata = Math.max(existing.maxNodata, Number(f.nodata_pct ?? 0));
+      existing.maxCloud = Math.max(existing.maxCloud, Number(f.cloud_pct ?? 0));
+      existing.allUsable = existing.allUsable && Boolean(f.is_usable);
+      existing.count += 1;
+    } else {
+      groups.set(key, {
+        key,
+        label: match ? match[1] : base,
+        bands: band ? [band] : [],
+        maxNodata: Number(f.nodata_pct ?? 0),
+        maxCloud: Number(f.cloud_pct ?? 0),
+        allUsable: Boolean(f.is_usable),
+        count: 1,
+      });
+    }
+  }
+  return Array.from(groups.values());
+};
+
 export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) => {
   if (!activity) return null;
   const { type } = activity;
@@ -52,6 +92,13 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
       : isDone
       ? 'rgba(16, 185, 129, 0.15)'
       : 'rgba(56, 189, 248, 0.15)';
+
+    const files = ev.files || [];
+    const passedCount = files.filter((f) => f.is_usable).length;
+    const failedFiles = files.filter((f) => !f.is_usable);
+    const maxCloud = files.length > 0 ? Math.max(...files.map((f) => Number(f.cloud_pct ?? 0))) : null;
+    const maxNodata = files.length > 0 ? Math.max(...files.map((f) => Number(f.nodata_pct ?? 0))) : null;
+    const groupedScenes = files.length > 0 ? groupGateFiles(files) : [];
 
     return (
       <div
@@ -81,52 +128,112 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
           </span>
         </div>
 
-        {ev.area_verified_pct != null && (
-          <div className="font-mono text-[10.5px] text-muted-foreground mb-1">
-            Spatial coverage verified: <strong className="text-foreground">{ev.area_verified_pct}%</strong>
-          </div>
-        )}
-
-        {ev.files &&
-          ev.files.map((f) => (
-            <div
-              key={f.name}
-              className="text-[11px] text-foreground border-t border-border pt-1.5 mt-1.5"
-            >
-              <div className="flex justify-between items-center">
-                <span className="font-mono font-semibold text-foreground truncate">
-                  {cleanName(f.name)}
-                </span>
-                <span
-                  className="font-mono font-bold text-[10.5px]"
-                  style={{ color: f.is_usable ? '#34D399' : '#F87171' }}
-                >
-                  {f.is_usable ? 'PASS' : 'FAIL'}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mt-0.5 text-muted-foreground font-mono text-[10.5px]">
-                <span>Nodata: {f.nodata_pct}%</span>
-                <span>Cloud: {f.cloud_pct}%</span>
-              </div>
-            </div>
-          ))}
-
-        {!ev.files && ev.raster_paths && ev.raster_paths.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1.5">
-            {ev.raster_paths.slice(0, 8).map((rp) => (
-              <span
-                key={rp}
-                className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none"
-              >
-                {cleanName(rp)}
+        {/* Compact 1-Line Summary */}
+        {(ev.area_verified_pct != null || files.length > 0) && (
+          <div className="font-mono text-[10.5px] text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-0.5">
+            {files.length > 0 && (
+              <span>
+                <strong className={failedFiles.length > 0 ? 'text-rose-400' : 'text-emerald-400'}>
+                  {passedCount}/{files.length}
+                </strong>{' '}
+                passed
               </span>
-            ))}
-            {ev.raster_paths.length > 8 && (
-              <span className="font-mono text-[10px] text-muted-foreground px-1 py-0.5">
-                +{ev.raster_paths.length - 8} more
+            )}
+            {ev.area_verified_pct != null && (
+              <span>
+                Coverage: <strong className="text-foreground">{ev.area_verified_pct}%</strong>
+              </span>
+            )}
+            {maxCloud != null && (
+              <span>
+                Max Cloud: <strong className="text-foreground">{maxCloud}%</strong>
+              </span>
+            )}
+            {maxNodata != null && (
+              <span>
+                Max Nodata: <strong className="text-foreground">{maxNodata}%</strong>
               </span>
             )}
           </div>
+        )}
+
+        {/* Immediately surface ONLY failed files if any exist */}
+        {failedFiles.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {failedFiles.map((f) => (
+              <div
+                key={f.name}
+                className="text-[11px] text-foreground border border-rose-500/40 bg-rose-500/10 px-2 py-1.5"
+              >
+                <div className="flex justify-between items-center">
+                  <span className="font-mono font-semibold text-foreground truncate">
+                    {cleanName(f.name)}
+                  </span>
+                  <span className="font-mono font-bold text-[10.5px] text-rose-400">FAIL</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-0.5 text-muted-foreground font-mono text-[10.5px]">
+                  <span>Nodata: {f.nodata_pct}%</span>
+                  <span>Cloud: {f.cloud_pct}%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Collapsed Details Dropdown (Grouped by Scene/Date) */}
+        {files.length > 0 && (
+          <details className="mt-2 text-[10.5px]">
+            <summary className="font-mono cursor-pointer text-muted-foreground hover:text-foreground select-none">
+              Details ({files.length} raster{files.length === 1 ? '' : 's'} checked)
+            </summary>
+            <div className="mt-1.5 border-t border-border pt-1 space-y-1 max-h-[240px] overflow-y-auto">
+              {groupedScenes.map((scene) => (
+                <div
+                  key={scene.key}
+                  className="text-[11px] text-foreground border-b border-border/60 last:border-none pb-1.5 pt-1"
+                >
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="font-mono font-semibold text-foreground truncate">
+                      {scene.label}
+                      {scene.count > 1 && (
+                        <span className="text-muted-foreground font-normal ml-1.5">
+                          ({scene.count} bands{scene.bands.length ? `: ${scene.bands.join(', ')}` : ''})
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      className="font-mono font-bold text-[10.5px] shrink-0"
+                      style={{ color: scene.allUsable ? '#34D399' : '#F87171' }}
+                    >
+                      {scene.allUsable ? 'PASS' : 'FAIL'}
+                    </span>
+                  </div>
+                  <div className="flex gap-4 mt-0.5 text-muted-foreground font-mono text-[10px]">
+                    <span>Max Nodata: {scene.maxNodata}%</span>
+                    <span>Max Cloud: {scene.maxCloud}%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
+        {!ev.files && ev.raster_paths && ev.raster_paths.length > 0 && (
+          <details className="mt-2 text-[10.5px]">
+            <summary className="font-mono cursor-pointer text-muted-foreground hover:text-foreground select-none">
+              Details ({ev.raster_paths.length} raster path{ev.raster_paths.length === 1 ? '' : 's'})
+            </summary>
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {ev.raster_paths.map((rp) => (
+                <span
+                  key={rp}
+                  className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none"
+                >
+                  {cleanName(rp)}
+                </span>
+              ))}
+            </div>
+          </details>
         )}
 
         {ev.reason && (

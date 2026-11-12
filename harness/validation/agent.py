@@ -383,10 +383,8 @@ def _build_system_prompt(task_name: str, task_description: str, image_name: str,
         "NEVER mark an image 'wrong' for 'being a diagnostic panel showing input crop, output GeoTIFF, and discrepancy'!\n"
         "• Overview vs. Zoomed Tile Inspection:\n"
         "  - The full overview image allows verifying global elements (figure title, legend, scale bar, layout).\n"
-        "  - However, macroscopic downscaling can obscure local misclassifications, boundary shifts, or pixel artifacts. "
-        "When validating spatial maps, reason carefully about whether fine-scale inspection is needed to verify local accuracy. "
-        "Divide the image with make_grid() and use crop(tile_id) to zoom in at full native resolution on critical regions. "
-        "crop() generates an aligned multi-panel diagnostic composite (Input Crop, Output GeoTIFF, Deliverable, and Discrepancy Overlay) to verify ground-truth alignment.\n"
+        "  - IMPORTANT — Composite & Multi-Panel Layouts: If the overview image shows multiple map panels/dates side-by-side (e.g. a 2x2 grid), outer figure margins/titles, or an embedded chart/graph alongside maps, normalized PNG coordinates do NOT map 1:1 onto a single GeoTIFF's geographic extent. For ANY multi-panel composite, poster, or chart figure, ALWAYS call make_grid(rows=1, cols=1) and judge it visually from the overview rather than calling crop() on sub-tiles.\n"
+        "  - Single-Map Spatial Inspection: Only when the deliverable is a single continuous geographic map filling the frame, divide the image with make_grid(rows=2, cols=2) and use crop(tile_id) to inspect local alignment and classifications.\n"
         "  - Full overview: Overall elements (figure title, legend, scale bar, layout) belong to the full image. NEVER mark an individual cropped tile 'wrong' for 'missing legend'; outer titles and legends belong to the overall figure and may be outside the crop. Evaluate whether geographic features in the crop match the reference imagery.\n"
         + extra_guidance +
         f"\nAvailable tools:\n{tool_lines}\n\n"
@@ -604,8 +602,8 @@ def _run_agentic_loop(
         "1. Examine the overview for global presentation (title, legend/colorbar, spatial coverage, and overall validity).\n"
         "2. Reason about spatial complexity: Determine whether the overview alone gives you enough visual resolution to verify data accuracy, or whether fine-scale features (boundaries, classification transitions, localized artifacts) require closer inspection.\n"
         "3. Call make_grid(rows, cols) to set up your inspection plan:\n"
-        "   - If the macroscopic overview is fully sufficient to judge the entire deliverable with certainty, call make_grid(rows=1, cols=1).\n"
-        "   - If the task involves localized spatial variations, classifications, or boundaries that require closer verification, divide into sub-tiles (e.g. make_grid(rows=2, cols=2)).\n"
+        "   - If the overview is a multi-panel figure (multiple date maps/subplots), a chart, a 3D render, or if the macroscopic overview is sufficient to judge validity, call make_grid(rows=1, cols=1).\n"
+        "   - Only if the deliverable is a single continuous geographic map that requires fine-scale verification of local boundaries or artifacts, divide into sub-tiles (e.g. make_grid(rows=2, cols=2)).\n"
         "4. When multiple tiles exist, call crop(tile_id) to zoom in and inspect the full-resolution diagnostic comparison panel for each tile, then mark_result(tile_id, ...).\n"
         "5. Conclude your validation by calling finish(summary=...)."
     )

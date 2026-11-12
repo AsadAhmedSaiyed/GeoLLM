@@ -638,6 +638,8 @@ def _sync_stage_cog_window_native(
     bbox_wgs84: List[float],
     max_native_pixels: int = 36_000_000,
     metadata_tags: Optional[Dict[str, Any]] = None,
+    progress_callback=None,
+    cancel_check=None,
 ) -> Dict[str, Any]:
     """
     Streams the exact AOI window from a Cloud-Optimized GeoTIFF at 100% original native resolution.
@@ -701,8 +703,7 @@ def _sync_stage_cog_window_native(
                     ),
                 }
 
-            # Read at 100% original native resolution (NO out_shape / NO resampling)
-            data = src.read(window=win)
+            # Stream AOI window in horizontal strips at 100% original native resolution
             win_transform = src.window_transform(win)
 
             profile = src.profile.copy()
@@ -721,11 +722,50 @@ def _sync_stage_cog_window_native(
                 profile["blockxsize"] = 256
                 profile["blockysize"] = 256
 
+            if win_h <= 256:
+                strip_h = win_h
+            else:
+                # Target ~8 chunks aligned to 256px COG block boundaries
+                raw_strip = max(256, (win_h + 7) // 8)
+                strip_h = ((raw_strip + 255) // 256) * 256
+
+            nodata_val = src.nodata
+            valid_count = 0
+            total_count = 0
+
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = dest_path.with_name(f"{dest_path.name}.tmp")
             try:
+                if progress_callback:
+                    progress_callback(5.0)
                 with rasterio.open(tmp_path, "w", **profile) as dst:
-                    dst.write(data)
+                    for row_off in range(0, win_h, strip_h):
+                        if cancel_check and cancel_check():
+                            raise RuntimeError("Download cancelled by user")
+                        cur_h = min(strip_h, win_h - row_off)
+                        src_strip = Window(win.col_off, win.row_off + row_off, win_w, cur_h)
+                        dst_strip = Window(0, row_off, win_w, cur_h)
+
+                        chunk = src.read(window=src_strip)
+                        dst.write(chunk, window=dst_strip)
+
+                        band1 = chunk[0]
+                        if nodata_val is not None:
+                            if np.isnan(nodata_val):
+                                valid_mask = ~np.isnan(band1)
+                            else:
+                                valid_mask = (band1 != nodata_val) & (band1 != 0)
+                        else:
+                            valid_mask = (band1 != 0) & (
+                                ~np.isnan(band1) if np.issubdtype(band1.dtype, np.floating) else np.ones_like(band1, dtype=bool)
+                            )
+                        valid_count += int(np.count_nonzero(valid_mask))
+                        total_count += int(band1.size)
+
+                        if progress_callback:
+                            pct = round(min(99.0, ((row_off + cur_h) / max(1, win_h)) * 100.0), 1)
+                            progress_callback(pct)
+
                     has_desc = False
                     if src.descriptions:
                         for b_idx, desc in enumerate(src.descriptions, start=1):
@@ -753,17 +793,7 @@ def _sync_stage_cog_window_native(
                         pass
                 raise
 
-            # Calculate valid data percentage inside the clipped native window
-            nodata_val = src.nodata
-            band1 = data[0]
-            if nodata_val is not None:
-                if np.isnan(nodata_val):
-                    valid_mask = ~np.isnan(band1)
-                else:
-                    valid_mask = (band1 != nodata_val) & (band1 != 0)
-            else:
-                valid_mask = (band1 != 0) & (~np.isnan(band1) if np.issubdtype(band1.dtype, np.floating) else np.ones_like(band1, dtype=bool))
-            valid_pct = round(float(np.count_nonzero(valid_mask)) / max(1, band1.size) * 100.0, 1)
+            valid_pct = round(float(valid_count) / max(1, total_count) * 100.0, 1)
 
             res_x = round(abs(win_transform.a), 4)
             res_y = round(abs(win_transform.e), 4)
@@ -787,6 +817,8 @@ async def stage_stac_aoi_native(
     output_dir: Path,
     custom_filename: Optional[str] = None,
     max_native_pixels: int = 36_000_000,
+    progress_callback=None,
+    cancel_check=None,
 ) -> Dict[str, Any]:
     """
     Stages a STAC asset cropped to the user's AOI bounding box at 100% original native resolution.
@@ -796,11 +828,13 @@ async def stage_stac_aoi_native(
         dest_path = output_dir / custom_filename
         if dest_path.is_file() and dest_path.stat().st_size > 1000:
             is_valid = False
+            chk_w, chk_h = None, None
             try:
                 import rasterio
                 with rasterio.open(dest_path) as chk:
                     if chk.width > 0 and chk.height > 0:
                         is_valid = True
+                        chk_w, chk_h = chk.width, chk.height
             except Exception:
                 try:
                     dest_path.unlink()
@@ -809,11 +843,18 @@ async def stage_stac_aoi_native(
 
             if is_valid:
                 size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
+                if progress_callback:
+                    try:
+                        progress_callback(100.0)
+                    except Exception:
+                        pass
                 return {
                     "ok": True,
                     "path": str(dest_path),
                     "filename": dest_path.name,
                     "size_mb": size_mb,
+                    "width": chk_w,
+                    "height": chk_h,
                     "cached": True,
                 }
 
@@ -853,13 +894,22 @@ async def stage_stac_aoi_native(
         "filename": filename,
         "path": str(dest_path),
         "status": "downloading",
-        "percent": 25.0,
+        "percent": 0.0,
         "downloaded_mb": 0.0,
         "total_mb": 0.0,
         "speed_mbps": 0.0,
         "error": None,
         "updated_at": time.time(),
     }
+
+    def _on_cog_progress(pct: float):
+        ACTIVE_DOWNLOADS[stage_id]["percent"] = pct
+        ACTIVE_DOWNLOADS[stage_id]["updated_at"] = time.time()
+        if progress_callback:
+            try:
+                progress_callback(pct)
+            except Exception:
+                pass
 
     try:
         props = item_data.get("properties", {})
@@ -897,6 +947,8 @@ async def stage_stac_aoi_native(
             bbox_wgs84,
             max_native_pixels,
             metadata_tags,
+            _on_cog_progress,
+            cancel_check,
         )
         if not cog_res.get("ok"):
             ACTIVE_DOWNLOADS[stage_id].update({
