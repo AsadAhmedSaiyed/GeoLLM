@@ -10,13 +10,9 @@ import {
   ClipboardList,
   CheckCircle2,
   XCircle,
-  Package,
-  Globe,
   Trees,
   Mountain,
-  Map,
-  Image as ImageIcon,
-  FileText,
+  Layers,
   Brain,
   Wrench,
   Code2,
@@ -43,6 +39,7 @@ export interface SingleWorkerSlotProps {
   onResetTask?: (taskId: string) => void;
   onPreviewFile?: (artifact: string | ArtifactItem) => void;
   onSwitchToGlobe?: (artifact?: string | ArtifactItem) => void;
+  onSeeOutputs?: () => void;
   onOpenTerrain3D?: (info: {
     taskId: string;
     payloadUrl: string;
@@ -70,8 +67,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   onRevisePlan,
   onCancelTask,
   onResetTask,
-  onPreviewFile,
-  onSwitchToGlobe,
+  onPreviewFile: _onPreviewFile,
+  onSwitchToGlobe: _onSwitchToGlobe,
+  onSeeOutputs,
   onOpenTerrain3D,
   onNotify,
   renderTimeSeriesPanel,
@@ -180,16 +178,35 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     return name === 'terrain_3d.json' || name === 'lidar_3d.json';
   });
 
-  const lidarPattern = /\b(lidar|chm|canopy_height|autzen)\b|\.(las|laz)$/i;
+  const lidarPattern =
+    /(?:^|[_\-/.\s])(lidar|chm|canopy_height|above_ground|height_above_ground|tree_height|building_height|pointcloud|point_cloud|canopy)(?:$|[_\-/.\s])|\.(las|laz)$/i;
+  const terrainPattern =
+    /(?:^|[_\-/.\s])(dsm|dtm|dem|cop-dem|elevation|terrain|slope|hillshade|bathymetry|relief)(?:$|[_\-/.\s])/i;
+
+  const isTiffName = (name: string) => {
+    const lower = getBasename(name).toLowerCase();
+    return lower.endsWith('.tif') || lower.endsWith('.tiff');
+  };
+
+  const has3dRaster = artifacts.some((a) => {
+    const name = typeof a === 'string' ? a : a.name || '';
+    return isTiffName(name) && (lidarPattern.test(name) || terrainPattern.test(name));
+  });
+
+  const hasLidarInput = (task.files || []).some((f) => lidarPattern.test(f || ''));
+
   const isLidar =
+    (terrain3dArt &&
+      getBasename(typeof terrain3dArt === 'string' ? terrain3dArt : terrain3dArt.name || '').toLowerCase() ===
+        'lidar_3d.json') ||
     artifacts.some((a) => {
       const name = typeof a === 'string' ? a : a.name || '';
       return lidarPattern.test(name);
     }) ||
-    (task.files || []).some((f) => lidarPattern.test(f || '')) ||
+    hasLidarInput ||
     /\b(lidar|canopy height|point cloud)\b/i.test(task.question || '');
 
-  const canShow3D = Boolean(terrain3dArt);
+  const canShow3D = Boolean(terrain3dArt) || has3dRaster || hasLidarInput;
 
   const profileSvgArt = artifacts.find((a) => {
     const name = typeof a === 'string' ? a : a.name || '';
@@ -710,16 +727,54 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
         </div>
       )}
 
-      {/* 7. Generated Deliverables Section */}
-      {artifacts.length > 0 && (
-        <div className="bg-muted border border-border rounded-none p-3.5">
-          <div className="flex items-center justify-between mb-2.5 flex-wrap gap-1.5">
-            <span className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
-              <Package className="h-4 w-4 text-sky-400 shrink-0" />
-              <span>Generated Deliverables ({artifacts.length} files)</span>
-            </span>
+      {/* 7. See Outputs, 3D Terrain / LiDAR & Profile Section */}
+      {(() => {
+        const frameSet = new Set(
+          (task.timelineFrames || []).map(
+            (f) => f.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || ''
+          )
+        );
+        const visibleOutputs = (task.artifacts || []).filter((art) => {
+          const raw = typeof art === 'string' ? art : art.name || art.path || '';
+          const base = raw.replace(/\\/g, '/').split('/').pop() || raw;
+          const lower = base.toLowerCase();
+          if (!lower || lower.endsWith('.gif') || frameSet.has(lower)) return false;
+          if (
+            (frameSet.size > 0 || task.artifacts?.some((a) => (typeof a === 'string' ? a : a.name || '').toLowerCase().endsWith('.gif'))) &&
+            /^(?:thematic_)?frame_\d+\.(png|jpg|jpeg|webp)$/i.test(base)
+          ) {
+            return false;
+          }
+          return true;
+        });
+
+        if (visibleOutputs.length === 0 && !canShow3D && !profileSvgArt) return null;
+
+        return (
+          <div className="bg-muted border border-border rounded-none p-3 flex flex-col gap-2.5">
+            {visibleOutputs.length > 0 && onSeeOutputs && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-foreground">
+                  {visibleOutputs.length} {visibleOutputs.length === 1 ? 'Output' : 'Outputs'} Ready
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[11px] px-2.5 gap-1.5 text-white bg-teal-600 hover:bg-teal-500"
+                  onClick={onSeeOutputs}
+                  title="Zoom globe to this workspace location and open Analysis Overlays"
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  <span>See Outputs</span>
+                </Button>
+              </div>
+            )}
+
             {canShow3D && (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-foreground">
+                  {isLidar ? '3D LiDAR & Canopy Model Ready' : '3D Terrain Elevation Model Ready'}
+                </span>
                 <Button
                   type="button"
                   size="sm"
@@ -746,88 +801,26 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 </Button>
               </div>
             )}
+
+            {/* Embedded Elevation Cross-Section Chart if available */}
+            {profileSvgArt && (
+              <div className="bg-card rounded-none p-2.5 border border-border text-center">
+                <img
+                  src={
+                    typeof profileSvgArt === 'object' && profileSvgArt.url
+                      ? profileSvgArt.url
+                      : `/api/tasks/${taskId}/artifacts/${getBasename(
+                          typeof profileSvgArt === 'string' ? profileSvgArt : profileSvgArt.name
+                        )}`
+                  }
+                  alt="Elevation Cross-Section Profile"
+                  className="max-w-full h-auto block mx-auto rounded-none"
+                />
+              </div>
+            )}
           </div>
-
-          {/* Embedded Elevation Cross-Section Chart if available */}
-          {profileSvgArt && (
-            <div className="mb-3 bg-card rounded-none p-2.5 border border-border text-center">
-              <img
-                src={
-                  typeof profileSvgArt === 'object' && profileSvgArt.url
-                    ? profileSvgArt.url
-                    : `/api/tasks/${taskId}/artifacts/${getBasename(
-                        typeof profileSvgArt === 'string' ? profileSvgArt : profileSvgArt.name
-                      )}`
-                }
-                alt="Elevation Cross-Section Profile"
-                className="max-w-full h-auto block mx-auto rounded-none"
-              />
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {artifacts.map((art, idx) => {
-              const fname = typeof art === 'string' ? art : art.name || 'file';
-              const artUrl = typeof art === 'string' ? null : art.url;
-              const ext = fname.toLowerCase().split('.').pop() || '';
-              const isTif = ext === 'tif' || ext === 'tiff';
-              const isImg = ext === 'png' || ext === 'gif' || ext === 'webp' || ext === 'svg';
-              const isPreviewable = isTif || isImg;
-              const downloadUrl = artUrl || `/runs/${fname}`;
-
-              return (
-                <div
-                  key={idx}
-                  className="flex items-center gap-1.5 bg-card border border-border px-2.5 py-1.5 rounded-none"
-                >
-                  {isTif ? (
-                    <Map className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                  ) : isImg ? (
-                    <ImageIcon className="h-3.5 w-3.5 text-teal-400 shrink-0" />
-                  ) : (
-                    <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  )}
-                  <span
-                    className="font-mono flex-1 min-w-0 truncate text-[11px] text-foreground"
-                    title={fname}
-                  >
-                    {getBasename(fname)}
-                  </span>
-                  <div className="shrink-0 flex items-center gap-1">
-                    {isPreviewable ? (
-                      <button
-                        type="button"
-                        className="bg-muted text-sky-400 border border-border hover:border-sky-400 rounded-none text-[10px] px-1.5 py-0.5 cursor-pointer transition-colors"
-                        onClick={() => onPreviewFile?.(art)}
-                      >
-                        Preview
-                      </button>
-                    ) : (
-                      <a
-                        href={downloadUrl}
-                        download={getBasename(fname)}
-                        className="bg-muted text-foreground border border-border hover:text-white rounded-none text-[10px] px-1.5 py-0.5 no-underline inline-block"
-                      >
-                        Download
-                      </a>
-                    )}
-                    {isTif && (
-                      <button
-                        type="button"
-                        className="bg-[#0F766E] hover:bg-[#14B8A6] text-white rounded-none text-[10px] p-1 cursor-pointer transition-colors"
-                        onClick={() => onSwitchToGlobe?.(art)}
-                        title="Overlay on 3D Globe"
-                      >
-                        <Globe className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 8. Live Execution & Reasoning Activity Feed */}
       {relevantActivities.length > 0 && (

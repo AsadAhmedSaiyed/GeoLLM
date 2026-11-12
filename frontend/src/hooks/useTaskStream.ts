@@ -498,6 +498,7 @@ export function useTaskStream(taskId: string, initialTask?: Partial<TaskState>) 
         setTask((prev) => ({
           ...prev,
           artifacts: data.artifacts,
+          timelineFrames: data.timeline_frames ?? prev.timelineFrames,
           answer: data.answer || prev.answer,
         }));
       }
@@ -599,6 +600,7 @@ export function useMultiTaskStreams(options?: {
           [taskId]: {
             ...(prev[taskId] || DEFAULT_TASK_STATE),
             artifacts: data.artifacts,
+            timelineFrames: data.timeline_frames ?? prev[taskId]?.timelineFrames,
             answer: data.answer || prev[taskId]?.answer || null,
           },
         }));

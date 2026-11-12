@@ -83,6 +83,7 @@ export function App() {
   const [pendingGlobeOverlay, setPendingGlobeOverlay] = useState<string | ArtifactItem | null>(
     null
   );
+  const [focusOutputsNonce, setFocusOutputsNonce] = useState(0);
   const [injectedPrompt, setInjectedPrompt] = useState<string | null>(null);
   const [isQueryFolded, setIsQueryFolded] = useState(false);
 
@@ -477,6 +478,8 @@ export function App() {
                   }}
                   pendingOverlay={pendingGlobeOverlay}
                   onPendingOverlayConsumed={() => setPendingGlobeOverlay(null)}
+                  onPreviewArtifact={openArtifactPreview}
+                  focusOutputsNonce={focusOutputsNonce}
                 />
               </div>
 
@@ -579,6 +582,7 @@ export function App() {
                                   toast.info('Projecting georeferenced raster onto 3D Globe...');
                                 }
                               }}
+                              onSeeOutputs={() => setFocusOutputsNonce((n) => n + 1)}
                               onOpenTerrain3D={(info) => {
                                 setTerrain3DModal({
                                   isOpen: true,

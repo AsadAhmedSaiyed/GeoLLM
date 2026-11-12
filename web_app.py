@@ -627,10 +627,24 @@ async def get_task_orthophoto(task_id: str):
 async def get_task_artifacts(task_id: str):
     ts = task_manager.get_task(task_id)
     if not ts:
-        return JSONResponse({"artifacts": []})
+        return JSONResponse({"artifacts": [], "timeline_frames": []})
     run_dir = ts.state.get("run_dir") or (ts.result.get("run_dir") if ts.result else None) or str(RUNS_DIR / task_id)
     ans = ts.result.get("answer") if isinstance(ts.result, dict) else None
-    return JSONResponse({"artifacts": find_artifacts(run_dir), "answer": ans})
+    timeline_frames: List[str] = []
+    if run_dir:
+        rd = Path(run_dir)
+        for tl_path in sorted(rd.rglob("timeline.json"), key=lambda p: str(p), reverse=True):
+            try:
+                tl_data = json.loads(tl_path.read_text(encoding="utf-8"))
+                for fr in tl_data.get("frames", []):
+                    raw_f = fr if isinstance(fr, str) else (fr.get("file") or "")
+                    if raw_f:
+                        timeline_frames.append(Path(str(raw_f)).name)
+                if timeline_frames:
+                    break
+            except Exception:
+                pass
+    return JSONResponse({"artifacts": find_artifacts(run_dir), "answer": ans, "timeline_frames": timeline_frames})
 
 
 @app.get("/api/tasks/{task_id}/artifacts/{artifact_path:path}")

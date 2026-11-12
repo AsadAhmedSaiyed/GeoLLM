@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, memo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
@@ -19,6 +19,13 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
+  Download,
+  Image as ImageIcon,
+  FileText,
+  Map as MapIcon,
+  Loader2,
+  AlertTriangle,
+  Eye,
 } from 'lucide-react';
 
 export interface GlobeViewProps {
@@ -29,6 +36,8 @@ export interface GlobeViewProps {
   onSendAoiToTask?: (bbox: number[], taskId: string) => void;
   pendingOverlay?: string | ArtifactItem | null;
   onPendingOverlayConsumed?: () => void;
+  onPreviewArtifact?: (artifact: string | ArtifactItem) => void;
+  focusOutputsNonce?: number;
 }
 
 interface ActiveOverlayLayer {
@@ -37,6 +46,59 @@ interface ActiveOverlayLayer {
   taskId?: string;
   bbox?: [number, number, number, number];
   crs?: string;
+  fullPath?: string;
+}
+
+function bboxesOverlap(
+  a?: [number, number, number, number],
+  b?: [number, number, number, number]
+): boolean {
+  if (!a || !b || a.length < 4 || b.length < 4) return false;
+  const eps = 1e-6;
+  return a[0] < b[2] - eps && a[2] > b[0] + eps && a[1] < b[3] - eps && a[3] > b[1] + eps;
+}
+
+function getArtifactMeta(art: string | ArtifactItem, taskId: string) {
+  const rawName = typeof art === 'string' ? art : art.name || art.path || '';
+  const filename = rawName.replace(/\\/g, '/').split('/').pop() || rawName;
+  const artUrl = typeof art === 'string' ? null : art.url || art.path || null;
+  const fullPath = artUrl || rawName;
+  const lower = filename.toLowerCase();
+  const isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
+  const isPng = lower.endsWith('.png') || lower.endsWith('.svg');
+  const downloadUrl =
+    artUrl && (artUrl.startsWith('http://') || artUrl.startsWith('https://') || artUrl.startsWith('/'))
+      ? artUrl
+      : `/runs/${encodeURIComponent(taskId)}/outputs/${encodeURIComponent(filename)}`;
+  return { rawName, filename, fullPath, lower, isTiff, isPng, downloadUrl };
+}
+
+function filterWorkspaceOutputs(
+  artifacts: Array<string | ArtifactItem>,
+  timelineFrames?: string[]
+): Array<string | ArtifactItem> {
+  const frameSet = new Set(
+    (timelineFrames || []).map((f) => f.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '')
+  );
+  const hasTimeSeries =
+    frameSet.size > 0 ||
+    artifacts.some((art) => {
+      const name = (typeof art === 'string' ? art : art.name || '').toLowerCase();
+      return name.endsWith('.gif') || name.endsWith('timeline.json');
+    });
+
+  return artifacts.filter((art) => {
+    const raw = typeof art === 'string' ? art : art.name || art.path || '';
+    const basename = raw.replace(/\\/g, '/').split('/').pop() || raw;
+    const lower = basename.toLowerCase();
+    if (!lower) return false;
+    if (lower.endsWith('.gif')) return false;
+    if (frameSet.has(lower)) return false;
+    if (hasTimeSeries && /^(?:thematic_)?frame_\d+\.(png|jpg|jpeg|webp)$/i.test(basename)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
@@ -47,9 +109,12 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
   onSendAoiToTask,
   pendingOverlay,
   onPendingOverlayConsumed,
+  onPreviewArtifact,
+  focusOutputsNonce = 0,
 }) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<maplibregl.Map | null>(null);
+  const requestSeqRef = useRef<number>(0);
 
   const [aoiMode, setAoiMode] = useState(false);
   const [selectedBbox, setSelectedBbox] = useState<number[] | null>(null);
@@ -58,6 +123,8 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
   const [layerOpacity, setLayerOpacity] = useState<number>(0.85);
   const [showInspector, setShowInspector] = useState<boolean>(false);
   const [overlaysCollapsed, setOverlaysCollapsed] = useState<boolean>(false);
+  const [overlayLoadingId, setOverlayLoadingId] = useState<string | null>(null);
+  const [overlayError, setOverlayError] = useState<string | null>(null);
 
   const clearAoi = () => {
     setSelectedBbox(null);
@@ -295,76 +362,167 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
     };
   }, [aoiMode]);
 
-  // Load Task Deliverables as Georeferenced Overlays on the Globe
+  const activeLayersRef = useRef<ActiveOverlayLayer[]>([]);
+  const layerOpacityRef = useRef<number>(layerOpacity);
+  layerOpacityRef.current = layerOpacity;
+
+  const currentTaskState = tasks[activeTaskId];
+  const workspaceOutputs = useMemo(
+    () =>
+      filterWorkspaceOutputs(
+        currentTaskState?.artifacts || [],
+        currentTaskState?.timelineFrames
+      ),
+    [currentTaskState?.artifacts, currentTaskState?.timelineFrames]
+  );
+
+  // Reset mounted overlays & invalidate in-flight raster requests when switching workspaces
   useEffect(() => {
+    requestSeqRef.current += 1;
+    setOverlayLoadingId(null);
+    setOverlayError(null);
+
     const map = mapInstanceRef.current;
-    if (!map) return;
-
-    const tiffArtifacts: Array<{ taskId: string; filename: string; fullPath: string }> = [];
-    Object.entries(tasks || {}).forEach(([tid, tdata]) => {
-      (tdata.artifacts || []).forEach((art) => {
-        const filename = typeof art === 'string' ? art : art.name || '';
-        const artUrl = typeof art === 'string' ? null : art.url || art.path;
-        if (
-          filename.toLowerCase().endsWith('.tif') ||
-          filename.toLowerCase().endsWith('.tiff')
-        ) {
-          tiffArtifacts.push({
-            taskId: tid,
-            filename: filename.replace(/\\/g, '/').split('/').pop() || filename,
-            fullPath: artUrl || filename,
-          });
-        }
+    if (map && activeLayersRef.current.length > 0) {
+      activeLayersRef.current.forEach((old) => {
+        if (map.getLayer(old.id)) map.removeLayer(old.id);
+        const oldSrc = `src-${old.id}`;
+        if (map.getSource(oldSrc)) map.removeSource(oldSrc);
       });
-    });
+    }
+    activeLayersRef.current = [];
+    setActiveLayers([]);
+  }, [activeTaskId]);
 
-    if (tiffArtifacts.length === 0) return;
+  // "See Outputs" trigger from chat panel: expand Analysis Overlays & zoom globe to workspace location
+  useEffect(() => {
+    if (!focusOutputsNonce) return;
+    setOverlaysCollapsed(false);
 
-    tiffArtifacts.forEach(async (art) => {
-      const layerId = `overlay-${art.filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      if (map.getLayer(layerId)) return;
+    const mounted = activeLayersRef.current.find(
+      (l) => l.taskId === activeTaskId && l.bbox
+    );
+    if (mounted?.bbox) {
+      const map = mapInstanceRef.current;
+      if (map) {
+        map.fitBounds(
+          [
+            [mounted.bbox[0], mounted.bbox[1]],
+            [mounted.bbox[2], mounted.bbox[3]],
+          ],
+          { padding: 80, duration: 1200 }
+        );
+      }
+      return;
+    }
+
+    const firstTiff = workspaceOutputs.find(
+      (art) => getArtifactMeta(art, activeTaskId).isTiff
+    );
+    if (firstTiff) {
+      void loadGeoTiffOverlay(firstTiff);
+    }
+  }, [focusOutputsNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load or replace a GeoTIFF overlay on the globe (replaces overlapping rasters at the same location)
+  const loadGeoTiffOverlay = useCallback(
+    async (art: string | ArtifactItem, taskIdOverride?: string) => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+
+      const tid = taskIdOverride || activeTaskId;
+      const { filename, fullPath, isTiff } = getArtifactMeta(art, tid);
+      if (!isTiff || !fullPath) {
+        setOverlayError(`Unsupported raster format: ${filename || 'unknown'}`);
+        return;
+      }
+
+      const layerId = `overlay-${tid}-${filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const sourceId = `src-${layerId}`;
+      const seq = ++requestSeqRef.current;
+      setOverlayLoadingId(layerId);
+      setOverlayError(null);
 
       try {
-        const data = await api.getRasterBounds(art.fullPath);
-        if (!data.ok || !data.coordinates) return;
+        const data = await api.getRasterBounds(fullPath);
+        if (seq !== requestSeqRef.current) return;
 
-        const sourceId = `src-${layerId}`;
-        if (!map.getSource(sourceId)) {
-          const imgUrl = data.png_url || api.getRasterPngUrl(art.fullPath);
-          map.addSource(sourceId, {
-            type: 'image',
-            url: imgUrl,
-            coordinates: data.coordinates,
-          });
+        if (!data.ok || !data.coordinates) {
+          setOverlayError(data.error || `Could not load raster bounds for ${filename}`);
+          return;
+        }
 
-          map.addLayer({
-            id: layerId,
-            type: 'raster',
-            source: sourceId,
-            paint: {
-              'raster-opacity': layerOpacity,
-              'raster-fade-duration': 300,
-            },
-          });
+        // Remove any previously mounted overlay at the same/overlapping location
+        const toRemove = activeLayersRef.current.filter(
+          (l) => l.id === layerId || bboxesOverlap(l.bbox, data.bbox)
+        );
+        toRemove.forEach((old) => {
+          if (map.getLayer(old.id)) map.removeLayer(old.id);
+          const oldSrc = `src-${old.id}`;
+          if (map.getSource(oldSrc)) map.removeSource(oldSrc);
+        });
 
-          setActiveLayers((prev) => [
-            ...prev.filter((l) => l.id !== layerId),
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+
+        const pngUrl = data.png_url || api.getRasterPngUrl(fullPath);
+        map.addSource(sourceId, {
+          type: 'image',
+          url: pngUrl,
+          coordinates: data.coordinates,
+        });
+
+        map.addLayer({
+          id: layerId,
+          type: 'raster',
+          source: sourceId,
+          paint: {
+            'raster-opacity': layerOpacityRef.current,
+            'raster-fade-duration': 300,
+          },
+        });
+
+        setActiveLayers((prev) => {
+          const next = [
+            ...prev.filter((l) => l.id !== layerId && !bboxesOverlap(l.bbox, data.bbox)),
             {
               id: layerId,
-              title: art.filename,
-              taskId: art.taskId,
+              title: filename,
+              taskId: tid,
               bbox: data.bbox,
               crs: data.crs,
+              fullPath,
             },
-          ]);
+          ];
+          activeLayersRef.current = next;
+          return next;
+        });
+
+        if (data.bbox) {
+          map.fitBounds(
+            [
+              [data.bbox[0], data.bbox[1]],
+              [data.bbox[2], data.bbox[3]],
+            ],
+            { padding: 80, duration: 1200 }
+          );
         }
       } catch (err) {
-        console.warn('Could not overlay raster:', art.filename, err);
+        if (seq === requestSeqRef.current) {
+          const msg = err instanceof Error ? err.message : `Failed to load ${filename}`;
+          setOverlayError(msg);
+          console.warn('Could not overlay raster:', filename, err);
+        }
+      } finally {
+        if (seq === requestSeqRef.current) {
+          setOverlayLoadingId(null);
+        }
       }
-    });
-  }, [tasks, layerOpacity]);
+    },
+    [activeTaskId]
+  );
 
-  // Handle explicit artifact overlay request from globe icon button
+  // Handle explicit artifact overlay request (e.g. from TiffPreviewModal "Overlay on Globe")
   useEffect(() => {
     if (!pendingOverlay) return;
 
@@ -379,65 +537,13 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
         return;
       }
 
-      const art = pendingOverlay;
-      const fname = typeof art === 'string' ? art : art.name || '';
-      const artUrl = typeof art === 'string' ? null : art.url || art.path;
-      if (!artUrl && !fname) {
-        onPendingOverlayConsumed?.();
-        return;
-      }
-
-      const fullPath = artUrl || fname;
-      const filename = fname.replace(/\\/g, '/').split('/').pop() || fname;
-      const layerId = `overlay-${filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-      const loadOverlay = async () => {
-        try {
-          const data = await api.getRasterBounds(fullPath);
-          if (!data.ok || !data.coordinates) return;
-
-          const sourceId = `src-${layerId}`;
-          const pngUrl = data.png_url || api.getRasterPngUrl(fullPath);
-
-          if (!map.getSource(sourceId)) {
-            map.addSource(sourceId, {
-              type: 'image',
-              url: pngUrl,
-              coordinates: data.coordinates,
-            });
-            map.addLayer({
-              id: layerId,
-              type: 'raster',
-              source: sourceId,
-              paint: { 'raster-opacity': layerOpacity, 'raster-fade-duration': 300 },
-            });
-            setActiveLayers((prev) => [
-              ...prev.filter((l) => l.id !== layerId),
-              { id: layerId, title: filename, bbox: data.bbox, crs: data.crs },
-            ]);
-          }
-
-          if (data.bbox) {
-            map.fitBounds(
-              [
-                [data.bbox[0], data.bbox[1]],
-                [data.bbox[2], data.bbox[3]],
-              ],
-              { padding: 80, duration: 1800 }
-            );
-          }
-        } catch (err) {
-          console.warn('Globe overlay failed:', filename, err);
-        } finally {
-          onPendingOverlayConsumed?.();
-        }
-      };
-
       let called = false;
       const safeLoadOverlay = () => {
         if (called || cancelled) return;
         called = true;
-        loadOverlay();
+        loadGeoTiffOverlay(pendingOverlay).finally(() => {
+          onPendingOverlayConsumed?.();
+        });
       };
 
       if (map.isStyleLoaded()) {
@@ -454,7 +560,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
       cancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [pendingOverlay, layerOpacity, onPendingOverlayConsumed]);
+  }, [pendingOverlay, loadGeoTiffOverlay, onPendingOverlayConsumed]);
 
   const zoomToExtent = (bbox?: [number, number, number, number]) => {
     const map = mapInstanceRef.current;
@@ -697,22 +803,32 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
             </div>
           )}
 
-          {/* Layers & Visualization Overlays */}
-          {activeLayers.length > 0 && (
-            <div className="w-[250px] bg-card/95 backdrop-blur-md border border-border rounded-none p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
+          {/* Workspace Outputs & Analysis Overlays */}
+          {(workspaceOutputs.length > 0 || activeLayers.length > 0 || overlayError) && (
+            <div className="w-[275px] bg-card/95 backdrop-blur-md border border-border rounded-none p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
               <div
                 onClick={() => setOverlaysCollapsed((prev) => !prev)}
                 className={`flex justify-between items-center cursor-pointer select-none ${
                   overlaysCollapsed ? '' : 'mb-2'
                 }`}
               >
-                <span className="inline-flex items-center gap-1.5 font-semibold text-[11.5px] text-foreground">
-                  <Layers className="h-3.5 w-3.5 text-teal-400" />
-                  Analysis Overlays
-                </span>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Layers className="h-3.5 w-3.5 text-teal-400 shrink-0" />
+                  <span className="font-semibold text-[11.5px] text-foreground truncate">
+                    Analysis Overlays
+                  </span>
+                  {activeWorkspaceName && (
+                    <span
+                      title={activeWorkspaceName}
+                      className="font-mono text-[9.5px] text-muted-foreground truncate max-w-[80px]"
+                    >
+                      · {activeWorkspaceName}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
                   <span className="font-mono text-[10px] text-sky-400 bg-sky-400/15 px-1.5 py-0.5 rounded-none">
-                    {activeLayers.length}
+                    {workspaceOutputs.length}
                   </span>
                   {overlaysCollapsed ? (
                     <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -724,55 +840,147 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
               {!overlaysCollapsed && (
                 <>
-                  <div className="mb-2">
-                    <label className="text-[10px] text-muted-foreground flex justify-between mb-1">
-                      <span>Opacity</span>
-                      <span>{Math.round(layerOpacity * 100)}%</span>
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={layerOpacity}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setLayerOpacity(val);
-                        const map = mapInstanceRef.current;
-                        if (map) {
-                          activeLayers.forEach((l) => {
-                            if (map.getLayer(l.id)) {
-                              map.setPaintProperty(l.id, 'raster-opacity', val);
-                            }
-                          });
-                        }
-                      }}
-                      className="w-full accent-teal-500 cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto">
-                    {activeLayers.map((l) => (
-                      <div
-                        key={l.id}
-                        className="flex items-center justify-between bg-muted px-2 py-1.5 rounded-none border border-border"
+                  {overlayError && (
+                    <div className="mb-2 flex items-start justify-between gap-1.5 bg-red-500/10 border border-red-500/30 px-2 py-1.5 text-[10px] text-red-400">
+                      <span className="inline-flex items-start gap-1 leading-tight">
+                        <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>{overlayError}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setOverlayError(null)}
+                        className="text-red-400/80 hover:text-red-300 shrink-0"
+                        title="Dismiss"
                       >
-                        <span
-                          title={l.title}
-                          className="font-mono text-[10px] text-foreground truncate max-w-[175px]"
-                        >
-                          {l.title}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => zoomToExtent(l.bbox)}
-                          title="Zoom to raster bounds"
-                          className="text-muted-foreground hover:text-sky-400 p-0.5 transition-colors"
-                        >
-                          <Search className="h-3 w-3" />
-                        </button>
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+
+                  {activeLayers.length > 0 && (
+                    <div className="mb-2">
+                      <label className="text-[10px] text-muted-foreground flex justify-between mb-1">
+                        <span>Overlay Opacity</span>
+                        <span>{Math.round(layerOpacity * 100)}%</span>
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={layerOpacity}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setLayerOpacity(val);
+                          const map = mapInstanceRef.current;
+                          if (map) {
+                            activeLayers.forEach((l) => {
+                              if (map.getLayer(l.id)) {
+                                map.setPaintProperty(l.id, 'raster-opacity', val);
+                              }
+                            });
+                          }
+                        }}
+                        className="w-full accent-teal-500 cursor-pointer"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-1 max-h-[220px] overflow-y-auto">
+                    {workspaceOutputs.length === 0 ? (
+                      <div className="py-2 text-center text-[10.5px] text-muted-foreground">
+                        No output files in this workspace yet.
                       </div>
-                    ))}
+                    ) : (
+                      workspaceOutputs.map((art, idx) => {
+                        const { filename, isTiff, isPng, downloadUrl } = getArtifactMeta(
+                          art,
+                          activeTaskId
+                        );
+                        const layerId = `overlay-${activeTaskId}-${filename.replace(
+                          /[^a-zA-Z0-9]/g,
+                          '_'
+                        )}`;
+                        const mountedLayer = activeLayers.find((l) => l.id === layerId);
+                        const isLoading = overlayLoadingId === layerId;
+                        const isInteractive = isTiff || (isPng && Boolean(onPreviewArtifact));
+
+                        return (
+                          <div
+                            key={`${activeTaskId}-${filename}-${idx}`}
+                            onClick={() => {
+                              if (isTiff) {
+                                void loadGeoTiffOverlay(art);
+                              } else if (isPng && onPreviewArtifact) {
+                                onPreviewArtifact(art);
+                              }
+                            }}
+                            title={
+                              isTiff
+                                ? 'Click to load on globe (replaces overlapping raster)'
+                                : isPng
+                                  ? 'Click to preview image'
+                                  : filename
+                            }
+                            className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-none border transition-colors ${
+                              mountedLayer
+                                ? 'bg-teal-500/15 border-teal-500/40'
+                                : 'bg-muted border-border'
+                            } ${isInteractive ? 'cursor-pointer hover:border-sky-400/50' : ''}`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {isTiff ? (
+                                <MapIcon className="h-3 w-3 shrink-0 text-teal-400" />
+                              ) : isPng ? (
+                                <ImageIcon className="h-3 w-3 shrink-0 text-sky-400" />
+                              ) : (
+                                <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                              )}
+                              <span className="font-mono text-[10px] text-foreground truncate">
+                                {filename}
+                              </span>
+                            </div>
+
+                            <div
+                              className="flex items-center gap-1 shrink-0"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {isLoading && (
+                                <Loader2 className="h-3 w-3 animate-spin text-teal-400" />
+                              )}
+                              {mountedLayer && (
+                                <button
+                                  type="button"
+                                  onClick={() => zoomToExtent(mountedLayer.bbox)}
+                                  title="Zoom to raster bounds"
+                                  className="text-teal-400 hover:text-sky-400 p-0.5 transition-colors"
+                                >
+                                  <Search className="h-3 w-3" />
+                                </button>
+                              )}
+                              {isPng && onPreviewArtifact && (
+                                <button
+                                  type="button"
+                                  onClick={() => onPreviewArtifact(art)}
+                                  title="Preview image"
+                                  className="text-muted-foreground hover:text-sky-400 p-0.5 transition-colors"
+                                >
+                                  <Eye className="h-3 w-3" />
+                                </button>
+                              )}
+                              <a
+                                href={downloadUrl}
+                                download={filename}
+                                title={`Download ${filename}`}
+                                className="text-muted-foreground hover:text-foreground p-0.5 transition-colors"
+                              >
+                                <Download className="h-3 w-3" />
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </>
               )}

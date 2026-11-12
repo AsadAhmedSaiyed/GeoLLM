@@ -35,6 +35,7 @@ export interface TaskSubmissionResponse {
 export interface ArtifactsResponse {
   artifacts: Array<string | ArtifactItem>;
   answer?: string | null;
+  timeline_frames?: string[];
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {

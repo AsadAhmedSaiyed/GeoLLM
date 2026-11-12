@@ -83,6 +83,7 @@ export interface TaskState {
   plan: string | null;
   stacPreview: StacPreviewPayload | null;
   artifacts: Array<string | ArtifactItem>;
+  timelineFrames?: string[];
   attempt: number | null;
   code_attempt?: number;
   max_attempts?: number;
