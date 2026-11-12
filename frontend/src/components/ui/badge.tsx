@@ -9,18 +9,18 @@ function Badge({ className, variant = 'default', ...props }: BadgeProps) {
   const variants: Record<string, string> = {
     default: 'border-transparent bg-primary text-primary-foreground',
     secondary: 'border-transparent bg-secondary text-secondary-foreground',
-    destructive: 'border-transparent bg-destructive text-destructive-foreground',
+    destructive: 'border-destructive/30 bg-destructive/15 text-destructive',
     outline: 'text-foreground border-border',
-    teal: 'border-transparent bg-[#0F766E]/20 text-[#2DD4BF] border border-[#0F766E]/40',
-    running: 'border-transparent bg-sky-500/20 text-sky-400 border border-sky-500/40 pulsing-glow',
-    success: 'border-transparent bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
-    warning: 'border-transparent bg-amber-500/20 text-amber-400 border border-amber-500/40',
+    teal: 'border-[#0F766E]/40 bg-[#0F766E]/15 text-[#2DD4BF]',
+    running: 'border-sky-500/40 bg-sky-500/15 text-sky-400 pulsing-glow',
+    success: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400',
+    warning: 'border-amber-500/40 bg-amber-500/15 text-amber-400',
   };
 
   return (
     <div
       className={cn(
-        'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+        'inline-flex items-center rounded-none border px-2 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
         variants[variant] || variants.default,
         className
       )}
@@ -30,4 +30,3 @@ function Badge({ className, variant = 'default', ...props }: BadgeProps) {
 }
 
 export { Badge };
-

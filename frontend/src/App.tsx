@@ -412,7 +412,7 @@ export function App() {
   }, [tasks]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#070A0F] text-slate-100 overflow-hidden font-sans">
+    <div className="flex flex-col h-screen w-screen bg-background text-foreground overflow-hidden font-sans">
       <Toaster />
 
       {/* Top Navigation & Workspace Header */}
@@ -457,7 +457,7 @@ export function App() {
 
           {/* Panel 2: Full-Size 3D Map Stage with Floating Chat Overlay */}
           <ResizablePanel defaultSize={80} minSize={70} id="workspace-stage">
-            <div className="relative w-full h-full overflow-hidden bg-[#070A0F]">
+            <div className="relative w-full h-full overflow-hidden bg-background">
               {/* Layer 0: 3D MapLibre Globe occupies 100% full size underneath. NEVER RESIZES DURING CHAT DRAG. */}
               <div className="absolute inset-0 w-full h-full">
                 <GlobeView
@@ -486,7 +486,7 @@ export function App() {
                   width: isCollapsed ? 48 : panelWidth,
                   transition: isDragging ? 'none' : 'width 240ms cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
-                className="absolute top-0 bottom-0 left-0 z-20 flex bg-[#0B0F17]/95 backdrop-blur-md border-r border-[#1E293B] shadow-[12px_0_36px_rgba(0,0,0,0.65)] overflow-hidden"
+                className="absolute top-0 bottom-0 left-0 z-20 flex bg-card/95 backdrop-blur-md border-r border-border shadow-[12px_0_36px_rgba(0,0,0,0.65)] overflow-hidden"
               >
                 {/* When Collapsed: Compact Vertical Status Bar */}
                 {isCollapsed ? (
@@ -496,7 +496,7 @@ export function App() {
                     className="w-12 h-full flex flex-col items-center justify-between py-4 cursor-pointer select-none hover:bg-slate-800/40 transition-colors"
                   >
                     <div className="flex flex-col items-center gap-3">
-                      <div className="p-2 rounded-md bg-[#0F766E]/20 text-[#2DD4BF] border border-[#14B8A6]/40">
+                      <div className="p-2 rounded-none-none bg-[#0F766E]/20 text-[#2DD4BF] border border-[#14B8A6]/40">
                         <Terminal className="h-4 w-4" />
                       </div>
                       <span className="font-mono text-[10px] font-bold text-slate-300 [writing-mode:vertical-rl] rotate-180 tracking-wider uppercase">
@@ -506,7 +506,7 @@ export function App() {
 
                     <div className="flex flex-col items-center gap-2">
                       <span
-                        className={`h-2.5 w-2.5 rounded-full ${
+                        className={`h-2.5 w-2.5 rounded-none-none ${
                           activeTask.status === 'running'
                             ? 'bg-sky-400 animate-pulse'
                             : activeTask.status === 'done'
@@ -516,7 +516,7 @@ export function App() {
                             : 'bg-slate-500'
                         }`}
                       />
-                      <span className="text-[10px] font-mono text-slate-500">
+                      <span className="text-[10px] font-mono text-muted-foreground">
                         #{activeContainerId.replace('task_', '')}
                       </span>
                     </div>
@@ -536,7 +536,7 @@ export function App() {
                         minSize={8}
                         maxSize={70}
                         collapsible
-                        className="flex flex-col min-h-0 bg-[#0B0F17]"
+                        className="flex flex-col min-h-0 bg-card"
                       >
                         <QueryConsole
                           selectedFiles={selectedFiles}
@@ -561,7 +561,7 @@ export function App() {
                         id="chat-bottom-output"
                         defaultSize={isQueryFolded ? 92 : 66}
                         minSize={30}
-                        className="flex flex-col min-h-0 bg-[#070A0F]"
+                        className="flex flex-col min-h-0 bg-background"
                       >
                         <div className="flex-1 overflow-y-auto p-2.5 min-h-0">
                           {activeWorkspace ? (
@@ -598,11 +598,11 @@ export function App() {
                               )}
                             />
                           ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
-                              <div className="text-sm font-semibold text-slate-200 mb-1">
+                            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-muted-foreground">
+                              <div className="text-sm font-semibold text-foreground mb-1">
                                 No Active Workspace Selected
                               </div>
-                              <div className="text-xs text-slate-400 max-w-xs">
+                              <div className="text-xs text-muted-foreground max-w-xs">
                                 Create or select a workspace tab in the top navigation bar to open its sandbox container.
                               </div>
                             </div>
@@ -618,9 +618,9 @@ export function App() {
                   onMouseDown={handleOverlayResizeStart}
                   onDoubleClick={toggleCollapse}
                   title="Drag to resize (right) • Double-click to collapse/expand"
-                  className="w-2.5 h-full cursor-col-resize hover:bg-[#14B8A6]/30 active:bg-[#14B8A6]/50 transition-colors flex items-center justify-center shrink-0 border-l border-[#1E293B] select-none"
+                  className="w-2.5 h-full cursor-col-resize hover:bg-[#14B8A6]/30 active:bg-[#14B8A6]/50 transition-colors flex items-center justify-center shrink-0 border-l border-border select-none"
                 >
-                  <div className="w-[3px] h-7 rounded-full bg-slate-600 hover:bg-[#2DD4BF] transition-colors" />
+                  <div className="w-[3px] h-7 rounded-none-none bg-slate-600 hover:bg-[#2DD4BF] transition-colors" />
                 </div>
               </div>
             </div>

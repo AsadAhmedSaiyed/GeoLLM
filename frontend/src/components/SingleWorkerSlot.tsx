@@ -298,16 +298,16 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   return (
     <div className="flex flex-col gap-3">
       {/* 1. Task Header Card */}
-      <div className="bg-[#111827] border border-[#1E293B] rounded-lg p-3">
+      <div className="bg-muted border border-border rounded-none p-3">
         <div className="flex items-center gap-2.5">
-          <span className="font-mono bg-[#0F766E] text-white px-2 py-0.5 rounded text-[11px] font-bold shrink-0">
+          <span className="font-mono bg-[#0F766E] text-white px-2 py-0.5 rounded-none text-[11px] font-bold shrink-0">
             #{taskNum}
           </span>
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-[13px] text-slate-100 break-words">
+            <div className="font-semibold text-[13px] text-foreground break-words">
               {task.question ? task.question : `Sandbox Slot #${taskNum} (Idle)`}
             </div>
-            <div className="font-mono text-[11px] text-slate-400 mt-0.5">
+            <div className="font-mono text-[11px] text-muted-foreground mt-0.5">
               Elapsed: {formatSeconds(task)} • Status:{' '}
               <span
                 className="font-semibold"
@@ -347,7 +347,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 px-2.5 text-[11px] bg-[#1E293B] border border-[#334155] text-slate-300 hover:text-white hover:border-slate-400 shrink-0 gap-1 cursor-pointer"
+              className="h-7 px-2.5 text-[11px] bg-muted border border-border text-foreground hover:text-white hover:border-slate-400 shrink-0 gap-1 cursor-pointer"
               onClick={() => onResetTask?.(taskId)}
               title="Reset this container sandbox and clear outputs"
             >
@@ -368,7 +368,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
       {/* 3. Autonomous STAC Satellite Preview & Approval Gate */}
       {task.status === 'pending_stac_approval' && task.stacPreview && (
         <div
-          className="bg-[#0F172A] border border-[#1E293B] rounded-lg p-3.5"
+          className="bg-card border border-border rounded-none p-3.5"
           style={{ borderLeft: '4px solid #0284C7' }}
         >
           <div className="flex justify-between items-center mb-2.5 flex-wrap gap-1.5">
@@ -376,31 +376,31 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               <Satellite className="h-4 w-4 shrink-0" />
               <span>Satellite Scene Previews — Review Before Native-Resolution Staging</span>
             </span>
-            <span className="font-mono text-[10.5px] text-sky-400 bg-sky-500/15 px-2 py-0.5 rounded-full border border-sky-500/30">
+            <span className="font-mono text-[10.5px] text-sky-400 bg-sky-500/15 px-2 py-0.5 rounded-none border border-sky-500/30">
               100% Native Resolution Preserved
             </span>
           </div>
 
           {task.stacPreview.explanation && (
-            <div className="text-xs text-slate-200 mb-2.5 leading-relaxed">
+            <div className="text-xs text-foreground mb-2.5 leading-relaxed">
               <MarkdownView content={task.stacPreview.explanation} />
             </div>
           )}
 
-          <div className="font-mono text-[11px] text-slate-400 bg-[#1E293B] px-2.5 py-2 rounded-md mb-3 flex flex-wrap gap-3.5">
+          <div className="font-mono text-[11px] text-muted-foreground bg-muted px-2.5 py-2 rounded-none mb-3 flex flex-wrap gap-3.5">
             <span>
-              <strong className="text-slate-200">Location:</strong>{' '}
+              <strong className="text-foreground">Location:</strong>{' '}
               {task.stacPreview.location_name || 'Custom AOI'}
             </span>
             {task.stacPreview.bbox && (
               <span>
-                <strong className="text-slate-200">BBox:</strong> [
+                <strong className="text-foreground">BBox:</strong> [
                 {task.stacPreview.bbox.map((n) => Number(n).toFixed(4)).join(', ')}]
               </span>
             )}
             {task.stacPreview.native_grid_estimate && (
               <span>
-                <strong className="text-slate-200">Native Grid:</strong> ~
+                <strong className="text-foreground">Native Grid:</strong> ~
                 {task.stacPreview.native_grid_estimate.estimated_width_px}×
                 {task.stacPreview.native_grid_estimate.estimated_height_px} px (
                 {task.stacPreview.native_grid_estimate.native_resolution_m}m native res,{' '}
@@ -413,10 +413,10 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             {(task.stacPreview.scenes || []).map((sc, idx) => (
               <div
                 key={sc.id || idx}
-                className="bg-[#111827] border border-[#1E293B] rounded-md overflow-hidden"
+                className="bg-muted border border-border rounded-none overflow-hidden"
               >
                 {sc.thumbnail ? (
-                  <div className="bg-[#090D14] text-center h-[140px] flex items-center justify-center overflow-hidden">
+                  <div className="bg-background text-center h-[140px] flex items-center justify-center overflow-hidden">
                     <img
                       src={sc.thumbnail}
                       alt={sc.label || sc.id || `Scene ${idx + 1}`}
@@ -424,35 +424,35 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     />
                   </div>
                 ) : (
-                  <div className="font-mono h-[100px] bg-[#090D14] text-slate-500 flex items-center justify-center text-[11px]">
+                  <div className="font-mono h-[100px] bg-background text-muted-foreground flex items-center justify-center text-[11px]">
                     No preview thumbnail
                   </div>
                 )}
                 <div className="p-2 text-[11px]">
-                  <div className="font-bold text-slate-100 mb-1">
+                  <div className="font-bold text-foreground mb-1">
                     {sc.label || `Scene ${idx + 1}`}
                   </div>
-                  <div className="font-mono text-[10px] text-slate-400 leading-relaxed space-y-0.5">
+                  <div className="font-mono text-[10px] text-muted-foreground leading-relaxed space-y-0.5">
                     <div>
-                      <strong className="text-slate-300">Collection:</strong> {sc.collection}
+                      <strong className="text-foreground">Collection:</strong> {sc.collection}
                     </div>
                     <div>
-                      <strong className="text-slate-300">Date:</strong>{' '}
+                      <strong className="text-foreground">Date:</strong>{' '}
                       {(sc.datetime || '').slice(0, 10) || 'N/A'}
                     </div>
                     {sc.cloud_cover !== null && sc.cloud_cover !== undefined && (
                       <div>
-                        <strong className="text-slate-300">Cloud Cover:</strong> {sc.cloud_cover}%
+                        <strong className="text-foreground">Cloud Cover:</strong> {sc.cloud_cover}%
                       </div>
                     )}
                     {sc.aoi_coverage_pct !== null && sc.aoi_coverage_pct !== undefined && (
                       <div>
-                        <strong className="text-slate-300">AOI Coverage:</strong>{' '}
+                        <strong className="text-foreground">AOI Coverage:</strong>{' '}
                         {sc.aoi_coverage_pct}%
                       </div>
                     )}
                     <div>
-                      <strong className="text-slate-300">Bands:</strong>{' '}
+                      <strong className="text-foreground">Bands:</strong>{' '}
                       {(sc.assets || []).join(', ')}
                     </div>
                   </div>
@@ -473,7 +473,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             <div className="flex gap-2">
               <Input
                 type="text"
-                className="flex-1 h-8 text-[11.5px] bg-[#111827] border-[#1E293B]"
+                className="flex-1 h-8 text-[11.5px] bg-muted border-border"
                 placeholder="Or give feedback (e.g., 'cloudy, search July 2024 instead')…"
                 value={revisionFeedback}
                 onChange={(e) => setRevisionFeedback(e.target.value)}
@@ -482,7 +482,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 type="button"
                 variant="secondary"
                 size="sm"
-                className="h-8 px-3 text-xs bg-[#1E293B] border border-[#334155]"
+                className="h-8 px-3 text-xs bg-muted border border-border"
                 onClick={() => {
                   if (!revisionFeedback.trim()) {
                     onNotify?.('Please enter feedback for the satellite search.', 'warning');
@@ -502,7 +502,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
       {/* 4. Plan Approval Gate */}
       {task.status === 'pending_approval' && (
         <div
-          className="bg-[#0F172A] border border-[#1E293B] rounded-lg p-3.5"
+          className="bg-card border border-border rounded-none p-3.5"
           style={{ borderLeft: '4px solid #14B8A6' }}
         >
           <div className="flex justify-between items-center mb-2">
@@ -510,11 +510,11 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               <ClipboardList className="h-4 w-4 shrink-0" />
               <span>Plan Proposed — User Review Required</span>
             </span>
-            <span className="font-mono text-[10.5px] text-slate-400">
+            <span className="font-mono text-[10.5px] text-muted-foreground">
               Autonomous container paused
             </span>
           </div>
-          <div className="text-slate-200 text-xs mb-3">
+          <div className="text-foreground text-xs mb-3">
             <MarkdownView content={task.plan || 'No plan details provided.'} />
           </div>
           <div className="flex flex-col gap-2">
@@ -529,7 +529,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             <div className="flex gap-2">
               <Input
                 type="text"
-                className="flex-1 h-8 text-[11.5px] bg-[#111827] border-[#1E293B]"
+                className="flex-1 h-8 text-[11.5px] bg-muted border-border"
                 placeholder="Request plan revisions (e.g., 'use threshold 0.25 and add confidence map')…"
                 value={revisionFeedback}
                 onChange={(e) => setRevisionFeedback(e.target.value)}
@@ -538,7 +538,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 type="button"
                 variant="secondary"
                 size="sm"
-                className="h-8 px-3 text-xs bg-[#1E293B] border border-[#334155]"
+                className="h-8 px-3 text-xs bg-muted border border-border"
                 onClick={() => {
                   if (!revisionFeedback.trim()) {
                     onNotify?.('Please enter revision feedback.', 'warning');
@@ -557,23 +557,23 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 5. Findings / Summary Card */}
       {(task.answer || finalAnswer) && (
-        <div className="bg-[#111827] border border-[#1E293B] rounded-lg p-3.5">
+        <div className="bg-muted border border-border rounded-none p-3.5">
           <div className="flex items-center gap-2 mb-2.5">
             {isDone ? (
               <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
             ) : (
               <XCircle className="h-4 w-4 text-rose-400 shrink-0" />
             )}
-            <span className="font-bold text-[13px] text-slate-100">
+            <span className="font-bold text-[13px] text-foreground">
               {isDone ? 'Analysis Complete — Findings & Evidence' : 'Task Failed — Details'}
             </span>
             {isDone && (
-              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-semibold font-mono">
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-none font-semibold font-mono">
                 DONE
               </span>
             )}
           </div>
-          <div className="max-h-[550px] overflow-y-auto text-slate-300 text-xs leading-relaxed">
+          <div className="max-h-[550px] overflow-y-auto text-foreground text-xs leading-relaxed">
             <MarkdownView content={task.answer || finalAnswer} />
           </div>
         </div>
@@ -581,7 +581,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 6. Time Series Animation & Synchronized Frame Viewer */}
       {hasTimeline && (
-        <div className="bg-[#0F172A] rounded-lg p-3 border border-[#1E293B]">
+        <div className="bg-card rounded-none p-3 border border-border">
           {(timelineFrame || gifArt) &&
             (() => {
               const frameFname =
@@ -615,7 +615,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     <img
                       src={initialSrc}
                       alt="Time Series Frame"
-                      className="max-h-[400px] max-w-full h-auto mx-auto rounded-md border border-[#334155] block"
+                      className="max-h-[400px] max-w-full h-auto mx-auto rounded-none border border-border block"
                       onError={(e) => {
                         const imgEl = e.currentTarget;
                         if (imgEl.dataset.triedFallback === 'true') {
@@ -639,7 +639,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       }}
                     />
                     {timelineFrame && (timelineFrame.label || timelineFrame.date) && (
-                      <div className="absolute bottom-2.5 left-3 bg-[#0F172A]/85 backdrop-blur-xs text-sky-400 px-2.5 py-1 rounded text-[11px] font-semibold font-mono border border-sky-400/30">
+                      <div className="absolute bottom-2.5 left-3 bg-card/85 backdrop-blur-xs text-sky-400 px-2.5 py-1 rounded-none text-[11px] font-semibold font-mono border border-sky-400/30">
                         {timelineFrame.label || timelineFrame.date || ''}
                       </div>
                     )}
@@ -657,9 +657,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 7. Generated Deliverables Section */}
       {artifacts.length > 0 && (
-        <div className="bg-[#111827] border border-[#1E293B] rounded-lg p-3.5">
+        <div className="bg-muted border border-border rounded-none p-3.5">
           <div className="flex items-center justify-between mb-2.5 flex-wrap gap-1.5">
-            <span className="flex items-center gap-1.5 font-semibold text-xs text-slate-100">
+            <span className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
               <Package className="h-4 w-4 text-sky-400 shrink-0" />
               <span>Generated Deliverables ({artifacts.length} files)</span>
             </span>
@@ -706,7 +706,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
           {/* Embedded Elevation Cross-Section Chart if available */}
           {profileSvgArt && (
-            <div className="mb-3 bg-[#0F172A] rounded-lg p-2.5 border border-[#1E293B] text-center">
+            <div className="mb-3 bg-card rounded-none p-2.5 border border-border text-center">
               <img
                 src={
                   typeof profileSvgArt === 'object' && profileSvgArt.url
@@ -716,7 +716,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       )}`
                 }
                 alt="Elevation Cross-Section Profile"
-                className="max-w-full h-auto block mx-auto rounded-md"
+                className="max-w-full h-auto block mx-auto rounded-none"
               />
             </div>
           )}
@@ -734,17 +734,17 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               return (
                 <div
                   key={idx}
-                  className="flex items-center gap-1.5 bg-[#0B0F17] border border-[#1E293B] px-2.5 py-1.5 rounded-md"
+                  className="flex items-center gap-1.5 bg-card border border-border px-2.5 py-1.5 rounded-none"
                 >
                   {isTif ? (
                     <Map className="h-3.5 w-3.5 text-sky-400 shrink-0" />
                   ) : isImg ? (
                     <ImageIcon className="h-3.5 w-3.5 text-teal-400 shrink-0" />
                   ) : (
-                    <FileText className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                    <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   )}
                   <span
-                    className="font-mono flex-1 min-w-0 truncate text-[11px] text-slate-200"
+                    className="font-mono flex-1 min-w-0 truncate text-[11px] text-foreground"
                     title={fname}
                   >
                     {getBasename(fname)}
@@ -753,7 +753,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     {isPreviewable ? (
                       <button
                         type="button"
-                        className="bg-[#1E293B] text-sky-400 border border-[#334155] hover:border-sky-400 rounded text-[10px] px-1.5 py-0.5 cursor-pointer transition-colors"
+                        className="bg-muted text-sky-400 border border-border hover:border-sky-400 rounded-none text-[10px] px-1.5 py-0.5 cursor-pointer transition-colors"
                         onClick={() => onPreviewFile?.(art)}
                       >
                         Preview
@@ -762,7 +762,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       <a
                         href={downloadUrl}
                         download={getBasename(fname)}
-                        className="bg-[#1E293B] text-slate-300 border border-[#334155] hover:text-white rounded text-[10px] px-1.5 py-0.5 no-underline inline-block"
+                        className="bg-muted text-foreground border border-border hover:text-white rounded-none text-[10px] px-1.5 py-0.5 no-underline inline-block"
                       >
                         Download
                       </a>
@@ -770,7 +770,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     {isTif && (
                       <button
                         type="button"
-                        className="bg-[#0F766E] hover:bg-[#14B8A6] text-white rounded text-[10px] p-1 cursor-pointer transition-colors"
+                        className="bg-[#0F766E] hover:bg-[#14B8A6] text-white rounded-none text-[10px] p-1 cursor-pointer transition-colors"
                         onClick={() => onSwitchToGlobe?.(art)}
                         title="Overlay on 3D Globe"
                       >
@@ -787,15 +787,15 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 8. Live Execution & Reasoning Activity Feed */}
       {relevantActivities.length > 0 && (
-        <div className="bg-[#111827] border border-[#1E293B] rounded-lg p-3.5">
+        <div className="bg-muted border border-border rounded-none p-3.5">
           <div className="flex items-center justify-between mb-2">
-            <span className="flex items-center gap-1.5 font-semibold text-xs text-slate-200">
+            <span className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
               <Microscope className="h-4 w-4 text-sky-400 shrink-0" />
               <span>Execution Log & Reasoning ({relevantActivities.length} events)</span>
             </span>
             <button
               type="button"
-              className="text-[11px] bg-[#1E293B] text-slate-200 border border-[#334155] hover:border-slate-500 px-2 py-0.5 rounded cursor-pointer"
+              className="text-[11px] bg-muted text-foreground border border-border hover:border-border px-2 py-0.5 rounded-none cursor-pointer"
               onClick={() => setShowLogs(!showLogs)}
             >
               {showLogs ? 'Hide Events' : 'Show Events'}
@@ -826,7 +826,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       <details
                         key={i}
                         open={isLatestThinking || undefined}
-                        className="border border-[#1E293B] rounded-md bg-[#090D14] px-3 py-2"
+                        className="border border-border rounded-none bg-background px-3 py-2"
                       >
                         <summary className="font-mono text-[11px] cursor-pointer text-sky-400 font-semibold select-none flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
@@ -835,12 +835,12 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                               Reasoning trace ({wordCount} words · {charCount} chars)
                             </span>
                           </span>
-                          <span className="text-[10px] text-slate-500 font-normal">
+                          <span className="text-[10px] text-muted-foreground font-normal">
                             ↕ scrollable
                           </span>
                         </summary>
                         <div
-                          className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-slate-200 break-words max-h-[360px] overflow-y-auto p-3 bg-[#06090E] rounded border border-[#1E293B] leading-relaxed select-text"
+                          className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-foreground break-words max-h-[360px] overflow-y-auto p-3 bg-background rounded-none border border-border leading-relaxed select-text"
                           style={{
                             borderLeft: '3px solid #0F766E',
                           }}
@@ -857,7 +857,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="px-2.5 py-1.5 bg-[#0B0F17] rounded-md border border-[#1E293B] text-slate-200 text-[11.5px]"
+                      className="px-2.5 py-1.5 bg-card rounded-none border border-border text-foreground text-[11.5px]"
                     >
                       <MarkdownView content={act.text} />
                     </div>
@@ -899,7 +899,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-[#0B0F17] rounded-md px-2.5 py-2"
+                      className="bg-card rounded-none px-2.5 py-2"
                       style={{
                         border: `1px solid ${borderColor}`,
                         borderLeft: `3px solid ${leftBorderColor}`,
@@ -921,7 +921,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                           </span>
                         </span>
                         {act.attempt && (
-                          <span className="font-mono text-[10px] bg-[#1E293B] text-slate-300 px-1.5 py-0.5 rounded">
+                          <span className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none">
                             att {act.attempt}
                             {act.max_attempts ? `/${act.max_attempts}` : ''}
                           </span>
@@ -947,7 +947,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       </div>
 
                       {isStacSearch && argsObj && (
-                        <div className="font-mono text-[10.5px] text-slate-300 mt-1.5 bg-[#05080E] px-2 py-1.5 rounded border border-[#1E293B] flex flex-wrap gap-2.5">
+                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-none border border-border flex flex-wrap gap-2.5">
                           {Boolean(argsObj.location_name) && (
                             <span>
                               <strong>Location:</strong> {String(argsObj.location_name)}
@@ -982,7 +982,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       )}
 
                       {isStacPropose && argsObj && (
-                        <div className="font-mono text-[10.5px] text-slate-300 mt-1.5 bg-[#05080E] px-2 py-1.5 rounded border border-[#1E293B]">
+                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-none border border-border">
                           <div>
                             <strong>Location:</strong>{' '}
                             {String(argsObj.location_name || 'Target AOI')} •{' '}
@@ -990,7 +990,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                             {Array.isArray(argsObj.scenes) ? argsObj.scenes.length : 0}
                           </div>
                           {Array.isArray(argsObj.scenes) && argsObj.scenes.length > 0 && (
-                            <div className="mt-1 text-slate-400 text-[10px]">
+                            <div className="mt-1 text-muted-foreground text-[10px]">
                               {argsObj.scenes
                                 .map(
                                   (s: Record<string, unknown>) =>
@@ -1005,7 +1005,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       )}
 
                       {inputFilesList && inputFilesList.length > 0 && (
-                        <div className="font-mono text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+                        <div className="font-mono text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
                           <FolderOpen className="h-3 w-3 shrink-0" />
                           <span>
                             Inputs ({inputFilesList.length}):{' '}
@@ -1028,14 +1028,14 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                               Agent Python Code ({codeStr.split('\n').length} lines)
                             </span>
                           </summary>
-                          <pre className="font-mono mt-1 p-2 bg-[#05080E] border border-[#1E293B] rounded overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words max-h-[260px] text-[10px] text-slate-200">
+                          <pre className="font-mono mt-1 p-2 bg-background border border-border rounded-none overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words max-h-[260px] text-[10px] text-foreground">
                             {codeStr}
                           </pre>
                         </details>
                       )}
 
                       {shortArgs && (
-                        <div className="font-mono text-[10.5px] text-slate-400 break-all mt-1">
+                        <div className="font-mono text-[10.5px] text-muted-foreground break-all mt-1">
                           {shortArgs.length > 260 ? `${shortArgs.slice(0, 257)}…` : shortArgs}
                         </div>
                       )}
@@ -1052,7 +1052,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                             {isStacSearch ? '📄 STAC Search Results' : '📄 Output / Logs'}
                           </summary>
                           <pre
-                            className="font-mono mt-1 px-2 py-1.5 bg-[#05080E] border border-[#1E293B] rounded overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all max-h-[220px] max-w-full text-[10px]"
+                            className="font-mono mt-1 px-2 py-1.5 bg-background border border-border rounded-none overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all max-h-[220px] max-w-full text-[10px]"
                             style={{ color: act.ok === false ? '#FECACA' : '#CBD5E1' }}
                           >
                             {act.error || act.stdout}
@@ -1079,7 +1079,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-[#0B0F17] rounded-md px-2.5 py-2"
+                      className="bg-card rounded-none px-2.5 py-2"
                       style={{
                         border: `1px solid ${borderColor}`,
                         borderLeft: `3px solid ${leftBorderColor}`,
@@ -1117,7 +1117,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                         </span>
                       </div>
                       {(act.collection || act.asset_key || act.width) && (
-                        <div className="font-mono text-[10px] text-slate-400 mt-1 flex flex-wrap gap-2.5">
+                        <div className="font-mono text-[10px] text-muted-foreground mt-1 flex flex-wrap gap-2.5">
                           {act.collection && (
                             <span>
                               <strong>Collection:</strong> {act.collection}
@@ -1150,7 +1150,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-[#0B1320] rounded-md px-2.5 py-2"
+                      className="bg-muted rounded-none px-2.5 py-2"
                       style={{
                         border: '1px solid #0F766E',
                         borderLeft: '3px solid #10B981',
@@ -1163,7 +1163,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                         </span>
                       </div>
                       {stagedList.length > 0 && (
-                        <div className="font-mono text-[10px] text-slate-300 mt-1 leading-relaxed">
+                        <div className="font-mono text-[10px] text-foreground mt-1 leading-relaxed">
                           {stagedList.map(getBasename).join(', ')}
                         </div>
                       )}
@@ -1180,7 +1180,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-[#0B1120] rounded-md px-2.5 py-2"
+                      className="bg-muted rounded-none px-2.5 py-2"
                       style={{
                         border: '1px solid #0284C7',
                         borderLeft: '3px solid #38BDF8',
@@ -1211,7 +1211,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     return (
                       <div
                         key={i}
-                        className="px-2 py-1.5 mt-1 bg-[#0B0F17] rounded"
+                        className="px-2 py-1.5 mt-1 bg-card rounded-none"
                         style={{ borderLeft: '3px solid #3B82F6' }}
                       >
                         <div className="flex items-center gap-2 text-[11px] text-sky-400">
@@ -1220,7 +1220,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                             Starting Visual QA: {imgName}
                           </span>
                           {act.index && act.total && (
-                            <span className="font-mono ml-auto text-[10.5px] text-slate-400">
+                            <span className="font-mono ml-auto text-[10.5px] text-muted-foreground">
                               {act.index} / {act.total}
                             </span>
                           )}
@@ -1232,11 +1232,11 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="px-2 py-1.5 bg-[#0B0F17] border border-[#1E293B] rounded"
+                      className="px-2 py-1.5 bg-card border border-border rounded-none"
                     >
                       <div className="flex items-center gap-2 text-[11px]">
-                        <Eye className="h-3.5 w-3.5 text-slate-300 shrink-0" />
-                        <span className="font-mono font-semibold text-slate-200">
+                        <Eye className="h-3.5 w-3.5 text-foreground shrink-0" />
+                        <span className="font-mono font-semibold text-foreground">
                           Visual QA: {imgName}
                         </span>
                         <span
@@ -1249,7 +1249,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                         </span>
                       </div>
                       {act.text && act.text !== 'ok' && (
-                        <div className="text-[10.5px] text-slate-300 mt-1 whitespace-pre-wrap break-words">
+                        <div className="text-[10.5px] text-foreground mt-1 whitespace-pre-wrap break-words">
                           {act.text}
                         </div>
                       )}
@@ -1271,7 +1271,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 <button
                   type="button"
                   onClick={scrollToBottom}
-                  className="absolute bottom-2.5 right-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-600/90 hover:bg-sky-500 text-white text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 animate-in fade-in slide-in-from-bottom-2 cursor-pointer border border-sky-400/30"
+                  className="absolute bottom-2.5 right-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-none bg-sky-600/90 hover:bg-sky-500 text-white text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 animate-in fade-in slide-in-from-bottom-2 cursor-pointer border border-sky-400/30"
                 >
                   <ArrowDown className="h-3.5 w-3.5 animate-bounce" />
                   <span>Resume auto-scroll</span>

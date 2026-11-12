@@ -714,9 +714,9 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
 
   return (
     <div className="fixed inset-0 z-[1300] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-5">
-      <div className="relative w-full max-w-[1020px] bg-[#0B1120] border border-[#1E293B] rounded-xl shadow-2xl overflow-hidden flex flex-col">
+      <div className="relative w-full max-w-[1020px] bg-muted border border-border rounded-none shadow-2xl overflow-hidden flex flex-col">
         {/* Header Bar */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E293B] bg-[#0F172A]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card">
           <div className="flex items-center gap-2.5">
             {isLidarModel ? (
               <Trees className="h-5 w-5 text-emerald-400" />
@@ -724,11 +724,11 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
               <Mountain className="h-5 w-5 text-sky-400" />
             )}
             <div>
-              <div className="text-slate-100 font-semibold text-sm">
+              <div className="text-foreground font-semibold text-sm">
                 {isLidarModel ? '3D LiDAR Canopy, Roads & Buildings Inspector' : title}
               </div>
               {meta && (
-                <div className="text-slate-400 text-[11px] font-mono">
+                <div className="text-muted-foreground text-[11px] font-mono">
                   Source: {meta.source || 'Raster'} |{' '}
                   {isLidarModel ? 'Height Above Ground' : 'Elevation'}: {meta.min_elevation_m}m to{' '}
                   {meta.max_elevation_m}m (Range: {meta.elevation_range_m}m)
@@ -740,7 +740,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             type="button"
             onClick={onClose}
             title="Close 3D Viewer"
-            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-none text-muted-foreground hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -751,7 +751,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
           style={{
             cursor: measuring ? 'crosshair' : isDraggingRef.current ? 'grabbing' : 'grab',
           }}
-          className="relative w-full h-[480px] bg-[#0B1120]"
+          className="relative w-full h-[480px] bg-muted"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -761,7 +761,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
           <div ref={mountRef} className="w-full h-full" />
 
           {loading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sky-400 bg-[#0B1120]/90">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sky-400 bg-muted/90">
               <Loader2 className="h-7 w-7 animate-spin" />
               <span className="text-xs font-mono">Constructing 3D Elevation Mesh...</span>
             </div>
@@ -774,7 +774,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             </div>
           )}
 
-          <div className="absolute bottom-3 left-3.5 bg-slate-900/80 border border-slate-700/60 px-2.5 py-1.5 rounded-md text-slate-400 text-[10.5px] font-mono pointer-events-none">
+          <div className="absolute bottom-3 left-3.5 bg-slate-900/80 border border-slate-700/60 px-2.5 py-1.5 rounded-none text-muted-foreground text-[10.5px] font-mono pointer-events-none">
             {measuring
               ? '📍 TRANSECT MODE: Click Point A, then Point B on the 3D surface'
               : '🖱️ Left Drag: Rotate | Right Drag: Pan | Scroll: Zoom'}
@@ -783,16 +783,16 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
 
         {/* Real-Time Transect Profile Drawer (if measured) */}
         {transectResult && (
-          <div className="bg-[#030712] border-t border-[#1E293B] px-4 py-2.5 text-[11px] font-mono text-slate-400">
+          <div className="bg-[#030712] border-t border-border px-4 py-2.5 text-[11px] font-mono text-muted-foreground">
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-3.5 flex-wrap">
                 <span className="text-sky-400 font-semibold">📍 3D Slice Cross-Section:</span>
                 <span>
-                  Dist: <b className="text-slate-100">{transectResult.distance_km.toFixed(2)} km</b>
+                  Dist: <b className="text-foreground">{transectResult.distance_km.toFixed(2)} km</b>
                 </span>
                 <span>
                   Elev:{' '}
-                  <b className="text-slate-100">
+                  <b className="text-foreground">
                     {transectResult.min_m.toFixed(0)}m – {transectResult.max_m.toFixed(0)}m
                   </b>
                 </span>
@@ -806,7 +806,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
               <button
                 type="button"
                 onClick={clearTransect}
-                className="border border-slate-700 text-slate-400 hover:text-white px-2 py-0.5 rounded text-[10px]"
+                className="border border-slate-700 text-muted-foreground hover:text-white px-2 py-0.5 rounded-none text-[10px]"
               >
                 Clear Line
               </button>
@@ -843,14 +843,14 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
         )}
 
         {/* Interactive Toolbar & Controls */}
-        <div className="flex items-center justify-between px-4 py-2.5 bg-[#0F172A] border-t border-[#1E293B] text-xs text-slate-200 flex-wrap gap-2.5">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-card border-t border-border text-xs text-foreground flex-wrap gap-2.5">
           {/* Surface Style / Drape Selector */}
           <div className="flex items-center gap-2">
-            <span className="text-slate-400 font-medium">Surface Layer:</span>
+            <span className="text-muted-foreground font-medium">Surface Layer:</span>
             <select
               value={surfaceMode}
               onChange={(e) => setSurfaceMode(e.target.value)}
-              className="bg-[#1E293B] text-slate-100 border border-slate-700 rounded px-2 py-1 text-[11.5px] cursor-pointer outline-none"
+              className="bg-muted text-foreground border border-slate-700 rounded-none px-2 py-1 text-[11.5px] cursor-pointer outline-none"
             >
               {meta?.orthophoto_url && (
                 <option value={meta.orthophoto_url}>
@@ -888,7 +888,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
 
           {/* Exaggeration Slider */}
           <div className="flex items-center gap-2">
-            <span className="text-slate-400 font-medium">Elevation Scale:</span>
+            <span className="text-muted-foreground font-medium">Elevation Scale:</span>
             <input
               type="range"
               min={0.5}
@@ -906,15 +906,15 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
           {/* Actions */}
           <div className="flex items-center gap-2">
             {/* Solid vs Point Cloud Mode Toggle */}
-            <div className="flex items-center bg-[#1E293B] p-0.5 rounded-md border border-slate-700">
+            <div className="flex items-center bg-muted p-0.5 rounded-none border border-slate-700">
               <button
                 type="button"
                 onClick={() => setRenderMode('surface')}
                 title="Continuous 3D Mesh Surface"
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                className={`inline-flex items-center gap-1 rounded-none px-2 py-1 text-[11px] font-medium transition-colors ${
                   renderMode === 'surface'
                     ? 'bg-sky-600 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
+                    : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
                 <Globe className="h-3 w-3" />
@@ -924,10 +924,10 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
                 type="button"
                 onClick={() => setRenderMode('points')}
                 title="Discrete LiDAR 3D Point Cloud returns"
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                className={`inline-flex items-center gap-1 rounded-none px-2 py-1 text-[11px] font-medium transition-colors ${
                   renderMode === 'points'
                     ? 'bg-sky-600 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
+                    : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
                 <Sparkles className="h-3 w-3" />
@@ -945,10 +945,10 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
                 });
               }}
               title="Click two points on the 3D surface to slice an elevation profile"
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 text-[11.5px] transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-none border border-slate-700 text-[11.5px] transition-colors ${
                 measuring
                   ? 'bg-sky-600 text-white'
-                  : 'bg-[#1E293B] text-slate-300 hover:text-white'
+                  : 'bg-muted text-foreground hover:text-white'
               }`}
             >
               <MapPin className="h-3 w-3" />
@@ -958,10 +958,10 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             <button
               type="button"
               onClick={() => setWireframe((prev) => !prev)}
-              className={`px-2.5 py-1 rounded border border-slate-700 text-[11.5px] transition-colors ${
+              className={`px-2.5 py-1 rounded-none border border-slate-700 text-[11.5px] transition-colors ${
                 wireframe
                   ? 'bg-sky-600 text-white'
-                  : 'bg-[#1E293B] text-slate-300 hover:text-white'
+                  : 'bg-muted text-foreground hover:text-white'
               }`}
             >
               {wireframe ? 'Solid Surface' : 'Wireframe'}
@@ -970,7 +970,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             <button
               type="button"
               onClick={resetView}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#1E293B] border border-slate-700 text-slate-300 hover:text-white text-[11.5px] transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-none bg-muted border border-slate-700 text-foreground hover:text-white text-[11.5px] transition-colors"
             >
               <RotateCcw className="h-3 w-3" />
               Reset

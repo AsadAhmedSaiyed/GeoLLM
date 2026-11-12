@@ -3,7 +3,8 @@ import { Workspace } from '@/types/task';
 import { TaskStatus } from '@/types/sse';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Layers, Plus, Terminal, Satellite, Bot, CheckCircle2, AlertCircle, Clock, X } from 'lucide-react';
+import { useTheme } from '@/components/theme-provider';
+import { Layers, Plus, Terminal, Satellite, Bot, CheckCircle2, AlertCircle, Clock, X, Sun, Moon } from 'lucide-react';
 
 interface TaskHeaderProps {
   workspaces: Workspace[];
@@ -30,6 +31,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
   onOpenStac,
   onOpenSupervisor,
 }) => {
+  const { theme, toggleTheme } = useTheme();
   const [isCreating, setIsCreating] = useState(false);
   const [newWsName, setNewWsName] = useState('');
 
@@ -55,22 +57,22 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
     if (status === 'pending_approval' || status === 'pending_stac_approval') {
       return <Clock className="h-3 w-3 text-amber-400 animate-pulse" />;
     }
-    return <span className="h-2 w-2 rounded-full bg-slate-500" />;
+    return <span className="h-2 w-2 rounded-full bg-muted-foreground" />;
   };
 
   return (
-    <header className="h-12 border-b border-[#1E293B] bg-[#0B0F17] px-3 flex items-center justify-between select-none z-20">
+    <header className="h-12 border-b border-border bg-card px-3 flex items-center justify-between select-none z-20">
       {/* Brand & Container Allocation Counter */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 font-bold text-sm text-slate-100 tracking-tight">
-          <Layers className="h-4 w-4 text-sky-400" />
+        <div className="flex items-center gap-2 font-bold text-sm text-foreground tracking-tight">
+          <Layers className="h-4 w-4 text-primary" />
           <span>GeoLLM</span>
-          <span className="text-[10px] font-mono text-[#14B8A6] font-semibold bg-[#0F766E]/20 px-1.5 py-0.5 rounded border border-[#0F766E]/40">
+          <span className="text-[10px] font-mono text-[#14B8A6] font-semibold bg-[#0F766E]/20 px-1.5 py-0.5 rounded-none border border-[#0F766E]/40">
             AUTONOMOUS
           </span>
         </div>
 
-        <Badge variant="secondary" className="font-mono text-[11px] bg-[#111827] border-[#1E293B] text-slate-400">
+        <Badge variant="secondary" className="font-mono text-[11px]">
           Containers: {workspaces.length} / 3 Allocated
         </Badge>
       </div>
@@ -86,14 +88,14 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
             <div
               key={ws.id}
               onClick={() => onSelectWorkspace(ws.id)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-all cursor-pointer whitespace-nowrap ${
+              className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-none text-xs font-medium border transition-all cursor-pointer whitespace-nowrap ${
                 isActive
-                  ? 'bg-[#111827] border-sky-500/50 text-slate-100 shadow-sm'
-                  : 'bg-transparent border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111827]/50'
+                  ? 'bg-muted border-primary/50 text-foreground shadow-xs'
+                  : 'bg-transparent border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
               }`}
             >
               {getStatusIcon(status)}
-              <span className="font-mono text-[10px] text-slate-400 bg-[#1E293B] px-1 rounded">
+              <span className="font-mono text-[10px] text-muted-foreground bg-muted px-1 rounded-none">
                 {containerNum}
               </span>
               <span className="max-w-[120px] truncate">{ws.name}</span>
@@ -104,7 +106,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
                     e.stopPropagation();
                     onDeleteWorkspace(ws.id);
                   }}
-                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-0.5 rounded transition-opacity cursor-pointer ml-0.5"
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive p-0.5 rounded transition-opacity cursor-pointer ml-0.5"
                   title={`Close workspace "${ws.name}"`}
                 >
                   <X className="h-3 w-3" />
@@ -125,7 +127,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
                 value={newWsName}
                 onChange={(e) => setNewWsName(e.target.value)}
                 onBlur={() => !newWsName && setIsCreating(false)}
-                className="h-7 w-32 px-2 text-xs bg-[#111827] border border-[#1E293B] rounded text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-500 font-mono"
+                className="h-7 w-32 px-2 text-xs bg-background border border-input rounded-none text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary font-mono"
               />
               <Button type="submit" size="sm" variant="teal" className="h-7 px-2 text-xs">
                 Add
@@ -134,7 +136,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           ) : (
             <button
               onClick={() => setIsCreating(true)}
-              className="flex items-center gap-1 px-2 py-1.5 rounded text-xs text-slate-400 hover:text-sky-400 hover:bg-[#111827] border border-dashed border-[#1E293B] cursor-pointer transition-colors"
+              className="flex items-center gap-1 px-2 py-1.5 rounded-none text-xs text-muted-foreground hover:text-primary hover:bg-muted border border-dashed border-border cursor-pointer transition-colors"
               title="Allocate a new container sandbox"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -150,10 +152,10 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           size="sm"
           variant={isConsoleOpen ? 'secondary' : 'outline'}
           onClick={onToggleConsole}
-          className="h-7 text-xs gap-1.5 text-slate-300"
+          className="h-7 text-xs gap-1.5"
           title="Toggle Workbench Console"
         >
-          <Terminal className="h-3.5 w-3.5 text-sky-400" />
+          <Terminal className="h-3.5 w-3.5 text-primary" />
           <span>Console</span>
         </Button>
 
@@ -161,7 +163,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           size="sm"
           variant="outline"
           onClick={onOpenStac}
-          className="h-7 text-xs gap-1.5 text-slate-300"
+          className="h-7 text-xs gap-1.5"
           title="Search Planetary Computer STAC"
         >
           <Satellite className="h-3.5 w-3.5 text-teal-400" />
@@ -172,14 +174,23 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           size="sm"
           variant="outline"
           onClick={onOpenSupervisor}
-          className="h-7 text-xs gap-1.5 text-slate-300"
+          className="h-7 text-xs gap-1.5"
           title="Open AI Supervisor"
         >
           <Bot className="h-3.5 w-3.5 text-purple-400" />
           <span>Supervisor</span>
         </Button>
+
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={toggleTheme}
+          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+          title="Toggle Theme (or press 'd')"
+        >
+          {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+        </Button>
       </div>
     </header>
   );
 };
-

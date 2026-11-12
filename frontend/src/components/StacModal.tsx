@@ -339,18 +339,18 @@ export const StacModal: React.FC<StacModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-[#0B0F17] border border-[#1E293B] rounded-xl w-full max-w-4xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-slate-100"
+        className="bg-card border border-border rounded-none w-full max-w-4xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-foreground"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-[#1E293B] bg-[#0F172A] flex items-center justify-between">
+        <div className="px-5 py-3.5 border-b border-border bg-card flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Satellite className="h-5 w-5 text-sky-400 shrink-0" />
             <div>
-              <div className="font-bold text-sm text-slate-100">
+              <div className="font-bold text-sm text-foreground">
                 Microsoft Planetary Computer Satellite Data
               </div>
-              <div className="text-[11px] text-slate-400">
+              <div className="text-[11px] text-muted-foreground">
                 Search & retrieve Optical, SAR, Hyperspectral, and DEM assets for your Area of Interest
               </div>
             </div>
@@ -358,7 +358,7 @@ export const StacModal: React.FC<StacModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-[#1E293B] cursor-pointer"
+            className="p-1.5 rounded-none text-muted-foreground hover:text-white hover:bg-muted cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -367,10 +367,10 @@ export const StacModal: React.FC<StacModalProps> = ({
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
           {/* Controls Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-[#111827] border border-[#1E293B] rounded-lg p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-muted border border-border rounded-none p-4">
             {/* Modality Pills */}
             <div className="md:col-span-2">
-              <label className="block text-[11px] font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-foreground mb-1.5 uppercase tracking-wider">
                 Sensor Modality
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -385,10 +385,10 @@ export const StacModal: React.FC<StacModalProps> = ({
                         .map((c) => c.id);
                       setSelectedCollections(matching.slice(0, 2));
                     }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-none text-xs font-medium border transition-colors cursor-pointer ${
                       selectedModality === key
                         ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
-                        : 'bg-[#0B0F17] border-[#1E293B] text-slate-400 hover:text-slate-200'
+                        : 'bg-card border-border text-muted-foreground hover:text-foreground'
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -400,7 +400,7 @@ export const StacModal: React.FC<StacModalProps> = ({
 
             {/* Target Collections Checkboxes */}
             <div className="md:col-span-2">
-              <label className="block text-[11px] font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-foreground mb-1.5 uppercase tracking-wider">
                 Target Collections
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -409,10 +409,10 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <label
                       key={c.id}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs cursor-pointer transition-colors ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-none border text-xs cursor-pointer transition-colors ${
                         isChecked
                           ? 'bg-[#0F766E]/25 border-[#14B8A6]/50 text-[#2DD4BF]'
-                          : 'bg-[#0B0F17] border-[#1E293B] text-slate-300 hover:border-slate-700'
+                          : 'bg-card border-border text-foreground hover:border-border'
                       }`}
                     >
                       <input
@@ -427,7 +427,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                             setSelectedCollections([...selectedCollections, c.id]);
                           }
                         }}
-                        className="rounded border-[#1E293B] bg-[#111827]"
+                        className="rounded-none border-border bg-muted"
                       />
                       <span>{c.title}</span>
                     </label>
@@ -438,7 +438,7 @@ export const StacModal: React.FC<StacModalProps> = ({
 
             {/* AOI BBOX */}
             <div className="md:col-span-2">
-              <label className="block text-[11px] font-semibold text-slate-300 mb-1 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-foreground mb-1 uppercase tracking-wider">
                 Area of Interest (BBOX: West, South, East, North)
               </label>
               <Input
@@ -452,7 +452,7 @@ export const StacModal: React.FC<StacModalProps> = ({
 
             {/* Start & End Date */}
             <div>
-              <label className="block text-[11px] font-semibold text-slate-300 mb-1 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-foreground mb-1 uppercase tracking-wider">
                 Start Date
               </label>
               <Input
@@ -464,7 +464,7 @@ export const StacModal: React.FC<StacModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-slate-300 mb-1 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-foreground mb-1 uppercase tracking-wider">
                 End Date
               </label>
               <Input
@@ -478,7 +478,7 @@ export const StacModal: React.FC<StacModalProps> = ({
             {/* Cloud Cover Slider */}
             <div className="md:col-span-2">
               <div className="flex justify-between mb-1">
-                <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                <label className="text-[11px] font-semibold text-foreground uppercase tracking-wider">
                   Max Cloud Cover
                 </label>
                 <span className="font-mono text-[11px] text-sky-400">
@@ -534,19 +534,19 @@ export const StacModal: React.FC<StacModalProps> = ({
 
           {/* Error Alert */}
           {errorMsg && (
-            <div className="p-3 rounded-md bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs">
+            <div className="p-3 rounded-none bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs">
               {errorMsg}
             </div>
           )}
 
           {/* Active Downloads Progress Panel */}
           {Object.keys(activeDownloads).length > 0 && (
-            <div className="bg-[#111827] border border-[#1E293B] rounded-lg p-3.5 space-y-2.5">
+            <div className="bg-muted border border-border rounded-none p-3.5 space-y-2.5">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-semibold text-slate-200">
+                <div className="flex items-center gap-2 font-semibold text-foreground">
                   <Download className="h-4 w-4 text-sky-400" />
                   <span>Satellite Downloads</span>
-                  <span className="text-[11px] text-slate-400 font-normal font-mono">
+                  <span className="text-[11px] text-muted-foreground font-normal font-mono">
                     (
                     {
                       Object.values(activeDownloads).filter(
@@ -568,7 +568,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                   <button
                     type="button"
                     onClick={handleCancelAllDownloads}
-                    className="text-[10.5px] px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
+                    className="text-[10.5px] px-2 py-0.5 rounded-none bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
                   >
                     ✕ Cancel All
                   </button>
@@ -585,11 +585,11 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <div
                       key={dl.stage_id}
-                      className="bg-[#0B0F17] border border-[#1E293B] rounded p-2"
+                      className="bg-card border border-border rounded-none p-2"
                     >
                       <div className="flex items-center justify-between text-[11px] mb-1">
                         <span
-                          className="font-mono font-medium text-slate-200 truncate"
+                          className="font-mono font-medium text-foreground truncate"
                           title={dl.filename}
                         >
                           {isDone
@@ -601,7 +601,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                             : '⏳ '}
                           {dl.filename}
                         </span>
-                        <div className="flex items-center gap-2 font-mono text-[10.5px] text-slate-400 shrink-0">
+                        <div className="flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground shrink-0">
                           {isDone ? (
                             <span className="text-emerald-400 font-semibold">
                               Staged ({dl.total_mb || dl.downloaded_mb} MB)
@@ -622,7 +622,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                                 {Math.round(pct)}%)
                               </span>
                               {dl.speed_mbps && (
-                                <span className="text-slate-500">
+                                <span className="text-muted-foreground">
                                   • {dl.speed_mbps} MB/s
                                 </span>
                               )}
@@ -637,7 +637,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                           )}
                         </div>
                       </div>
-                      <div className="w-full h-1.5 bg-[#1E293B] rounded overflow-hidden">
+                      <div className="w-full h-1.5 bg-muted rounded-none overflow-hidden">
                         <div
                           className={`h-full transition-all ${
                             isDone
@@ -661,7 +661,7 @@ export const StacModal: React.FC<StacModalProps> = ({
           {/* Search Results Gallery */}
           {searchResults.length > 0 && (
             <div className="space-y-3">
-              <div className="text-xs text-slate-300">
+              <div className="text-xs text-foreground">
                 Found <strong>{searchResults.length}</strong> matching satellite scene(s)
               </div>
 
@@ -676,9 +676,9 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <div
                       key={item.id}
-                      className="bg-[#111827] border border-[#1E293B] rounded-lg overflow-hidden flex flex-col"
+                      className="bg-muted border border-border rounded-none overflow-hidden flex flex-col"
                     >
-                      <div className="h-36 bg-[#070A0F] flex items-center justify-center overflow-hidden border-b border-[#1E293B]">
+                      <div className="h-36 bg-background flex items-center justify-center overflow-hidden border-b border-border">
                         {item.thumbnail ? (
                           <img
                             src={item.thumbnail}
@@ -687,7 +687,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                             className="max-h-36 max-w-full object-contain"
                           />
                         ) : (
-                          <div className="text-slate-500 font-mono text-xs flex items-center gap-1.5">
+                          <div className="text-muted-foreground font-mono text-xs flex items-center gap-1.5">
                             <Satellite className="h-4 w-4" />
                             <span>Scene Preview Unavailable</span>
                           </div>
@@ -697,26 +697,26 @@ export const StacModal: React.FC<StacModalProps> = ({
                       <div className="p-3 flex-1 flex flex-col justify-between space-y-2.5">
                         <div>
                           <div
-                            className="font-mono font-bold text-[11px] text-slate-100 truncate mb-1.5"
+                            className="font-mono font-bold text-[11px] text-foreground truncate mb-1.5"
                             title={item.id}
                           >
                             {item.id}
                           </div>
                           <div className="flex flex-wrap gap-1 font-mono text-[10px]">
-                            <span className="bg-[#1E293B] text-slate-300 px-1.5 py-0.5 rounded">
+                            <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-none">
                               {dt}
                             </span>
-                            <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded">
+                            <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded-none">
                               {item.collection}
                             </span>
                             {cloud && (
-                              <span className="bg-[#1E293B] text-slate-300 px-1.5 py-0.5 rounded">
+                              <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-none">
                                 {cloud}
                               </span>
                             )}
                             {item.aoi_coverage_pct != null && (
                               <span
-                                className={`px-1.5 py-0.5 rounded font-semibold ${
+                                className={`px-1.5 py-0.5 rounded-none font-semibold ${
                                   item.aoi_coverage_pct >= 90
                                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                     : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
@@ -728,7 +728,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                               </span>
                             )}
                             {item.nodata_pct != null && (
-                              <span className="bg-[#1E293B] text-slate-400 px-1.5 py-0.5 rounded">
+                              <span className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded-none">
                                 {item.nodata_pct}% nodata
                               </span>
                             )}
@@ -736,16 +736,16 @@ export const StacModal: React.FC<StacModalProps> = ({
                         </div>
 
                         {/* Assets Drawer */}
-                        <div className="border-t border-[#1E293B] pt-2">
+                        <div className="border-t border-border pt-2">
                           <div className="flex items-center justify-between mb-1.5 gap-1 flex-wrap">
-                            <span className="text-[10.5px] text-slate-400 font-semibold">
+                            <span className="text-[10.5px] text-muted-foreground font-semibold">
                               Available Bands:
                             </span>
                             <div className="flex items-center gap-1">
                               <button
                                 type="button"
                                 onClick={() => handleDownloadAllCore(item)}
-                                className="flex items-center gap-1 bg-[#0F766E] hover:bg-[#14B8A6] text-white text-[10px] font-semibold px-2 py-0.5 rounded cursor-pointer transition-colors"
+                                className="flex items-center gap-1 bg-[#0F766E] hover:bg-[#14B8A6] text-white text-[10px] font-semibold px-2 py-0.5 rounded-none cursor-pointer transition-colors"
                                 title="Download essential bands together"
                               >
                                 <Zap className="h-3 w-3" />
@@ -763,7 +763,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => handleCancelItemDownloads(item)}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 cursor-pointer"
+                                  className="text-[10px] px-1.5 py-0.5 rounded-none bg-rose-500/20 text-rose-300 border border-rose-500/40 cursor-pointer"
                                 >
                                   ✕ Cancel
                                 </button>
@@ -807,12 +807,12 @@ export const StacModal: React.FC<StacModalProps> = ({
                                       ? 'Click to cancel download'
                                       : a.description || a.title || a.key
                                   }
-                                  className={`font-mono text-[10px] px-2 py-0.5 rounded border cursor-pointer transition-colors flex items-center gap-1 ${
+                                  className={`font-mono text-[10px] px-2 py-0.5 rounded-none border cursor-pointer transition-colors flex items-center gap-1 ${
                                     isStaged
                                       ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
                                       : isDownloading
                                       ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
-                                      : 'bg-[#0B0F17] border-[#1E293B] text-slate-300 hover:border-sky-500/50'
+                                      : 'bg-card border-border text-foreground hover:border-sky-500/50'
                                   }`}
                                 >
                                   {isDownloading ? (

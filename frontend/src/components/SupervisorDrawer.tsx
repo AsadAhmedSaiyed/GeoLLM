@@ -98,40 +98,40 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
       }
     });
     return () => cancelAnimationFrame(rafId);
-  }, [messages, feedItems, activeSubTab]);
+  }, [messages, sending]);
 
   const handleSendMessage = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    const query = inputVal.trim();
-    if (!query || sending) return;
+    if (e) e.preventDefault();
+    const txt = inputVal.trim();
+    if (!txt || sending) return;
 
+    const userEntry: ChatEntry = { role: 'user', content: txt };
+    const updatedMessages = [...messages, userEntry];
+    setMessages(updatedMessages);
     setInputVal('');
-    const userMsg: ChatEntry = { role: 'user', content: query };
-    const updated = [...messages, userMsg];
-    setMessages(updated);
     setSending(true);
 
     try {
-      const data = await api.sendChatMessage(
-        query,
-        updated.map((m) => ({ role: m.role, content: m.content }))
-      );
-
+      const history = updatedMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const res = await api.sendChatMessage(txt, history);
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: data.reply || '(No response)',
-          isRunJob: data.is_run_job,
-          proposedJob: data.proposed_job,
+          content: res.reply || 'No response received from supervisor.',
+          isRunJob: res.is_run_job,
+          proposedJob: res.proposed_job,
         },
       ]);
-    } catch (err) {
+    } catch (err: unknown) {
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `⚠️ Error contacting Supervisor: ${
+          content: `⚠️ Failed to reach supervisor AI: ${
             err instanceof Error ? err.message : String(err)
           }`,
         },
@@ -141,39 +141,39 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   const dynamicFeedItems = feedItems.filter((item) => {
     if (!item.taskId && item.type === 'assistant') return false;
     return true;
   });
 
+  if (!isOpen) return null;
+
   return (
-    <aside className="fixed top-12 right-0 bottom-0 w-96 max-w-full z-40 bg-[#0B0F17] border-l border-[#1E293B] flex flex-col shadow-2xl text-slate-100 select-none">
+    <aside className="fixed top-12 right-0 bottom-0 w-96 max-w-full z-40 bg-card border-l border-border flex flex-col shadow-2xl text-foreground select-none">
       {/* Drawer Header */}
-      <div className="px-4 py-3 border-b border-[#1E293B] bg-[#0F172A] flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-border bg-card flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="relative flex items-center justify-center">
             <Bot className="h-4 w-4 text-purple-400" />
-            <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400" />
+            <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-none bg-emerald-400" />
           </div>
           <div>
-            <div className="font-semibold text-xs text-slate-100">Supervisor AI</div>
-            <div className="text-[10.5px] text-slate-400">
+            <div className="font-semibold text-xs text-foreground">Supervisor AI</div>
+            <div className="text-[10.5px] text-muted-foreground">
               Container Intelligence & Dispatch
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5">
-          <div className="flex bg-[#111827] border border-[#1E293B] rounded-md p-0.5">
+          <div className="flex bg-muted border border-border rounded-none p-0.5">
             <button
               type="button"
               onClick={() => setActiveSubTab('chat')}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium cursor-pointer transition-colors ${
+              className={`flex items-center gap-1 px-2 py-1 rounded-none text-[11px] font-medium cursor-pointer transition-colors ${
                 activeSubTab === 'chat'
-                  ? 'bg-[#1E293B] text-sky-400'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-background text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <MessageSquare className="h-3 w-3" />
@@ -182,10 +182,10 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
             <button
               type="button"
               onClick={() => setActiveSubTab('telemetry')}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium cursor-pointer transition-colors ${
+              className={`flex items-center gap-1 px-2 py-1 rounded-none text-[11px] font-medium cursor-pointer transition-colors ${
                 activeSubTab === 'telemetry'
-                  ? 'bg-[#1E293B] text-sky-400'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-background text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <Activity className="h-3 w-3" />
@@ -195,7 +195,7 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded text-slate-400 hover:text-white hover:bg-[#1E293B] cursor-pointer"
+            className="p-1 rounded-none text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -220,16 +220,16 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
                 }`}
               >
                 <div
-                  className={`max-w-[85%] rounded-lg p-2.5 text-xs ${
+                  className={`max-w-[85%] rounded-none p-2.5 text-xs ${
                     m.role === 'user'
-                      ? 'bg-[#0F766E] text-white'
-                      : 'bg-[#111827] border border-[#1E293B] text-slate-200'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted border border-border text-foreground'
                   }`}
                 >
                   <MarkdownView content={m.content} />
 
                   {m.isRunJob && m.proposedJob && (
-                    <div className="mt-2 pt-2 border-t border-[#1E293B]">
+                    <div className="mt-2 pt-2 border-t border-border">
                       <Button
                         type="button"
                         size="sm"
@@ -248,8 +248,8 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
 
             {sending && (
               <div className="flex justify-start">
-                <div className="bg-[#111827] border border-[#1E293B] rounded-lg px-3 py-2 text-xs text-slate-400 flex items-center gap-2">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+                <div className="bg-muted border border-border rounded-none px-3 py-2 text-xs text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                   <span>Supervisor analyzing…</span>
                 </div>
               </div>
@@ -258,7 +258,7 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
         ) : (
           <div className="space-y-2">
             {dynamicFeedItems.length === 0 ? (
-              <div className="py-8 px-4 text-center text-slate-500 text-xs">
+              <div className="py-8 px-4 text-center text-muted-foreground text-xs">
                 No task events yet — run an analysis task to stream live progress.
               </div>
             ) : (
@@ -359,13 +359,13 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
                 return (
                   <div
                     key={idx}
-                    className={`flex items-start gap-2 p-2 rounded border text-xs ${
+                    className={`flex items-start gap-2 p-2 rounded-none border text-xs ${
                       isErr
-                        ? 'bg-rose-500/10 border-rose-500/30 text-rose-200'
-                        : 'bg-[#111827] border-[#1E293B] text-slate-200'
+                        ? 'bg-destructive/15 border-destructive/30 text-destructive'
+                        : 'bg-muted border-border text-foreground'
                     }`}
                   >
-                    <span className="font-mono text-[10px] font-bold bg-[#1E293B] text-sky-400 px-1.5 py-0.5 rounded shrink-0">
+                    <span className="font-mono text-[10px] font-bold bg-background text-primary px-1.5 py-0.5 rounded-none border border-border shrink-0">
                       {taskTag}
                     </span>
                     <div className="flex-1 min-w-0 break-words">
@@ -384,15 +384,15 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
       </div>
 
       {/* Quick Suggested Status Inquiries */}
-      <div className="flex items-center gap-1.5 px-3 py-2 bg-[#070A0F] border-t border-[#1E293B] overflow-x-auto">
+      <div className="flex items-center gap-1.5 px-3 py-2 bg-card border-t border-border overflow-x-auto">
         <button
           type="button"
           onClick={() =>
             setInputVal('Give me a full status report of all active containers.')
           }
-          className="flex items-center gap-1 bg-[#111827] hover:bg-[#1E293B] border border-[#1E293B] text-slate-300 text-[10.5px] px-2.5 py-1 rounded-full cursor-pointer whitespace-nowrap"
+          className="flex items-center gap-1 bg-muted hover:bg-background border border-border text-foreground text-[10.5px] px-2.5 py-1 rounded-none cursor-pointer whitespace-nowrap"
         >
-          <BarChart3 className="h-3 w-3 text-sky-400" />
+          <BarChart3 className="h-3 w-3 text-primary" />
           <span>Container Status</span>
         </button>
         <button
@@ -402,9 +402,9 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
               'Explain the deliverables and scientific findings completed so far.'
             )
           }
-          className="flex items-center gap-1 bg-[#111827] hover:bg-[#1E293B] border border-[#1E293B] text-slate-300 text-[10.5px] px-2.5 py-1 rounded-full cursor-pointer whitespace-nowrap"
+          className="flex items-center gap-1 bg-muted hover:bg-background border border-border text-foreground text-[10.5px] px-2.5 py-1 rounded-none cursor-pointer whitespace-nowrap"
         >
-          <Package className="h-3 w-3 text-teal-400" />
+          <Package className="h-3 w-3 text-[#14B8A6]" />
           <span>Explain Findings</span>
         </button>
       </div>
@@ -412,7 +412,7 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
       {/* Drawer Footer Input */}
       <form
         onSubmit={handleSendMessage}
-        className="p-3 bg-[#0F172A] border-t border-[#1E293B] flex items-center gap-2"
+        className="p-3 bg-card border-t border-border flex items-center gap-2"
       >
         <Input
           type="text"
@@ -435,4 +435,3 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
     </aside>
   );
 };
-

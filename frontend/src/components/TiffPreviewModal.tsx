@@ -230,13 +230,13 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-5xl max-h-[90vh] bg-[#0B0F17] border border-[#1E293B] rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        className="w-full max-w-5xl max-h-[90vh] bg-card border border-border rounded-none shadow-2xl flex flex-col overflow-hidden"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 bg-[#0F172A] border-b border-[#1E293B] gap-4 flex-wrap">
+        <div className="flex items-center justify-between px-4 py-3 bg-card border-b border-border gap-4 flex-wrap">
           <div className="flex items-center gap-2.5 min-w-0">
             <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-none text-[11px] font-bold uppercase tracking-wider ${
                 isTif
                   ? 'bg-teal-500/15 text-teal-400 border border-teal-500/30'
                   : 'bg-sky-500/15 text-sky-400 border border-sky-500/30'
@@ -246,7 +246,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
               {isTif ? 'GeoTIFF Inspector' : 'Deliverable Preview'}
             </span>
             <span
-              className="font-mono text-xs font-semibold text-slate-100 truncate"
+              className="font-mono text-xs font-semibold text-foreground truncate"
               title={previewTarget.name}
             >
               {previewTarget.name}
@@ -257,11 +257,11 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
             {/* Colormap Selector for GeoTIFFs */}
             {isTif && (
               <div className="flex items-center gap-1.5 mr-1">
-                <span className="text-[11px] text-slate-400">LUT:</span>
+                <span className="text-[11px] text-muted-foreground">LUT:</span>
                 <select
                   value={colormap}
                   onChange={(e) => setColormap(e.target.value as ColormapId)}
-                  className="bg-[#070A0F] border border-[#1E293B] rounded px-2 py-1 text-[11px] text-slate-200 outline-none cursor-pointer"
+                  className="bg-background border border-border rounded-none px-2 py-1 text-[11px] text-foreground outline-none cursor-pointer"
                 >
                   <option value="default">Native / Viridis</option>
                   <option value="ndvi">NDVI (Brown–Green)</option>
@@ -273,12 +273,12 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
             )}
 
             {/* Zoom Controls */}
-            <div className="flex items-center bg-[#070A0F] border border-[#1E293B] rounded-md p-0.5">
+            <div className="flex items-center bg-background border border-border rounded-none p-0.5">
               <button
                 type="button"
                 onClick={() => setZoom((prev) => Math.max(0.5, prev - 0.25))}
                 title="Zoom out"
-                className="px-2 py-1 text-xs text-slate-300 hover:text-white"
+                className="px-2 py-1 text-xs text-foreground hover:text-white"
               >
                 <ZoomOut className="h-3.5 w-3.5" />
               </button>
@@ -286,7 +286,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                 type="button"
                 onClick={() => setZoom(1)}
                 title="Reset zoom (100%)"
-                className="px-2 py-0.5 text-[11px] font-mono text-slate-300 hover:text-white min-w-[46px]"
+                className="px-2 py-0.5 text-[11px] font-mono text-foreground hover:text-white min-w-[46px]"
               >
                 {Math.round(zoom * 100)}%
               </button>
@@ -294,7 +294,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                 type="button"
                 onClick={() => setZoom((prev) => Math.min(3, prev + 0.25))}
                 title="Zoom in"
-                className="px-2 py-1 text-xs text-slate-300 hover:text-white"
+                className="px-2 py-1 text-xs text-foreground hover:text-white"
               >
                 <ZoomIn className="h-3.5 w-3.5" />
               </button>
@@ -308,7 +308,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                   onOverlayOnGlobe(previewTarget);
                   onClose();
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition-colors"
                 title="Project this georeferenced raster onto the 3D Globe"
               >
                 <Globe className="h-3.5 w-3.5" />
@@ -319,7 +319,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
             <a
               href={previewTarget.url}
               download={previewTarget.name}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold transition-colors"
               title="Download file"
             >
               <Download className="h-3.5 w-3.5" />
@@ -331,7 +331,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
               onClick={onClose}
               aria-label="Close dialog"
               title="Close (Esc)"
-              className="p-1.5 rounded-md bg-slate-800/80 border border-[#1E293B] text-slate-400 hover:text-white transition-colors"
+              className="p-1.5 rounded-none bg-slate-800/80 border border-border text-muted-foreground hover:text-white transition-colors"
             >
               <X className="h-4 w-4" />
             </button>
@@ -339,7 +339,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
         </div>
 
         {/* Main Viewport */}
-        <div className="flex-1 min-h-[380px] max-h-[70vh] overflow-auto bg-[#070A0F] flex items-center justify-center p-6 relative">
+        <div className="flex-1 min-h-[380px] max-h-[70vh] overflow-auto bg-background flex items-center justify-center p-6 relative">
           {loading && (
             <div className="flex flex-col items-center gap-2.5 text-sky-400 font-mono text-xs">
               <Loader2 className="h-6 w-6 animate-spin" />
@@ -348,7 +348,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
           )}
 
           {error && (
-            <div className="bg-rose-950/30 border border-rose-500/40 text-rose-300 px-4 py-3 rounded-lg text-xs font-mono">
+            <div className="bg-rose-950/30 border border-rose-500/40 text-rose-300 px-4 py-3 rounded-none text-xs font-mono">
               {error}
             </div>
           )}
@@ -365,7 +365,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
               <canvas
                 ref={canvasRef}
                 style={{ display: loading || error ? 'none' : 'block' }}
-                className="max-w-full max-h-[62vh] object-contain rounded shadow-lg border border-[#1E293B]"
+                className="max-w-full max-h-[62vh] object-contain rounded-none shadow-lg border border-border"
               />
             ) : isImage ? (
               <img
@@ -373,31 +373,31 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                 alt={previewTarget.name}
                 onLoad={handleImageLoad}
                 style={{ display: loading || error ? 'none' : 'block' }}
-                className="max-w-full max-h-[62vh] object-contain rounded shadow-lg"
+                className="max-w-full max-h-[62vh] object-contain rounded-none shadow-lg"
               />
             ) : (
               <iframe
                 src={previewTarget.url}
                 title={previewTarget.name}
-                className="w-[75vw] h-[60vh] border border-[#1E293B] rounded-lg bg-[#070A0F] text-slate-100"
+                className="w-[75vw] h-[60vh] border border-border rounded-none bg-background text-foreground"
               />
             )}
           </div>
         </div>
 
         {/* Metadata Strip Footer */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-4 py-2.5 bg-[#0F172A] border-t border-[#1E293B] text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-4 py-2.5 bg-card border-t border-border text-xs">
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               Dimensions
             </div>
-            <div className="font-mono text-slate-200 text-[11px]">
+            <div className="font-mono text-foreground text-[11px]">
               {metadata ? `${metadata.width} × ${metadata.height} px` : 'Detecting...'}
             </div>
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               Spatial Reference
             </div>
             <div
@@ -409,19 +409,19 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               Bands
             </div>
-            <div className="font-mono text-slate-200 text-[11px]">
+            <div className="font-mono text-foreground text-[11px]">
               {metadata ? metadata.bands : isTif ? '1 band' : 'RGB'}
             </div>
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               {metadata?.bbox ? 'WGS84 BBOX' : 'Rendering'}
             </div>
-            <div className="font-mono text-slate-200 text-[11px] truncate">
+            <div className="font-mono text-foreground text-[11px] truncate">
               {metadata?.bbox
                 ? `${metadata.bbox[0].toFixed(3)}, ${metadata.bbox[1].toFixed(3)} → ${metadata.bbox[2].toFixed(3)}, ${metadata.bbox[3].toFixed(3)}`
                 : metadata?.format || 'Standard'}

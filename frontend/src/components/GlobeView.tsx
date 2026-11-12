@@ -496,7 +496,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
     : null;
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-[#070A0F]">
+    <div className="relative w-full h-full overflow-hidden bg-background">
       {/* 3D Globe WebGL Container */}
       <div ref={mapContainerRef} className="w-full h-full" />
 
@@ -508,20 +508,20 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
             type="button"
             onClick={() => setAoiMode(true)}
             title="Click and drag on the 3D globe to draw an Area of Interest"
-            className="inline-flex items-center gap-1.5 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3.5 py-1.5 rounded-md text-xs font-semibold shadow-lg transition-colors"
+            className="inline-flex items-center gap-1.5 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3.5 py-1.5 rounded-none text-xs font-semibold shadow-lg transition-colors"
           >
             <SquareDashedMousePointer className="h-3.5 w-3.5" />
             <span>Draw AOI Bounding Box</span>
           </button>
         ) : (
-          <div className="flex items-center gap-1.5 bg-slate-900/95 px-2.5 py-1 rounded-md border border-teal-500 shadow-lg">
+          <div className="flex items-center gap-1.5 bg-slate-900/95 px-2.5 py-1 rounded-none border border-teal-500 shadow-lg">
             <span className="text-[11.5px] text-teal-400 font-semibold px-1">
               Click & Drag on Globe...
             </span>
             <button
               type="button"
               onClick={clearAoi}
-              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded text-[11px] font-semibold transition-colors"
+              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-none text-[11px] font-semibold transition-colors"
             >
               Cancel Drawing
             </button>
@@ -530,7 +530,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
         {/* When AOI is active: stats + Clear / Retrieve STAC / Send to Workspace */}
         {selectedBbox && (
-          <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md px-2.5 py-1 rounded-md border border-slate-700 shadow-xl">
+          <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md px-2.5 py-1 rounded-none border border-slate-700 shadow-xl">
             <span className="font-mono text-sky-400 text-[11px] font-semibold px-1">
               AOI: {aoiAreaKm2 ? `${aoiAreaKm2} km²` : 'Selected'}
             </span>
@@ -539,7 +539,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
               type="button"
               onClick={clearAoi}
               title="Clear selected Area of Interest (Esc)"
-              className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded text-[11px] font-bold transition-colors"
+              className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-none text-[11px] font-bold transition-colors"
             >
               <X className="h-3 w-3" />
               <span>Clear AOI</span>
@@ -550,7 +550,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                 type="button"
                 onClick={() => onOpenStacSearchWithAoi(selectedBbox)}
                 title="Search Microsoft Planetary Computer satellite data for this area"
-                className="inline-flex items-center gap-1 bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded text-[11px] font-semibold transition-colors"
+                className="inline-flex items-center gap-1 bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-none text-[11px] font-semibold transition-colors"
               >
                 <Satellite className="h-3 w-3" />
                 <span>Retrieve Satellite Data</span>
@@ -562,7 +562,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                 type="button"
                 onClick={() => onSendAoiToTask(selectedBbox, activeTaskId)}
                 title={`Send AOI coordinates into ${activeWorkspaceName || activeTaskId}`}
-                className="inline-flex items-center gap-1 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3 py-1 rounded text-[11px] font-semibold transition-colors"
+                className="inline-flex items-center gap-1 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3 py-1 rounded-none text-[11px] font-semibold transition-colors"
               >
                 <Zap className="h-3 w-3" />
                 <span>Send to Workspace</span>
@@ -576,10 +576,10 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
           type="button"
           onClick={() => setShowInspector((prev) => !prev)}
           title="Toggle Metadata Inspector Panel"
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium backdrop-blur-md border transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none text-[11.5px] font-medium backdrop-blur-md border transition-colors ${
             showInspector
               ? 'bg-teal-500/20 text-teal-400 border-teal-500'
-              : 'bg-slate-900/90 text-slate-400 border-slate-700 hover:text-slate-200'
+              : 'bg-slate-900/90 text-muted-foreground border-slate-700 hover:text-foreground'
           }`}
         >
           <Info className="h-3.5 w-3.5" />
@@ -592,13 +592,13 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
         <div className="absolute top-[58px] right-4 z-[18] flex flex-col items-end gap-2.5 max-h-[calc(100%-190px)] pointer-events-none">
           {/* Floating Metadata Inspector Card */}
           {showInspector && (
-            <div className="w-[280px] bg-[#090D14]/95 backdrop-blur-md border border-[#1E293B] rounded-lg p-3.5 text-[11.5px] text-slate-400 shadow-2xl pointer-events-auto shrink-0">
-              <div className="flex items-center justify-between mb-2.5 border-b border-[#1E293B] pb-1.5">
-                <span className="font-bold text-slate-100 text-xs">Metadata Inspector</span>
+            <div className="w-[280px] bg-card/95 backdrop-blur-md border border-border rounded-none p-3.5 text-[11.5px] text-muted-foreground shadow-2xl pointer-events-auto shrink-0">
+              <div className="flex items-center justify-between mb-2.5 border-b border-border pb-1.5">
+                <span className="font-bold text-foreground text-xs">Metadata Inspector</span>
                 <button
                   type="button"
                   onClick={() => setShowInspector(false)}
-                  className="text-slate-500 hover:text-slate-200 px-1"
+                  className="text-muted-foreground hover:text-foreground px-1"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -613,9 +613,9 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                     </div>
                     <div className="flex flex-col gap-1 font-mono text-[10px]">
                       <div className="flex justify-between">
-                        <span className="text-slate-500">Footprint</span>
+                        <span className="text-muted-foreground">Footprint</span>
                         <span
-                          className="text-slate-200 max-w-[160px] truncate"
+                          className="text-foreground max-w-[160px] truncate"
                           title={footprintStr || ''}
                         >
                           {footprintStr}
@@ -623,26 +623,26 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                       </div>
                       {aoiAreaKm2 && (
                         <div className="flex justify-between">
-                          <span className="text-slate-500">Area</span>
-                          <span className="text-slate-200">{aoiAreaKm2} km²</span>
+                          <span className="text-muted-foreground">Area</span>
+                          <span className="text-foreground">{aoiAreaKm2} km²</span>
                         </div>
                       )}
                       {centreStr && (
                         <div className="flex justify-between">
-                          <span className="text-slate-500">Centre</span>
-                          <span className="text-slate-200">{centreStr}</span>
+                          <span className="text-muted-foreground">Centre</span>
+                          <span className="text-foreground">{centreStr}</span>
                         </div>
                       )}
                       {activeCrs && (
                         <div className="flex justify-between">
-                          <span className="text-slate-500">CRS</span>
+                          <span className="text-muted-foreground">CRS</span>
                           <span className="text-teal-400">{activeCrs}</span>
                         </div>
                       )}
                       {Boolean(activeScene?.native_resolution_m) && (
                         <div className="flex justify-between">
-                          <span className="text-slate-500">Pixel size</span>
-                          <span className="text-slate-200">
+                          <span className="text-muted-foreground">Pixel size</span>
+                          <span className="text-foreground">
                             {String(activeScene?.native_resolution_m)} m
                           </span>
                         </div>
@@ -659,28 +659,28 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                       <div className="flex flex-col gap-1 font-mono text-[10px]">
                         {activeScene.datetime && (
                           <div className="flex justify-between">
-                            <span className="text-slate-500">Captured</span>
-                            <span className="text-slate-200">
+                            <span className="text-muted-foreground">Captured</span>
+                            <span className="text-foreground">
                               {activeScene.datetime.slice(0, 10)}
                             </span>
                           </div>
                         )}
                         {activeScene.collection && (
                           <div className="flex justify-between">
-                            <span className="text-slate-500">Platform</span>
-                            <span className="text-slate-200">{activeScene.collection}</span>
+                            <span className="text-muted-foreground">Platform</span>
+                            <span className="text-foreground">{activeScene.collection}</span>
                           </div>
                         )}
                         {activeScene.cloud_cover != null && (
                           <div className="flex justify-between">
-                            <span className="text-slate-500">Cloud cover</span>
-                            <span className="text-slate-200">{activeScene.cloud_cover}%</span>
+                            <span className="text-muted-foreground">Cloud cover</span>
+                            <span className="text-foreground">{activeScene.cloud_cover}%</span>
                           </div>
                         )}
                         {activeScene.aoi_coverage_pct != null && (
                           <div className="flex justify-between">
-                            <span className="text-slate-500">AOI Coverage</span>
-                            <span className="text-slate-200">
+                            <span className="text-muted-foreground">AOI Coverage</span>
+                            <span className="text-foreground">
                               {activeScene.aoi_coverage_pct}%
                             </span>
                           </div>
@@ -690,7 +690,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                   )}
                 </>
               ) : (
-                <div className="py-4 px-1 text-center text-slate-500 text-[11px]">
+                <div className="py-4 px-1 text-center text-muted-foreground text-[11px]">
                   No active selection. Draw a bounding box on the globe to inspect coordinates.
                 </div>
               )}
@@ -699,25 +699,25 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
           {/* Layers & Visualization Overlays */}
           {activeLayers.length > 0 && (
-            <div className="w-[250px] bg-[#090D14]/95 backdrop-blur-md border border-[#1E293B] rounded-lg p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
+            <div className="w-[250px] bg-card/95 backdrop-blur-md border border-border rounded-none p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
               <div
                 onClick={() => setOverlaysCollapsed((prev) => !prev)}
                 className={`flex justify-between items-center cursor-pointer select-none ${
                   overlaysCollapsed ? '' : 'mb-2'
                 }`}
               >
-                <span className="inline-flex items-center gap-1.5 font-semibold text-[11.5px] text-slate-100">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-[11.5px] text-foreground">
                   <Layers className="h-3.5 w-3.5 text-teal-400" />
                   Analysis Overlays
                 </span>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-[10px] text-sky-400 bg-sky-400/15 px-1.5 py-0.5 rounded-full">
+                  <span className="font-mono text-[10px] text-sky-400 bg-sky-400/15 px-1.5 py-0.5 rounded-none">
                     {activeLayers.length}
                   </span>
                   {overlaysCollapsed ? (
-                    <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                   ) : (
-                    <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
+                    <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
                   )}
                 </div>
               </div>
@@ -725,7 +725,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
               {!overlaysCollapsed && (
                 <>
                   <div className="mb-2">
-                    <label className="text-[10px] text-slate-400 flex justify-between mb-1">
+                    <label className="text-[10px] text-muted-foreground flex justify-between mb-1">
                       <span>Opacity</span>
                       <span>{Math.round(layerOpacity * 100)}%</span>
                     </label>
@@ -755,11 +755,11 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                     {activeLayers.map((l) => (
                       <div
                         key={l.id}
-                        className="flex items-center justify-between bg-[#111827] px-2 py-1.5 rounded border border-[#1E293B]"
+                        className="flex items-center justify-between bg-muted px-2 py-1.5 rounded-none border border-border"
                       >
                         <span
                           title={l.title}
-                          className="font-mono text-[10px] text-slate-200 truncate max-w-[175px]"
+                          className="font-mono text-[10px] text-foreground truncate max-w-[175px]"
                         >
                           {l.title}
                         </span>
@@ -767,7 +767,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                           type="button"
                           onClick={() => zoomToExtent(l.bbox)}
                           title="Zoom to raster bounds"
-                          className="text-slate-400 hover:text-sky-400 p-0.5 transition-colors"
+                          className="text-muted-foreground hover:text-sky-400 p-0.5 transition-colors"
                         >
                           <Search className="h-3 w-3" />
                         </button>

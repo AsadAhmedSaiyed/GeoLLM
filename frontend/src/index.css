@@ -4,48 +4,52 @@
 
 @layer base {
   :root {
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 11%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222 47% 11%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 224 76% 48%;
-    --radius: 0.5rem;
+    /* Base-Lyra Clean Light Palette (OKLCH) */
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.488 0.243 264.376);
+    --primary-foreground: oklch(0.97 0.014 254.604);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.97 0.014 254.604);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --radius: 0.625rem;
+    --code-highlight: #0284c7;
   }
 
   .dark {
-    --background: 224 71% 4%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 8%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222 47% 8%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 15%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 15%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 15%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 15%;
-    --input: 217 33% 15%;
-    --ring: 224 76% 48%;
+    /* Base-Lyra Tactical Dark Palette (OKLCH) */
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.424 0.199 265.638);
+    --primary-foreground: oklch(0.97 0.014 254.604);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.97 0.014 254.604);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --code-highlight: #38bdf8;
   }
 
   * {
@@ -55,14 +59,12 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'IBM Plex Sans', Inter, system-ui, sans-serif;
+    font-family: 'Inter', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     margin: 0;
     padding: 0;
     overflow: hidden;
     height: 100vh;
     width: 100vw;
-    background-color: #070a0f;
-    color: #e2e8f0;
   }
 }
 
@@ -72,14 +74,14 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #070a0f;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: var(--border);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--muted-foreground);
 }
 
 /* Pulsing badge animation for running container */
@@ -96,23 +98,27 @@
   animation: pulseGlow 2s infinite;
 }
 
-/* Markdown Typography in Cockpit Dark Mode */
+/* Markdown Typography */
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,
 .markdown-body h4 {
-  color: #f1f5f9;
   font-weight: 700;
   margin-top: 0.75rem;
   margin-bottom: 0.35rem;
   line-height: 1.35;
 }
 .markdown-body h1 { font-size: 1rem; }
-.markdown-body h2 { font-size: 0.9rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.2rem; }
-.markdown-body h3 { font-size: 0.82rem; color: #38bdf8; }
+.markdown-body h2 { font-size: 0.9rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
+.markdown-body h3 { font-size: 0.82rem; color: var(--code-highlight, #38bdf8); }
 .markdown-body p {
   margin-top: 0.35rem;
   margin-bottom: 0.35rem;
+}
+.markdown-body a {
+  color: var(--code-highlight, #38bdf8);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .markdown-body ul,
 .markdown-body ol {
@@ -126,15 +132,16 @@
 .markdown-body code {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 0.72rem;
-  background-color: #111827;
-  color: #38bdf8;
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  border: 1px solid #1e293b;
+  background-color: var(--muted);
+  color: var(--code-highlight, #38bdf8);
+  padding: 0.12rem 0.35rem;
+  border-radius: 0.2rem;
+  border: 1px solid var(--border);
+  font-weight: 600;
 }
 .markdown-body pre {
-  background-color: #05080e;
-  border: 1px solid #1e293b;
+  background-color: var(--card);
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
   padding: 0.6rem;
   overflow-x: auto;
@@ -145,7 +152,7 @@
   background: transparent;
   border: none;
   padding: 0;
-  color: #e2e8f0;
+  color: var(--foreground);
 }
 .markdown-body table {
   width: 100%;
@@ -155,14 +162,11 @@
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid #1e293b;
+  border: 1px solid var(--border);
   padding: 0.35rem 0.5rem;
   text-align: left;
 }
 .markdown-body th {
-  background-color: #111827;
-  color: #f1f5f9;
+  background-color: var(--muted);
   font-weight: 600;
 }
-
-
