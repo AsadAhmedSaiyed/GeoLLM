@@ -15,7 +15,6 @@ import { Terrain3DViewer } from '@/components/Terrain3DViewer';
 import { TimeSeriesPanel } from '@/components/TimeSeriesPanel';
 import { TiffPreviewModal, PreviewTarget } from '@/components/TiffPreviewModal';
 import { StacModal } from '@/components/StacModal';
-import { SupervisorDrawer } from '@/components/SupervisorDrawer';
 import { useResizableOverlay } from '@/hooks/useResizableOverlay';
 import {
   ResizablePanelGroup,
@@ -75,7 +74,6 @@ export function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [stacModalOpen, setStacModalOpen] = useState(false);
   const [stacInitialBbox, setStacInitialBbox] = useState<number[] | null>(null);
-  const [supervisorOpen, setSupervisorOpen] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingGlobeOverlay, setPendingGlobeOverlay] = useState<string | ArtifactItem | null>(
     null
@@ -83,6 +81,8 @@ export function App() {
   const [focusOutputsNonce, setFocusOutputsNonce] = useState(0);
   const [injectedPrompt, setInjectedPrompt] = useState<string | null>(null);
   const [isQueryFolded, setIsQueryFolded] = useState(false);
+  const [workspaceTurns, setWorkspaceTurns] = useState<Record<string, Array<{ role: 'user' | 'assistant'; content: string; timestamp?: number; type?: any; thumb_url?: string; fly_to_bbox?: number[]; follow_ups?: string[] }>>>({});
+  const [globeFlyToBbox, setGlobeFlyToBbox] = useState<number[] | null>(null);
 
   // Chat Workspace Overlay Hook: Anchored Left, Expands Right Only
   const {
@@ -120,14 +120,40 @@ export function App() {
   const {
     tasks,
     setTasks,
-    feedItems,
-    setFeedItems,
     startSlotStream,
     stopSlotStream,
     resetSlotState,
   } = useMultiTaskStreams({
     onTaskResumed: handleTaskResumed,
   });
+
+  // Load durable conversation history when switching workspaces
+  useEffect(() => {
+    if (!activeContainerId) return;
+    let cancelled = false;
+    api
+      .getWorkspaceConversation(activeContainerId)
+      .then((res) => {
+        if (cancelled || !res.turns) return;
+        setWorkspaceTurns((prev) => {
+          if ((prev[activeContainerId] || []).length > 0) return prev;
+          return {
+            ...prev,
+            [activeContainerId]: res.turns.map((t) => ({
+              role: t.role === 'assistant' ? 'assistant' : 'user',
+              content: t.content,
+              timestamp: t.timestamp,
+              thumb_url: t.thumb_url,
+              fly_to_bbox: t.fly_to_bbox,
+            })),
+          };
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContainerId]);
 
   const activeTask = tasks[activeContainerId] || DEFAULT_TASK_STATE;
 
@@ -241,63 +267,106 @@ export function App() {
     }
   };
 
-  // Submit Task Dispatcher
+  // Submit Task Dispatcher via Unified Conversational Router
   const dispatchTaskToSlot = async (question: string, targetSlotId?: string) => {
     if (!activeWorkspace) {
       toast.error('No active workspace selected. Please click "+ New" above to create a workspace first.');
       return;
     }
 
+    const targetContainerId = targetSlotId || activeWorkspace.containerId;
     setIsSubmitting(true);
-    try {
-      const targetContainerId = targetSlotId || activeWorkspace.containerId;
 
-      setTasks((prev) => ({
-        ...prev,
-        [targetContainerId]: {
-          ...DEFAULT_TASK_STATE,
-          status: 'running',
-          question,
-          step: 'Initializing Container Sandbox',
-          elapsed: 0,
-        },
+    // Optimistically record user turn in local state
+    setWorkspaceTurns((prev) => ({
+      ...prev,
+      [targetContainerId]: [
+        ...(prev[targetContainerId] || []),
+        { role: 'user', content: question, timestamp: Date.now() },
+      ],
+    }));
+
+    try {
+      const history = (workspaceTurns[targetContainerId] || []).map((t) => ({
+        role: t.role,
+        content: t.content,
       }));
 
-      setFeedItems((prev) => [
-        ...prev,
-        {
-          type: 'progress',
-          taskId: targetContainerId,
-          text: `Dispatched: "${question}"`,
-        },
-      ]);
-
-      const res = await api.submitTask({
-        question,
+      const res = await api.sendWorkspaceMessage(targetContainerId, {
+        message: question,
+        history,
         files: selectedFiles.join(','),
-        task_id: targetContainerId,
       });
 
-      // Automatically clear selected files once task is submitted
-      setSelectedFiles([]);
+      // Automatically clear selected files once dispatched
+      if (selectedFiles.length > 0) setSelectedFiles([]);
 
-      if (res.error) {
-        toast.error('Task submission failed', { description: res.error });
+      if (res.type === 'task_delegated') {
+        toast.info(`Geospatial task delegated to Container #${targetContainerId.replace('task_', '')}`);
         setTasks((prev) => ({
           ...prev,
           [targetContainerId]: {
-            ...(prev[targetContainerId] || DEFAULT_TASK_STATE),
-            status: 'idle',
-            step: 'Ready',
+            ...DEFAULT_TASK_STATE,
+            status: 'running',
+            question,
+            step: 'Starting Container Sandbox',
+            elapsed: 0,
           },
         }));
+        startSlotStream(targetContainerId, 0);
+      } else if (res.type === 'workspace_busy') {
+        toast.warning(res.reply || 'Workspace is currently busy');
+        setWorkspaceTurns((prev) => ({
+          ...prev,
+          [targetContainerId]: [
+            ...(prev[targetContainerId] || []),
+            {
+              role: 'assistant',
+              content: res.reply || 'Workspace container is currently executing another task.',
+              type: 'clarification',
+              follow_ups: [
+                'Switch to Workspace 2',
+                'Wait for this task to finish',
+              ],
+            },
+          ],
+        }));
+      } else if (res.type === 'visual_reply') {
+        toast.success('Visual inspection completed by VLM');
+        if (res.fly_to_bbox && res.fly_to_bbox.length >= 4) {
+          setGlobeFlyToBbox(res.fly_to_bbox);
+        }
+        setWorkspaceTurns((prev) => ({
+          ...prev,
+          [targetContainerId]: [
+            ...(prev[targetContainerId] || []),
+            {
+              role: 'assistant',
+              content: res.reply || '',
+              type: 'visual_reply',
+              thumb_url: res.thumb_url,
+              fly_to_bbox: res.fly_to_bbox,
+              follow_ups: res.follow_ups,
+            },
+          ],
+        }));
       } else {
-        const assignedId = res.task_id || targetContainerId;
-        toast.success(`Task dispatched to Container #${assignedId.replace('task_', '')}`);
-        startSlotStream(assignedId, 0);
+        // Conversational or clarification reply
+        setWorkspaceTurns((prev) => ({
+          ...prev,
+          [targetContainerId]: [
+            ...(prev[targetContainerId] || []),
+            {
+              role: 'assistant',
+              content: res.reply || '',
+              type: res.type,
+              follow_ups: res.follow_ups,
+            },
+          ],
+        }));
       }
     } catch (err) {
-      toast.error('Task execution error', {
+      toast.error('Assistant error', {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -416,7 +485,6 @@ export function App() {
           setStacInitialBbox(null);
           setStacModalOpen(true);
         }}
-        onOpenSupervisor={() => setSupervisorOpen((prev) => !prev)}
       />
 
       {/* Main Responsive Viewport: Full-Size 3D Map with Floating Chat Overlay */}
@@ -443,6 +511,7 @@ export function App() {
                   onPendingOverlayConsumed={() => setPendingGlobeOverlay(null)}
                   onPreviewArtifact={openArtifactPreview}
                   focusOutputsNonce={focusOutputsNonce}
+                  flyToBbox={globeFlyToBbox}
                 />
               </div>
 
@@ -535,6 +604,13 @@ export function App() {
                             <SingleWorkerSlot
                               taskId={activeContainerId}
                               task={activeTask}
+                              conversationTurns={workspaceTurns[activeContainerId] || []}
+                              onSelectFollowUp={(prompt) => {
+                                setInjectedPrompt(prompt);
+                              }}
+                              onFlyToBbox={(bbox) => {
+                                setGlobeFlyToBbox(bbox);
+                              }}
                               onApprovePlan={handleApprovePlan}
                               onRevisePlan={handleRevisePlan}
                               onCancelTask={handleCancelTask}
@@ -603,14 +679,6 @@ export function App() {
           toast.success(`Staged ${info.filename || 'GeoTIFF'} (${info.size_mb ?? '?'} MB) to /data`);
         }}
         onNotify={handleNotify}
-      />
-
-      {/* AI Supervisor Drawer */}
-      <SupervisorDrawer
-        isOpen={supervisorOpen}
-        onClose={() => setSupervisorOpen(false)}
-        feedItems={feedItems}
-        onDispatchTask={(q) => dispatchTaskToSlot(q)}
       />
 
       {/* Three.js 3D Terrain & LiDAR Point Cloud Viewer Modal */}

@@ -228,3 +228,52 @@ def cleanup_expired_workspaces(runs_dir: Optional[Path] = None, ttl_hours: float
 
     return cleaned_count
 
+
+def append_conversation_turn(
+    task_id: str,
+    role: str,
+    content: str,
+    runs_dir: Optional[Path] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Appends a turn to runs/task_X/conversation.jsonl so chat history is durable."""
+    ws = get_workspace_dir(task_id, runs_dir)
+    ws.mkdir(parents=True, exist_ok=True)
+    conv_file = ws / "conversation.jsonl"
+    turn = {
+        "role": role,
+        "content": content,
+        "timestamp": time.time(),
+    }
+    if extra:
+        turn.update(extra)
+    try:
+        import json
+        with open(conv_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(turn) + "\n")
+    except Exception:
+        pass
+
+
+def load_conversation(task_id: str, runs_dir: Optional[Path] = None) -> List[dict]:
+    """Loads durable conversation turns for a workspace."""
+    ws = get_workspace_dir(task_id, runs_dir)
+    conv_file = ws / "conversation.jsonl"
+    turns = []
+    if not conv_file.is_file():
+        return turns
+    try:
+        import json
+        with open(conv_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        turns.append(json.loads(line))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return turns
+
+

@@ -140,8 +140,8 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
               onKeyDown={handleKeyDown}
               placeholder={
                 hasActiveWorkspace
-                  ? "Ask a geospatial query (e.g., 'Compare 2016 and 2024 Landsat images and map changes with high-res visualization')…"
-                  : "Create or select a workspace first (+ New) to start an analysis..."
+                  ? "Ask a question, inspect outputs, or describe a geospatial analysis…"
+                  : "Create or select a workspace first (+ New) to start…"
               }
               disabled={!hasActiveWorkspace || isSubmitting}
               className="w-full h-full min-h-[48px] bg-background border border-border rounded-none p-2.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground font-mono resize-none focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 overflow-y-auto"
@@ -208,7 +208,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
               ) : (
                 <>
                   <Play className="h-3.5 w-3.5 fill-current" />
-                  <span>Run Analysis</span>
+                  <span>Send</span>
                 </>
               )}
             </Button>

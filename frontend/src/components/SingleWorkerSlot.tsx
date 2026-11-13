@@ -24,6 +24,7 @@ import {
   RotateCcw,
   ArrowDown,
   ArrowUp,
+  Map,
 } from 'lucide-react';
 
 const getBasename = (p?: string | null): string => {
@@ -31,9 +32,22 @@ const getBasename = (p?: string | null): string => {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 };
 
+export interface ConversationTurnItem {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: number;
+  type?: 'conversational_reply' | 'visual_reply' | 'task_delegated' | 'clarification';
+  thumb_url?: string;
+  fly_to_bbox?: number[];
+  follow_ups?: string[];
+}
+
 export interface SingleWorkerSlotProps {
   taskId: string;
   task: TaskState;
+  conversationTurns?: ConversationTurnItem[];
+  onSelectFollowUp?: (prompt: string) => void;
+  onFlyToBbox?: (bbox: number[]) => void;
   onApprovePlan?: (taskId: string) => void;
   onRevisePlan?: (taskId: string, feedback: string) => void;
   onCancelTask?: (taskId: string) => void;
@@ -64,6 +78,9 @@ export interface SingleWorkerSlotProps {
 export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   taskId,
   task,
+  conversationTurns = [],
+  onSelectFollowUp,
+  onFlyToBbox,
   onApprovePlan,
   onRevisePlan,
   onCancelTask,
@@ -391,7 +408,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
           </span>
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-[13px] text-foreground break-words">
-              {task.question ? task.question : `Sandbox Slot #${taskNum} (Idle)`}
+              {task.question && !task.question.startsWith('Slot idle')
+                ? task.question
+                : 'GeoLLM Assistant Ready'}
             </div>
             <div className="font-mono text-[11px] text-muted-foreground mt-0.5">
               Elapsed: {formatSeconds(task)} • Status:{' '}
@@ -443,6 +462,80 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
           )}
         </div>
       </div>
+
+      {/* 1b. Conversational Dialogue Stream (General Chat, VLM Visual Inspection & Follow-Ups) */}
+      {conversationTurns.length > 0 && (
+        <div className="flex flex-col gap-2.5">
+          {conversationTurns.map((turn, tIdx) => {
+            const isUser = turn.role === 'user';
+            return (
+              <div
+                key={`turn-${tIdx}`}
+                className={`p-3 rounded-none border text-xs leading-relaxed ${
+                  isUser
+                    ? 'bg-sky-500/10 border-sky-500/30 text-foreground ml-4'
+                    : 'bg-card border-border text-foreground mr-2'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5 font-mono text-[10.5px]">
+                  <span className={isUser ? 'text-sky-400 font-bold' : 'text-teal-400 font-bold'}>
+                    {isUser ? 'You' : 'GeoLLM Assistant'}
+                  </span>
+                  {turn.type && (
+                    <span className="text-muted-foreground uppercase text-[9.5px]">
+                      {turn.type.replace('_', ' ')}
+                    </span>
+                  )}
+                </div>
+
+                <div className="prose prose-invert prose-sm max-w-none">
+                  <MarkdownView content={turn.content} />
+                </div>
+
+                {/* VLM Inspection Thumbnail Crop */}
+                {turn.thumb_url && (
+                  <div className="mt-2.5 p-2 bg-muted border border-border rounded-none inline-block">
+                    <img
+                      src={turn.thumb_url}
+                      alt="VLM Visual Crop"
+                      className="max-h-[220px] max-w-full rounded-none border border-border"
+                    />
+                    {turn.fly_to_bbox && onFlyToBbox && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onFlyToBbox(turn.fly_to_bbox!)}
+                        className="mt-1.5 h-6 text-[10.5px] px-2 gap-1 text-teal-400 hover:text-teal-300"
+                      >
+                        <Map className="h-3 w-3" />
+                        <span>Center & Zoom Globe on this feature</span>
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {/* Interactive Contextual Follow-Up Suggestions */}
+                {turn.follow_ups && turn.follow_ups.length > 0 && onSelectFollowUp && (
+                  <div className="mt-2.5 pt-2 border-t border-border/70 flex flex-wrap gap-1.5">
+                    {turn.follow_ups.map((fu, fuIdx) => (
+                      <button
+                        key={`fu-${tIdx}-${fuIdx}`}
+                        type="button"
+                        onClick={() => onSelectFollowUp(fu)}
+                        className="text-[10.5px] font-mono px-2 py-0.5 bg-muted hover:bg-[#0F766E]/30 text-foreground hover:text-[#2DD4BF] border border-border hover:border-[#14B8A6]/50 transition-colors cursor-pointer"
+                      >
+                        ↳ {fu}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
 
       {/* 2. Input Quality Gate Status Card */}
       {inputGateActivity && (

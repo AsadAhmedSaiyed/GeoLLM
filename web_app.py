@@ -88,6 +88,13 @@ class TaskSubmission(BaseModel):
     bbox: Optional[List[float]] = None
     task_id: Optional[str] = None
 
+class WorkspaceMessagePayload(BaseModel):
+    message: str
+    history: List[Dict[str, str]] = []
+    files: str = ""
+    bbox: Optional[List[float]] = None
+    bands: Optional[str] = None
+
 class RevisionPayload(BaseModel):
     feedback: str
 
@@ -213,6 +220,163 @@ async def submit_task(payload: TaskSubmission):
     if task_id is None:
         return JSONResponse({"error": "All 3 task slots are busy."}, status_code=429)
     return JSONResponse({"task_id": task_id, "status": "running"})
+
+
+@app.get("/api/workspace/{task_id}/conversation")
+async def get_workspace_conversation(task_id: str):
+    """Loads durable conversation turns for this workspace."""
+    from harness.workspace import load_conversation
+    turns = load_conversation(task_id, runs_dir=RUNS_DIR)
+    return JSONResponse({"turns": turns})
+
+
+@app.post("/api/workspace/{task_id}/message")
+async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayload):
+    """Unified conversational assistant endpoint.
+    
+    Classifies user intent, checks workspace container availability,
+    runs VLM visual inspections or contextual answers, or delegates complex tasks.
+    """
+    from harness import router
+    from harness.workspace import append_conversation_turn
+
+    ts = task_manager.get_task(task_id)
+    if not ts:
+        return JSONResponse({"error": f"Unknown workspace: {task_id}"}, status_code=404)
+
+    user_text = payload.message.strip()
+    if not user_text:
+        return JSONResponse({"error": "Message is empty"}, status_code=400)
+
+    # Persist user turn
+    append_conversation_turn(task_id, "user", user_text, runs_dir=RUNS_DIR)
+
+    # 1. Classify incoming message
+    attached_files = [f.strip() for f in payload.files.split(",") if f.strip()]
+    classification = await asyncio.to_thread(
+        router.classify_message,
+        user_message=user_text,
+        history=payload.history,
+        task_id=task_id,
+        runs_dir=RUNS_DIR,
+        task_state=ts,
+        attached_files=attached_files,
+    )
+    category = classification.get("category", "general_chat")
+
+    # 2. Category D: Clarification needed
+    if category == "clarification_needed":
+        q = classification.get("clarification_question") or (
+            "Could you specify the target geographic area (coordinates/AOI) or dates for this analysis?"
+        )
+        append_conversation_turn(task_id, "assistant", q, runs_dir=RUNS_DIR, extra={"type": "clarification"})
+        return JSONResponse({
+            "type": "clarification_needed",
+            "reply": q,
+            "category": category,
+        })
+
+    # 3. Category A: General Chat / Remote Sensing concepts
+    if category == "general_chat":
+        res = await asyncio.to_thread(
+            router.handle_general_chat,
+            user_message=user_text,
+            history=payload.history,
+            task_id=task_id,
+            task_state=ts,
+        )
+        append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
+        return JSONResponse(res)
+
+    # 4. Category B: Questions on existing analysis results
+    if category == "contextual_inquiry":
+        res = await asyncio.to_thread(
+            router.handle_contextual_inquiry,
+            user_message=user_text,
+            history=payload.history,
+            task_id=task_id,
+            runs_dir=RUNS_DIR,
+            task_state=ts,
+        )
+        append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
+        return JSONResponse(res)
+
+    # 5. Category V: On-demand VLM Visual Inspection / Zoom / Search
+    if category == "visual_inspection":
+        res = await asyncio.to_thread(
+            router.handle_visual_inspection,
+            user_message=user_text,
+            target_artifact=classification.get("target_artifact"),
+            focus=classification.get("inspection_focus"),
+            task_id=task_id,
+            runs_dir=RUNS_DIR,
+            task_state=ts,
+        )
+        append_conversation_turn(
+            task_id,
+            "assistant",
+            res["reply"],
+            runs_dir=RUNS_DIR,
+            extra={
+                "type": "visual_reply",
+                "thumb_url": res.get("thumb_url"),
+                "fly_to_bbox": res.get("fly_to_bbox"),
+            },
+        )
+        return JSONResponse(res)
+
+    # 6. Category C: Complex Geospatial Task -> Check container availability
+    if ts.status in ("running", "pending_approval", "pending_stac_approval"):
+        busy_msg = (
+            f"Workspace **{task_id}** is currently busy running an analysis (*{ts.step}*). "
+            "To prevent overwriting active calculations, please wait for this run to finish or switch to another workspace."
+        )
+        return JSONResponse({
+            "type": "workspace_busy",
+            "task_id": task_id,
+            "current_step": ts.step,
+            "elapsed": round((ts.ended or time.time()) - (ts.started or time.time()), 1),
+            "reply": busy_msg,
+            "queued_prompt": user_text,
+        })
+
+    # Prepare file args and overrides for sub-agent container execution
+    selected_files = [f.strip() for f in payload.files.split(",") if f.strip()]
+    file_args = []
+    for f in selected_files:
+        p = Path(f) if Path(f).exists() else DATA_DIR / f
+        if p.exists():
+            file_args.append(str(p))
+
+    overrides = {}
+    if payload.bbox and len(payload.bbox) >= 4:
+        overrides["bbox"] = [float(x) for x in payload.bbox[:4]]
+    if payload.bands:
+        for part in filter(None, payload.bands.split(",")):
+            role, _, num = part.partition("=")
+            role = role.strip()
+            num = num.strip()
+            if role in ROLES and num.isdigit():
+                overrides[role] = int(num)
+
+    # Dispatch to sub-agent
+    started_tid = task_manager.submit_task(user_text, file_args, task_id=task_id, overrides=overrides)
+    if started_tid is None:
+        return JSONResponse({"error": "Failed to allocate container slot."}, status_code=500)
+
+    append_conversation_turn(
+        task_id,
+        "assistant",
+        f"Delegated complex geospatial task to specialized container sub-agent: *{user_text}*",
+        runs_dir=RUNS_DIR,
+        extra={"type": "task_delegated"},
+    )
+    return JSONResponse({
+        "type": "task_delegated",
+        "task_id": task_id,
+        "status": "running",
+    })
+
 
 
 @app.get("/api/tasks")

@@ -4,7 +4,7 @@ import { TaskStatus } from '@/types/sse';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/components/theme-provider';
-import { Layers, Plus, Terminal, Satellite, Bot, CheckCircle2, AlertCircle, Clock, X, Sun, Moon } from 'lucide-react';
+import { Layers, Plus, Terminal, Satellite, CheckCircle2, AlertCircle, Clock, X, Sun, Moon } from 'lucide-react';
 
 interface TaskHeaderProps {
   workspaces: Workspace[];
@@ -16,7 +16,6 @@ interface TaskHeaderProps {
   isConsoleOpen: boolean;
   onToggleConsole: () => void;
   onOpenStac: () => void;
-  onOpenSupervisor: () => void;
 }
 
 export const TaskHeader: React.FC<TaskHeaderProps> = ({
@@ -29,7 +28,6 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
   isConsoleOpen,
   onToggleConsole,
   onOpenStac,
-  onOpenSupervisor,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const [isCreating, setIsCreating] = useState(false);
@@ -168,17 +166,6 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
         >
           <Satellite className="h-3.5 w-3.5 text-teal-400" />
           <span>STAC</span>
-        </Button>
-
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onOpenSupervisor}
-          className="h-7 text-xs gap-1.5"
-          title="Open AI Supervisor"
-        >
-          <Bot className="h-3.5 w-3.5 text-purple-400" />
-          <span>Supervisor</span>
         </Button>
 
         <Button

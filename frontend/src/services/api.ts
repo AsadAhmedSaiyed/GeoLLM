@@ -189,5 +189,41 @@ export const api = {
       body: JSON.stringify({ message, history }),
     });
   },
+
+  // Unified Conversational Workspace Assistant
+  async sendWorkspaceMessage(
+    taskId: string,
+    payload: {
+      message: string;
+      history?: Array<{ role: string; content: string }>;
+      files?: string;
+      bbox?: number[];
+      bands?: string;
+    }
+  ): Promise<{
+    type: 'conversational_reply' | 'visual_reply' | 'task_delegated' | 'workspace_busy' | 'clarification_needed';
+    reply?: string;
+    follow_ups?: string[];
+    thumb_url?: string;
+    fly_to_bbox?: [number, number, number, number] | number[];
+    artifact?: string;
+    task_id?: string;
+    status?: string;
+    current_step?: string;
+    elapsed?: number;
+    queued_prompt?: string;
+    error?: string;
+  }> {
+    return request(`/api/workspace/${encodeURIComponent(taskId)}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getWorkspaceConversation(taskId: string): Promise<{ turns: Array<{ role: string; content: string; timestamp?: number; thumb_url?: string; fly_to_bbox?: number[] }> }> {
+    return request(`/api/workspace/${encodeURIComponent(taskId)}/conversation`);
+  },
 };
+
 

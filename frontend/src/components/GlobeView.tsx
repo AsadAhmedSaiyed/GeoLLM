@@ -38,6 +38,7 @@ export interface GlobeViewProps {
   onPendingOverlayConsumed?: () => void;
   onPreviewArtifact?: (artifact: string | ArtifactItem) => void;
   focusOutputsNonce?: number;
+  flyToBbox?: number[] | null;
 }
 
 interface ActiveOverlayLayer {
@@ -111,6 +112,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
   onPendingOverlayConsumed,
   onPreviewArtifact,
   focusOutputsNonce = 0,
+  flyToBbox = null,
 }) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<maplibregl.Map | null>(null);
@@ -423,6 +425,20 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
       void loadGeoTiffOverlay(firstTiff);
     }
   }, [focusOutputsNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // VLM inspection fly-to directive
+  useEffect(() => {
+    if (!flyToBbox || flyToBbox.length < 4) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    map.fitBounds(
+      [
+        [flyToBbox[0], flyToBbox[1]],
+        [flyToBbox[2], flyToBbox[3]],
+      ],
+      { padding: 100, duration: 1500 }
+    );
+  }, [flyToBbox]);
 
   // Load or replace a GeoTIFF overlay on the globe (replaces overlapping rasters at the same location)
   const loadGeoTiffOverlay = useCallback(
