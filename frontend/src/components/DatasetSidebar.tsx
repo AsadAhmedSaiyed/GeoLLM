@@ -57,9 +57,9 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
   const getFileIcon = (cat: FileCategory) => {
     switch (cat) {
       case 'raster':
-        return <FileImage className="h-3.5 w-3.5 text-primary" />;
+        return <FileImage className="h-3.5 w-3.5 text-sky-400" />;
       case 'vector':
-        return <FileCode className="h-3.5 w-3.5 text-[#14B8A6]" />;
+        return <FileCode className="h-3.5 w-3.5 text-sky-400" />;
       case 'lidar':
         return <Box className="h-3.5 w-3.5 text-purple-400" />;
       default:
@@ -87,19 +87,19 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
       {/* Catalog Header */}
       <div className="p-3 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2 font-semibold text-foreground">
-          <Folder className="h-4 w-4 text-primary" />
+          <Folder className="h-4 w-4 text-sky-400" />
           <span>Data Catalog</span>
           <span className="text-[10px] text-muted-foreground font-mono">({files.length})</span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={onRefreshFiles}
-            className="p-1 rounded-none text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
             title="Refresh files"
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
-          <label className="p-1 rounded-none text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer">
+          <label className="p-1 rounded-lg text-muted-foreground hover:text-sky-400 hover:bg-muted cursor-pointer">
             <Upload className="h-3.5 w-3.5" />
             <input type="file" multiple className="hidden" onChange={handleFileInput} />
           </label>
@@ -124,9 +124,9 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
             <button
               key={cat}
               onClick={() => setCategory(cat)}
-              className={`px-2 py-0.5 rounded-none text-[10px] font-medium transition-colors cursor-pointer capitalize ${
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer capitalize ${
                 category === cat
-                  ? 'bg-primary/15 text-primary border border-primary/40'
+                  ? 'bg-primary/15 text-sky-400 border border-primary/40'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
             >
@@ -144,7 +144,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
             <button
               type="button"
               onClick={onClearSelectedFiles}
-              className="flex items-center gap-1 text-[10px] font-semibold text-destructive hover:underline cursor-pointer bg-destructive/10 px-1.5 py-0.5 rounded-none border border-destructive/20"
+              className="flex items-center gap-1 text-[10px] font-semibold text-destructive hover:underline cursor-pointer bg-destructive/10 px-1.5 py-0.5 rounded-lg border border-destructive/20"
               title="Deselect all files"
             >
               <XCircle className="h-3 w-3" />
@@ -169,7 +169,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
               <div
                 key={f.name}
                 onClick={() => onToggleFile(f.name)}
-                className={`flex items-center gap-2 p-2 rounded-none border cursor-pointer transition-all ${
+                className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-all ${
                   isSelected
                     ? 'bg-primary/15 border-primary/50 text-foreground'
                     : 'bg-background border-border text-foreground hover:border-primary/50'
@@ -179,7 +179,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
                   type="checkbox"
                   checked={isSelected}
                   onChange={() => {}} // handled by parent div
-                  className="rounded-none border-border bg-background text-primary focus:ring-0 cursor-pointer"
+                  className="rounded-lg border-border bg-background text-sky-400 focus:ring-0 cursor-pointer"
                 />
                 {getFileIcon(cat)}
                 <div className="flex-1 min-w-0">
@@ -197,7 +197,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
                       onInspectTiff(`data/${f.name}`);
                     }}
                     title="Inspect GeoTIFF Bands & Colormap"
-                    className="p-1 rounded-none hover:bg-muted text-muted-foreground hover:text-primary transition-colors shrink-0"
+                    className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-sky-400 transition-colors shrink-0"
                   >
                     <Eye className="h-3.5 w-3.5" />
                   </button>
@@ -244,7 +244,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
             ) : (
               <button
                 onClick={() => setConfirmDelete(true)}
-                className="p-1 rounded-none text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer transition-colors"
+                className="p-1 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer transition-colors"
                 title="Delete workspace and free container slot"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -253,7 +253,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
           </div>
 
           {confirmDelete && (
-            <div className="flex items-center gap-1.5 text-[10px] text-destructive bg-destructive/10 p-1.5 rounded-none border border-destructive/30">
+            <div className="flex items-center gap-1.5 text-[10px] text-destructive bg-destructive/10 p-1.5 rounded-lg border border-destructive/30">
               <AlertTriangle className="h-3 w-3 shrink-0" />
               <span>Frees Docker container and clears workspace state.</span>
             </div>

@@ -15,8 +15,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       outline: 'border border-border bg-background hover:bg-muted hover:text-foreground',
       secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
       ghost: 'hover:bg-muted hover:text-foreground',
-      link: 'text-primary underline-offset-4 hover:underline',
-      teal: 'bg-[#0F766E] text-white hover:bg-[#14B8A6] shadow-xs',
+      link: 'text-sky-400 underline-offset-4 hover:underline',
+      teal: 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-xs',
     };
 
     const sizes: Record<string, string> = {
@@ -30,7 +30,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          'inline-flex items-center justify-center rounded-none font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px disabled:pointer-events-none disabled:opacity-50 cursor-pointer',
+          'inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px disabled:pointer-events-none disabled:opacity-50 cursor-pointer',
           variants[variant] || variants.default,
           sizes[size] || sizes.default,
           className

@@ -4,7 +4,16 @@ import { ArtifactItem } from '@/types/sse';
 import { MarkdownView } from '@/components/MarkdownView';
 import { ValidationViewer } from '@/components/ValidationViewer';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import {
+  ChatMessageList,
+  ChatMessage,
+  ChatMessageBubble,
+  ChatMessageMetadata,
+  ChatSystemMessage,
+  Timestamp,
+} from '@/components/ui/chat';
 import {
   Satellite,
   ClipboardList,
@@ -22,6 +31,7 @@ import {
   Microscope,
   Square,
   RotateCcw,
+  Trash2,
   ArrowDown,
   ArrowUp,
   Map,
@@ -33,10 +43,13 @@ const getBasename = (p?: string | null): string => {
 };
 
 export interface ConversationTurnItem {
+  id?: string;
+  seq?: number;
   role: 'user' | 'assistant';
   content: string;
   timestamp?: number;
   type?: 'conversational_reply' | 'visual_reply' | 'task_delegated' | 'clarification';
+  question?: string;
   thumb_url?: string;
   fly_to_bbox?: number[];
   follow_ups?: string[];
@@ -52,6 +65,7 @@ export interface SingleWorkerSlotProps {
   onRevisePlan?: (taskId: string, feedback: string) => void;
   onCancelTask?: (taskId: string) => void;
   onResetTask?: (taskId: string) => void;
+  onClearHistory?: (taskId: string) => void;
   onPreviewFile?: (artifact: string | ArtifactItem) => void;
   onSwitchToGlobe?: (artifact?: string | ArtifactItem) => void;
   onSeeOutputs?: () => void;
@@ -85,6 +99,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   onRevisePlan,
   onCancelTask,
   onResetTask,
+  onClearHistory,
   onPreviewFile: _onPreviewFile,
   onSwitchToGlobe: _onSwitchToGlobe,
   onSeeOutputs,
@@ -398,143 +413,52 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     });
   };
 
-  return (
-    <div className="flex flex-col gap-3">
-      {/* 1. Task Header Card */}
-      <div className="bg-muted border border-border rounded-none p-3">
-        <div className="flex items-center gap-2.5">
-          <span className="font-mono bg-[#0F766E] text-white px-2 py-0.5 rounded-none text-[11px] font-bold shrink-0">
-            #{taskNum}
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="font-semibold text-[13px] text-foreground break-words">
-              {task.question && !task.question.startsWith('Slot idle')
-                ? task.question
-                : 'GeoLLM Assistant Ready'}
-            </div>
-            <div className="font-mono text-[11px] text-muted-foreground mt-0.5">
-              Elapsed: {formatSeconds(task)} • Status:{' '}
-              <span
-                className="font-semibold"
-                style={{
-                  color:
-                    task.status === 'running'
-                      ? '#38BDF8'
-                      : task.status === 'done'
-                      ? '#10B981'
-                      : task.status === 'failed'
-                      ? '#F87171'
-                      : '#E2E8F0',
-                }}
-              >
-                {statusLabel}
-              </span>
-            </div>
-          </div>
+  const sortedTurns = useMemo(() => {
+    return [...conversationTurns].sort((a, b) => {
+      const ta = a.timestamp ?? 0;
+      const tb = b.timestamp ?? 0;
+      if (ta !== tb) return ta - tb;
+      return (a.seq ?? 0) - (b.seq ?? 0);
+    });
+  }, [conversationTurns]);
 
-          {(task.status === 'running' ||
-            task.status === 'pending_approval' ||
-            task.status === 'pending_stac_approval') && (
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              className="h-7 px-2.5 text-[11px] bg-rose-500/20 border border-rose-500 text-rose-300 hover:bg-rose-500/30 shrink-0 gap-1"
-              onClick={() => onCancelTask?.(taskId)}
-            >
-              <Square className="h-3 w-3 fill-current" />
-              <span>Abort Task</span>
-            </Button>
-          )}
+  const latestDelegatedIdx = useMemo(() => {
+    let idx = -1;
+    sortedTurns.forEach((t, i) => {
+      if (t.type === 'task_delegated') idx = i;
+    });
+    return idx;
+  }, [sortedTurns]);
 
-          {(task.status === 'failed' || task.status === 'done' || task.status === 'partial') && (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="h-7 px-2.5 text-[11px] bg-muted border border-border text-foreground hover:text-white hover:border-slate-400 shrink-0 gap-1 cursor-pointer"
-              onClick={() => onResetTask?.(taskId)}
-              title="Reset this container sandbox and clear outputs"
-            >
-              <RotateCcw className="h-3 w-3" />
-              <span>Reset Slot</span>
-            </Button>
-          )}
-        </div>
-      </div>
+  const hasTaskRunContent = Boolean(
+    inputGateActivity ||
+      task.status !== 'idle' ||
+      task.answer ||
+      task.plan ||
+      task.stacPreview ||
+      artifacts.length > 0 ||
+      relevantActivities.length > 0
+  );
 
-      {/* 1b. Conversational Dialogue Stream (General Chat, VLM Visual Inspection & Follow-Ups) */}
-      {conversationTurns.length > 0 && (
-        <div className="flex flex-col gap-2.5">
-          {conversationTurns.map((turn, tIdx) => {
-            const isUser = turn.role === 'user';
-            return (
-              <div
-                key={`turn-${tIdx}`}
-                className={`p-3 rounded-none border text-xs leading-relaxed ${
-                  isUser
-                    ? 'bg-sky-500/10 border-sky-500/30 text-foreground ml-4'
-                    : 'bg-card border-border text-foreground mr-2'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1.5 font-mono text-[10.5px]">
-                  <span className={isUser ? 'text-sky-400 font-bold' : 'text-teal-400 font-bold'}>
-                    {isUser ? 'You' : 'GeoLLM Assistant'}
-                  </span>
-                  {turn.type && (
-                    <span className="text-muted-foreground uppercase text-[9.5px]">
-                      {turn.type.replace('_', ' ')}
-                    </span>
-                  )}
-                </div>
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-                <div className="prose prose-invert prose-sm max-w-none">
-                  <MarkdownView content={turn.content} />
-                </div>
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [sortedTurns.length]);
 
-                {/* VLM Inspection Thumbnail Crop */}
-                {turn.thumb_url && (
-                  <div className="mt-2.5 p-2 bg-muted border border-border rounded-none inline-block">
-                    <img
-                      src={turn.thumb_url}
-                      alt="VLM Visual Crop"
-                      className="max-h-[220px] max-w-full rounded-none border border-border"
-                    />
-                    {turn.fly_to_bbox && onFlyToBbox && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => onFlyToBbox(turn.fly_to_bbox!)}
-                        className="mt-1.5 h-6 text-[10.5px] px-2 gap-1 text-teal-400 hover:text-teal-300"
-                      >
-                        <Map className="h-3 w-3" />
-                        <span>Center & Zoom Globe on this feature</span>
-                      </Button>
-                    )}
-                  </div>
-                )}
+  const statusBadgeVariant: 'running' | 'success' | 'destructive' | 'warning' | 'secondary' =
+    task.status === 'running'
+      ? 'running'
+      : task.status === 'done'
+        ? 'success'
+        : task.status === 'failed'
+          ? 'destructive'
+          : task.status === 'pending_approval' || task.status === 'pending_stac_approval'
+            ? 'warning'
+            : 'secondary';
 
-                {/* Interactive Contextual Follow-Up Suggestions */}
-                {turn.follow_ups && turn.follow_ups.length > 0 && onSelectFollowUp && (
-                  <div className="mt-2.5 pt-2 border-t border-border/70 flex flex-wrap gap-1.5">
-                    {turn.follow_ups.map((fu, fuIdx) => (
-                      <button
-                        key={`fu-${tIdx}-${fuIdx}`}
-                        type="button"
-                        onClick={() => onSelectFollowUp(fu)}
-                        className="text-[10.5px] font-mono px-2 py-0.5 bg-muted hover:bg-[#0F766E]/30 text-foreground hover:text-[#2DD4BF] border border-border hover:border-[#14B8A6]/50 transition-colors cursor-pointer"
-                      >
-                        ↳ {fu}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+  const renderTaskRunSections = () => (
+    <div className="flex flex-col gap-3 w-full my-1">
 
 
       {/* 2. Input Quality Gate Status Card */}
@@ -547,15 +471,15 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
       {/* 3. Autonomous STAC Satellite Preview & Approval Gate */}
       {task.status === 'pending_stac_approval' && task.stacPreview && (
         <div
-          className="bg-card border border-border rounded-none p-3.5"
-          style={{ borderLeft: '4px solid #0284C7' }}
+          className="bg-card border border-border rounded-lg p-3.5"
+          style={{ borderLeft: '4px solid var(--primary)' }}
         >
           <div className="flex justify-between items-center mb-2.5 flex-wrap gap-1.5">
             <span className="flex items-center gap-1.5 text-[13px] font-bold text-sky-400">
               <Satellite className="h-4 w-4 shrink-0" />
               <span>Satellite Scene Previews — Review Before Native-Resolution Staging</span>
             </span>
-            <span className="font-mono text-[10.5px] text-sky-400 bg-sky-500/15 px-2 py-0.5 rounded-none border border-sky-500/30">
+            <span className="font-mono text-[10.5px] text-sky-400 bg-sky-500/15 px-2 py-0.5 rounded-lg border border-sky-500/30">
               100% Native Resolution Preserved
             </span>
           </div>
@@ -566,7 +490,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             </div>
           )}
 
-          <div className="font-mono text-[11px] text-muted-foreground bg-muted px-2.5 py-2 rounded-none mb-3 flex flex-wrap gap-3.5">
+          <div className="font-mono text-[11px] text-muted-foreground bg-muted px-2.5 py-2 rounded-lg mb-3 flex flex-wrap gap-3.5">
             <span>
               <strong className="text-foreground">Location:</strong>{' '}
               {task.stacPreview.location_name || 'Custom AOI'}
@@ -592,7 +516,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             {(task.stacPreview.scenes || []).map((sc, idx) => (
               <div
                 key={sc.id || idx}
-                className="bg-muted border border-border rounded-none overflow-hidden"
+                className="bg-muted border border-border rounded-lg overflow-hidden"
               >
                 {sc.thumbnail ? (
                   <div className="bg-background text-center h-[140px] flex items-center justify-center overflow-hidden">
@@ -644,7 +568,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             <Button
               type="button"
               variant="primary"
-              className="w-full bg-[#0284C7] hover:bg-sky-500 text-white font-bold text-xs h-8"
+              className="w-full bg-[var(--primary)] hover:bg-sky-500 text-white font-bold text-xs h-8"
               onClick={() => onApprovePlan?.(taskId)}
             >
               ✓ Approve & Stage Native-Resolution Images
@@ -681,11 +605,11 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
       {/* 4. Plan Approval Gate */}
       {task.status === 'pending_approval' && (
         <div
-          className="bg-card border border-border rounded-none p-3.5"
+          className="bg-card border border-border rounded-lg p-3.5"
           style={{ borderLeft: '4px solid #14B8A6' }}
         >
           <div className="flex justify-between items-center mb-2">
-            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-[#14B8A6]">
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-sky-400">
               <ClipboardList className="h-4 w-4 shrink-0" />
               <span>Plan Proposed — User Review Required</span>
             </span>
@@ -736,7 +660,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 5. Findings / Summary Card */}
       {(task.answer || finalAnswer) && (
-        <div className="bg-muted border border-border rounded-none p-3.5">
+        <div className="bg-muted border border-border rounded-lg p-3.5">
           <div className="flex items-center gap-2 mb-2.5">
             {isDone ? (
               <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
@@ -747,7 +671,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
               {isDone ? 'Analysis Complete — Findings & Evidence' : 'Task Failed — Details'}
             </span>
             {isDone && (
-              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-none font-semibold font-mono">
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-lg font-semibold font-mono">
                 DONE
               </span>
             )}
@@ -760,7 +684,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 6. Time Series Animation & Synchronized Frame Viewer */}
       {hasTimeline && (
-        <div className="bg-card rounded-none p-3 border border-border">
+        <div className="bg-card rounded-lg p-3 border border-border">
           {(timelineFrame || gifArt) &&
             (() => {
               const frameFname =
@@ -794,7 +718,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     <img
                       src={initialSrc}
                       alt="Time Series Frame"
-                      className="max-h-[400px] max-w-full h-auto mx-auto rounded-none border border-border block"
+                      className="max-h-[400px] max-w-full h-auto mx-auto rounded-lg border border-border block"
                       onError={(e) => {
                         const imgEl = e.currentTarget;
                         if (imgEl.dataset.triedFallback === 'true') {
@@ -818,7 +742,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       }}
                     />
                     {timelineFrame && (timelineFrame.label || timelineFrame.date) && (
-                      <div className="absolute bottom-2.5 left-3 bg-card/85 backdrop-blur-xs text-sky-400 px-2.5 py-1 rounded-none text-[11px] font-semibold font-mono border border-sky-400/30">
+                      <div className="absolute bottom-2.5 left-3 bg-card/85 backdrop-blur-xs text-sky-400 px-2.5 py-1 rounded-lg text-[11px] font-semibold font-mono border border-sky-400/30">
                         {timelineFrame.label || timelineFrame.date || ''}
                       </div>
                     )}
@@ -858,7 +782,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
         if (visibleOutputs.length === 0 && !canShow3D && !profileSvgArt) return null;
 
         return (
-          <div className="bg-muted border border-border rounded-none p-3 flex flex-col gap-2.5">
+          <div className="bg-muted border border-border rounded-lg p-3 flex flex-col gap-2.5">
             {visibleOutputs.length > 0 && onSeeOutputs && (
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-foreground">
@@ -886,7 +810,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   type="button"
                   size="sm"
                   className="h-7 text-[11px] px-2.5 gap-1 text-white"
-                  style={{ backgroundColor: isLidar ? '#047857' : '#0284C7' }}
+                  style={{ backgroundColor: isLidar ? '#047857' : 'var(--primary)' }}
                   onClick={handleOpen3D}
                   title={
                     isLidar
@@ -911,7 +835,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
             {/* Embedded Elevation Cross-Section Chart if available */}
             {profileSvgArt && (
-              <div className="bg-card rounded-none p-2.5 border border-border text-center">
+              <div className="bg-card rounded-lg p-2.5 border border-border text-center">
                 <img
                   src={
                     typeof profileSvgArt === 'object' && profileSvgArt.url
@@ -921,7 +845,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                         )}`
                   }
                   alt="Elevation Cross-Section Profile"
-                  className="max-w-full h-auto block mx-auto rounded-none"
+                  className="max-w-full h-auto block mx-auto rounded-lg"
                 />
               </div>
             )}
@@ -931,7 +855,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
       {/* 8. Live Execution & Reasoning Activity Feed */}
       {relevantActivities.length > 0 && (
-        <div className="bg-muted border border-border rounded-none p-3.5">
+        <div className="bg-muted border border-border rounded-lg p-3.5">
           <div className="flex items-center justify-between mb-2">
             <span className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
               <Microscope className="h-4 w-4 text-sky-400 shrink-0" />
@@ -939,7 +863,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             </span>
             <button
               type="button"
-              className="text-[11px] bg-muted text-foreground border border-border hover:border-border px-2 py-0.5 rounded-none cursor-pointer"
+              className="text-[11px] bg-muted text-foreground border border-border hover:border-border px-2 py-0.5 rounded-lg cursor-pointer"
               onClick={() => setShowLogs(!showLogs)}
             >
               {showLogs ? 'Hide Events' : 'Show Events'}
@@ -967,7 +891,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     return (
                       <details
                         key={i}
-                        className="border border-border rounded-none bg-background px-3 py-2"
+                        className="border border-border rounded-lg bg-background px-3 py-2"
                       >
                         <summary className="font-mono text-[11px] cursor-pointer text-sky-400 font-semibold select-none flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
@@ -981,9 +905,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                           </span>
                         </summary>
                         <div
-                          className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-foreground break-words max-h-[360px] overflow-y-auto p-3 bg-background rounded-none border border-border leading-relaxed select-text"
+                          className="font-mono whitespace-pre-wrap text-[11px] mt-2 text-foreground break-words max-h-[360px] overflow-y-auto p-3 bg-background rounded-lg border border-border leading-relaxed select-text"
                           style={{
-                            borderLeft: '3px solid #0F766E',
+                            borderLeft: '3px solid var(--primary)',
                           }}
                         >
                           {textStr || 'Thinking…'}
@@ -998,7 +922,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="px-2.5 py-1.5 bg-card rounded-none border border-border text-foreground text-[11.5px]"
+                      className="px-2.5 py-1.5 bg-card rounded-lg border border-border text-foreground text-[11.5px]"
                     >
                       <MarkdownView content={act.text} />
                     </div>
@@ -1029,7 +953,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   const borderColor = act.running
                     ? '#38BDF8'
                     : act.ok
-                    ? '#0F766E'
+                    ? '#10B981'
                     : '#EF4444';
                   const leftBorderColor = act.running
                     ? '#38BDF8'
@@ -1040,14 +964,22 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-card rounded-none px-2.5 py-2"
+                      className="bg-card rounded-lg px-2.5 py-2"
                       style={{
                         border: `1px solid ${borderColor}`,
                         borderLeft: `3px solid ${leftBorderColor}`,
                       }}
                     >
                       <div className="flex items-center gap-2 text-[11.5px] flex-wrap">
-                        <span className="font-mono font-semibold text-sky-400 flex items-center gap-1.5">
+                        <span
+                          className={`font-mono font-semibold flex items-center gap-1.5 ${
+                            act.running
+                              ? 'text-sky-400'
+                              : act.ok
+                                ? 'text-emerald-400'
+                                : 'text-rose-400'
+                          }`}
+                        >
                           {isStacSearch || isStacPropose ? (
                             <Satellite className="h-3.5 w-3.5 shrink-0" />
                           ) : (
@@ -1077,7 +1009,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                               : `att ${shownAtt}`
                             : `step #${shownAtt}`;
                           return (
-                            <span className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none">
+                            <span className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-lg">
                               {label}
                             </span>
                           );
@@ -1103,7 +1035,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       </div>
 
                       {isStacSearch && argsObj && (
-                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-none border border-border flex flex-wrap gap-2.5">
+                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-lg border border-border flex flex-wrap gap-2.5">
                           {Boolean(argsObj.location_name) && (
                             <span>
                               <strong>Location:</strong> {String(argsObj.location_name)}
@@ -1138,7 +1070,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       )}
 
                       {isStacPropose && argsObj && (
-                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-none border border-border">
+                        <div className="font-mono text-[10.5px] text-foreground mt-1.5 bg-background px-2 py-1.5 rounded-lg border border-border">
                           <div>
                             <strong>Location:</strong>{' '}
                             {String(argsObj.location_name || 'Target AOI')} •{' '}
@@ -1175,13 +1107,13 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
 
                       {codeStr && (
                         <details className="mt-1.5 text-[10.5px]">
-                          <summary className="font-mono cursor-pointer text-[#14B8A6] font-semibold select-none flex items-center gap-1">
+                          <summary className="font-mono cursor-pointer text-sky-400 font-semibold select-none flex items-center gap-1">
                             <Code2 className="h-3.5 w-3.5 shrink-0 inline" />
                             <span>
                               Agent Python Code ({codeStr.split('\n').length} lines)
                             </span>
                           </summary>
-                          <pre className="font-mono mt-1 p-2 bg-background border border-border rounded-none overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words max-h-[260px] text-[10px] text-foreground">
+                          <pre className="font-mono mt-1 p-2 bg-background border border-border rounded-lg overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words max-h-[260px] text-[10px] text-foreground">
                             {codeStr}
                           </pre>
                         </details>
@@ -1205,7 +1137,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                             {isStacSearch ? '📄 STAC Search Results' : '📄 Output / Logs'}
                           </summary>
                           <pre
-                            className="font-mono mt-1 px-2 py-1.5 bg-background border border-border rounded-none overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all max-h-[220px] max-w-full text-[10px]"
+                            className="font-mono mt-1 px-2 py-1.5 bg-background border border-border rounded-lg overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all max-h-[220px] max-w-full text-[10px]"
                             style={{ color: act.ok === false ? '#FECACA' : '#CBD5E1' }}
                           >
                             {act.error || act.stdout}
@@ -1238,7 +1170,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     ? '#38BDF8'
                     : hasFailure
                     ? '#EF4444'
-                    : '#0F766E';
+                    : 'var(--primary)';
                   const leftBorderColor = isStagingActive
                     ? '#38BDF8'
                     : hasFailure
@@ -1248,7 +1180,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key="stac-staging-unified"
-                      className="bg-card rounded-none p-3 text-foreground"
+                      className="bg-card rounded-lg p-3 text-foreground"
                       style={{
                         border: `1px solid ${borderColor}`,
                         borderLeft: `4px solid ${leftBorderColor}`,
@@ -1273,7 +1205,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                           ({doneCount}/{totalBands || stagedFiles.length} bands)
                         </span>
                         <span
-                          className="ml-auto font-mono text-[10px] px-2 py-0.5 rounded-none font-bold uppercase"
+                          className="ml-auto font-mono text-[10px] px-2 py-0.5 rounded-lg font-bold uppercase"
                           style={{
                             background: isStagingActive
                               ? 'rgba(56, 189, 248, 0.15)'
@@ -1422,9 +1354,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="bg-muted rounded-none px-2.5 py-2"
+                      className="bg-muted rounded-lg px-2.5 py-2"
                       style={{
-                        border: '1px solid #0284C7',
+                        border: '1px solid var(--primary)',
                         borderLeft: '3px solid #38BDF8',
                       }}
                     >
@@ -1453,7 +1385,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                     return (
                       <div
                         key={i}
-                        className="px-2 py-1.5 mt-1 bg-card rounded-none"
+                        className="px-2 py-1.5 mt-1 bg-card rounded-lg"
                         style={{ borderLeft: '3px solid #3B82F6' }}
                       >
                         <div className="flex items-center gap-2 text-[11px] text-sky-400">
@@ -1474,7 +1406,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   return (
                     <div
                       key={i}
-                      className="px-2 py-1.5 bg-card border border-border rounded-none"
+                      className="px-2 py-1.5 bg-card border border-border rounded-lg"
                     >
                       <div className="flex items-center gap-2 text-[11px]">
                         <Eye className="h-3.5 w-3.5 text-foreground shrink-0" />
@@ -1514,7 +1446,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   type="button"
                   onClick={scrollToTop}
                   title="Scroll to top of activity log"
-                  className="absolute top-2.5 right-4 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-none bg-card/90 hover:bg-muted text-foreground text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 cursor-pointer border border-border"
+                  className="absolute top-2.5 right-4 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card/90 hover:bg-muted text-foreground text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 cursor-pointer border border-border"
                 >
                   <ArrowUp className="h-3.5 w-3.5" />
                   <span>Scroll to top</span>
@@ -1526,7 +1458,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                 <button
                   type="button"
                   onClick={scrollToBottom}
-                  className="absolute bottom-2.5 right-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-none bg-sky-600/90 hover:bg-sky-500 text-white text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 animate-in fade-in slide-in-from-bottom-2 cursor-pointer border border-sky-400/30"
+                  className="absolute bottom-2.5 right-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-lg bg-sky-600/90 hover:bg-sky-500 text-white text-[11px] font-medium shadow-lg backdrop-blur-sm transition-all duration-150 animate-in fade-in slide-in-from-bottom-2 cursor-pointer border border-sky-400/30"
                 >
                   <ArrowDown className="h-3.5 w-3.5 animate-bounce" />
                   <span>Resume auto-scroll</span>
@@ -1536,6 +1468,189 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
           )}
         </div>
       )}
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      {/* Sticky Workspace Sub-Header */}
+      <div className="shrink-0 flex items-center justify-between gap-2 border-b border-border bg-background/95 px-4 py-2.5 backdrop-blur-md">
+        <div className="flex items-center gap-2 min-w-0">
+          <Badge variant="secondary" className="font-mono text-[11px] shrink-0">
+            #{taskNum}
+          </Badge>
+          <span className="truncate text-xs font-semibold text-foreground">
+            {task.question && !task.question.startsWith('Slot idle')
+              ? task.question
+              : 'GeoLLM Assistant'}
+          </span>
+          <Badge variant={statusBadgeVariant} className="shrink-0">
+            {statusLabel}
+          </Badge>
+          {task.status !== 'idle' && (
+            <span className="hidden sm:inline font-mono text-[11px] text-muted-foreground tabular-nums shrink-0">
+              {formatSeconds(task)}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {sortedTurns.length > 0 && onClearHistory && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] gap-1 text-muted-foreground hover:text-destructive"
+              onClick={() => onClearHistory(taskId)}
+              title="Clear all chat messages in this workspace"
+            >
+              <Trash2 className="h-3 w-3" />
+              <span>Clear History</span>
+            </Button>
+          )}
+
+          {(task.status === 'running' ||
+            task.status === 'pending_approval' ||
+            task.status === 'pending_stac_approval') && (
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              className="h-7 px-2 text-[11px] gap-1"
+              onClick={() => onCancelTask?.(taskId)}
+            >
+              <Square className="h-3 w-3 fill-current" />
+              <span>Stop</span>
+            </Button>
+          )}
+
+          {(task.status === 'failed' || task.status === 'done' || task.status === 'partial') && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] gap-1 text-muted-foreground hover:text-foreground"
+              onClick={() => onResetTask?.(taskId)}
+              title="Reset this container sandbox and clear outputs"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Reset</span>
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Unified Chronological Chatbot Feed */}
+      <ChatMessageList className="flex-1 min-h-0">
+        {sortedTurns.length === 0 && !hasTaskRunContent && (
+          <div className="my-auto flex flex-col items-center justify-center py-12 text-center">
+            <div className="mb-2 text-sm font-semibold text-foreground">
+              GeoLLM Geospatial Workbench
+            </div>
+            <p className="max-w-sm text-xs text-muted-foreground leading-relaxed">
+              Ask a geospatial question, inspect existing satellite outputs, or attach files below to run an autonomous analysis.
+            </p>
+          </div>
+        )}
+
+        {sortedTurns.map((turn, tIdx) => {
+          const isUser = turn.role === 'user';
+
+          if (turn.type === 'task_delegated') {
+            if (tIdx === latestDelegatedIdx && hasTaskRunContent) {
+              return <React.Fragment key={turn.id || `run-${tIdx}`}>{renderTaskRunSections()}</React.Fragment>;
+            }
+            return (
+              <ChatSystemMessage key={turn.id || `delegated-${tIdx}`} variant="divider">
+                Sub-agent run: {turn.question || turn.content}
+              </ChatSystemMessage>
+            );
+          }
+
+          if (isUser) {
+            return (
+              <ChatMessage key={turn.id || `turn-${tIdx}`} sender="user">
+                <ChatMessageBubble
+                  group="single"
+                  metadata={
+                    <ChatMessageMetadata timestamp={<Timestamp value={turn.timestamp} />} />
+                  }
+                >
+                  <div className="whitespace-pre-wrap break-words">{turn.content}</div>
+                </ChatMessageBubble>
+              </ChatMessage>
+            );
+          }
+
+          const badgeLabel =
+            turn.type === 'visual_reply'
+              ? 'VLM Inspection'
+              : turn.type === 'clarification'
+                ? 'Clarification'
+                : null;
+
+          return (
+            <ChatMessage key={turn.id || `turn-${tIdx}`} sender="assistant">
+              <ChatMessageBubble
+                variant="ghost"
+                metadata={
+                  <ChatMessageMetadata timestamp={<Timestamp value={turn.timestamp} />} />
+                }
+              >
+                {badgeLabel && (
+                  <div className="mb-1.5">
+                    <Badge variant={turn.type === 'clarification' ? 'warning' : 'secondary'}>
+                      {badgeLabel}
+                    </Badge>
+                  </div>
+                )}
+
+                <MarkdownView content={turn.content} />
+
+                {turn.thumb_url && (
+                  <div className="mt-2.5 inline-flex flex-col gap-2 rounded-lg border border-border bg-card p-2">
+                    <img
+                      src={turn.thumb_url}
+                      alt="VLM Visual Crop"
+                      className="max-h-[240px] max-w-full rounded-md border border-border"
+                    />
+                    {turn.fly_to_bbox && onFlyToBbox && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onFlyToBbox(turn.fly_to_bbox!)}
+                        className="h-7 text-xs gap-1.5 self-start"
+                      >
+                        <Map className="h-3.5 w-3.5" />
+                        <span>Zoom Globe to Feature</span>
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {turn.follow_ups && turn.follow_ups.length > 0 && onSelectFollowUp && (
+                  <div className="mt-2.5 flex flex-wrap gap-1.5">
+                    {turn.follow_ups.map((fu, fuIdx) => (
+                      <button
+                        key={`fu-${tIdx}-${fuIdx}`}
+                        type="button"
+                        onClick={() => onSelectFollowUp(fu)}
+                        className="rounded-full border border-border bg-secondary/70 px-3 py-1 text-[11px] font-medium text-secondary-foreground hover:bg-secondary transition-colors cursor-pointer"
+                      >
+                        {fu}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </ChatMessageBubble>
+            </ChatMessage>
+          );
+        })}
+
+        {hasTaskRunContent && latestDelegatedIdx === -1 && renderTaskRunSections()}
+        <div ref={chatEndRef} />
+      </ChatMessageList>
     </div>
   );
 };

@@ -714,7 +714,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
 
   return (
     <div className="fixed inset-0 z-[1300] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-5">
-      <div className="relative w-full max-w-[1020px] bg-muted border border-border rounded-none shadow-2xl overflow-hidden flex flex-col">
+      <div className="relative w-full max-w-[1020px] bg-muted border border-border rounded-lg shadow-2xl overflow-hidden flex flex-col">
         {/* Header Bar */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card">
           <div className="flex items-center gap-2.5">
@@ -740,7 +740,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             type="button"
             onClick={onClose}
             title="Close 3D Viewer"
-            className="p-1.5 rounded-none text-muted-foreground hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -774,7 +774,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             </div>
           )}
 
-          <div className="absolute bottom-3 left-3.5 bg-slate-900/80 border border-slate-700/60 px-2.5 py-1.5 rounded-none text-muted-foreground text-[10.5px] font-mono pointer-events-none">
+          <div className="absolute bottom-3 left-3.5 bg-slate-900/80 border border-slate-700/60 px-2.5 py-1.5 rounded-lg text-muted-foreground text-[10.5px] font-mono pointer-events-none">
             {measuring
               ? '📍 TRANSECT MODE: Click Point A, then Point B on the 3D surface'
               : '🖱️ Left Drag: Rotate | Right Drag: Pan | Scroll: Zoom'}
@@ -806,7 +806,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
               <button
                 type="button"
                 onClick={clearTransect}
-                className="border border-slate-700 text-muted-foreground hover:text-white px-2 py-0.5 rounded-none text-[10px]"
+                className="border border-slate-700 text-muted-foreground hover:text-white px-2 py-0.5 rounded-lg text-[10px]"
               >
                 Clear Line
               </button>
@@ -850,7 +850,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             <select
               value={surfaceMode}
               onChange={(e) => setSurfaceMode(e.target.value)}
-              className="bg-muted text-foreground border border-slate-700 rounded-none px-2 py-1 text-[11.5px] cursor-pointer outline-none"
+              className="bg-muted text-foreground border border-slate-700 rounded-lg px-2 py-1 text-[11.5px] cursor-pointer outline-none"
             >
               {meta?.orthophoto_url && (
                 <option value={meta.orthophoto_url}>
@@ -906,12 +906,12 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
           {/* Actions */}
           <div className="flex items-center gap-2">
             {/* Solid vs Point Cloud Mode Toggle */}
-            <div className="flex items-center bg-muted p-0.5 rounded-none border border-slate-700">
+            <div className="flex items-center bg-muted p-0.5 rounded-lg border border-slate-700">
               <button
                 type="button"
                 onClick={() => setRenderMode('surface')}
                 title="Continuous 3D Mesh Surface"
-                className={`inline-flex items-center gap-1 rounded-none px-2 py-1 text-[11px] font-medium transition-colors ${
+                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${
                   renderMode === 'surface'
                     ? 'bg-sky-600 text-white'
                     : 'text-muted-foreground hover:text-foreground'
@@ -924,7 +924,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
                 type="button"
                 onClick={() => setRenderMode('points')}
                 title="Discrete LiDAR 3D Point Cloud returns"
-                className={`inline-flex items-center gap-1 rounded-none px-2 py-1 text-[11px] font-medium transition-colors ${
+                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors ${
                   renderMode === 'points'
                     ? 'bg-sky-600 text-white'
                     : 'text-muted-foreground hover:text-foreground'
@@ -945,7 +945,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
                 });
               }}
               title="Click two points on the 3D surface to slice an elevation profile"
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-none border border-slate-700 text-[11.5px] transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-700 text-[11.5px] transition-colors ${
                 measuring
                   ? 'bg-sky-600 text-white'
                   : 'bg-muted text-foreground hover:text-white'
@@ -958,7 +958,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             <button
               type="button"
               onClick={() => setWireframe((prev) => !prev)}
-              className={`px-2.5 py-1 rounded-none border border-slate-700 text-[11.5px] transition-colors ${
+              className={`px-2.5 py-1 rounded-lg border border-slate-700 text-[11.5px] transition-colors ${
                 wireframe
                   ? 'bg-sky-600 text-white'
                   : 'bg-muted text-foreground hover:text-white'
@@ -970,7 +970,7 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
             <button
               type="button"
               onClick={resetView}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-none bg-muted border border-slate-700 text-foreground hover:text-white text-[11.5px] transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-muted border border-slate-700 text-foreground hover:text-white text-[11.5px] transition-colors"
             >
               <RotateCcw className="h-3 w-3" />
               Reset

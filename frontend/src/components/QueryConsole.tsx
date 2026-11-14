@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Play, X, Satellite, Loader2, AlertCircle, ChevronUp, ChevronDown, Upload } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import {
+  ChatComposer,
+  ChatComposerDrawer,
+  ChatComposerInput,
+} from '@/components/ui/chat';
+import {
+  Send,
+  X,
+  Satellite,
+  Loader2,
+  AlertCircle,
+  Paperclip,
+} from 'lucide-react';
 
 interface QueryConsoleProps {
   selectedFiles: string[];
@@ -13,8 +26,6 @@ interface QueryConsoleProps {
   hasActiveWorkspace: boolean;
   injectedPrompt?: string | null;
   onInjectedPromptConsumed?: () => void;
-  isFolded?: boolean;
-  onToggleFold?: () => void;
 }
 
 export const QueryConsole: React.FC<QueryConsoleProps> = ({
@@ -28,8 +39,6 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   hasActiveWorkspace,
   injectedPrompt,
   onInjectedPromptConsumed,
-  isFolded = false,
-  onToggleFold,
 }) => {
   const [question, setQuestion] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -58,163 +67,140 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!hasActiveWorkspace || !question.trim() || isSubmitting || isRunning) return;
+    if (!hasActiveWorkspace || !question.trim() || isSubmitting) return;
     const q = question.trim();
     setQuestion('');
     onSubmit(q);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   };
 
-  return (
-    <div className="h-full w-full bg-card border-b border-border p-3 flex flex-col gap-2 overflow-hidden">
-      {/* Top Header: Attached Datasets / Mode Notice + Fold Button */}
-      <div className="shrink-0 flex items-center justify-between gap-1.5 min-h-[26px]">
-        <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
-          {!hasActiveWorkspace ? (
-            <div className="flex items-center gap-1.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-none font-mono truncate">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">Workspace required — click "+ New" above</span>
-            </div>
-          ) : selectedFiles.length === 0 ? (
-            <div className="flex items-center gap-1.5 text-xs text-primary bg-primary/10 border border-primary/30 px-2 py-0.5 rounded-none font-mono">
-              <Satellite className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">Autonomous STAC Mode</span>
-            </div>
-          ) : (
-            <>
-              {selectedFiles.map((fname) => (
-                <div
-                  key={fname}
-                  className="flex items-center gap-1 bg-[#0F766E]/20 border border-[#14B8A6]/40 text-[#2DD4BF] px-2 py-0.5 rounded-none text-xs font-mono"
-                >
-                  <span className="truncate max-w-[140px]">{fname}</span>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveFile(fname)}
-                    className="hover:text-foreground cursor-pointer ml-1"
-                    title="Remove attachment"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-              {selectedFiles.length > 1 && onClearAllFiles && (
-                <button
-                  type="button"
-                  onClick={onClearAllFiles}
-                  className="text-[11px] text-destructive hover:underline px-1.5 py-0.5 cursor-pointer font-mono"
-                  title="Clear all attached files"
-                >
-                  Clear all
-                </button>
-              )}
-            </>
-          )}
-        </div>
-
-        {onToggleFold && (
+  const drawerNode =
+    selectedFiles.length > 0 ? (
+      <ChatComposerDrawer>
+        <span className="text-[11px] font-medium text-muted-foreground mr-1">
+          Attached ({selectedFiles.length}):
+        </span>
+        {selectedFiles.map((f) => (
+          <Badge key={f} variant="secondary" className="gap-1 pr-1 font-normal">
+            <span className="max-w-[160px] truncate">{f}</span>
+            <button
+              type="button"
+              onClick={() => onRemoveFile(f)}
+              className="rounded-full p-0.5 hover:bg-background/60 cursor-pointer"
+              aria-label={`Remove ${f}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        ))}
+        {selectedFiles.length > 1 && onClearAllFiles && (
           <button
             type="button"
-            onClick={onToggleFold}
-            className="p-1 rounded-none text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer shrink-0"
-            title={isFolded ? "Slide down to expand query input" : "Slide up to fold query box (maximize output)"}
+            onClick={onClearAllFiles}
+            className="ml-auto text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
           >
-            {isFolded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+            Clear all
           </button>
+        )}
+      </ChatComposerDrawer>
+    ) : undefined;
+
+  const headerNode = !hasActiveWorkspace ? (
+    <div className="flex items-center gap-1.5 text-[11px] text-amber-400">
+      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+      <span>Select or create a workspace (+ New) to start chatting.</span>
+    </div>
+  ) : isRunning ? (
+    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <span className="h-2 w-2 rounded-full bg-primary animate-pulse shrink-0" />
+      <span>Sub-agent active in container · You can still ask questions or inspect outputs</span>
+    </div>
+  ) : undefined;
+
+  const footerNode = (
+    <>
+      <div className="flex items-center gap-1.5 min-w-0">
+        {onUploadFiles && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".tif,.tiff,.laz,.las,.geojson,.json,.zip,.shp,.gpkg,.csv,.png,.jpg,.jpeg"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!hasActiveWorkspace || isUploading}
+              onClick={() => fileInputRef.current?.click()}
+              title="Upload GeoTIFF, LAZ, GeoJSON, or imagery"
+              className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+            >
+              {isUploading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Paperclip className="h-3.5 w-3.5" />
+              )}
+              <span>{isUploading ? 'Uploading…' : 'Attach'}</span>
+            </Button>
+          </>
+        )}
+        {hasActiveWorkspace && selectedFiles.length === 0 && (
+          <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Satellite className="h-3 w-3" />
+            Autonomous STAC ready
+          </span>
         )}
       </div>
 
-      {/* Query Prompt Textarea - Expands/shrinks with vertical slider */}
-      {!isFolded && (
-        <>
-          <div className="flex-1 min-h-[48px] relative flex flex-col">
-            <textarea
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                hasActiveWorkspace
-                  ? "Ask a question, inspect outputs, or describe a geospatial analysis…"
-                  : "Create or select a workspace first (+ New) to start…"
-              }
-              disabled={!hasActiveWorkspace || isSubmitting}
-              className="w-full h-full min-h-[48px] bg-background border border-border rounded-none p-2.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground font-mono resize-none focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 overflow-y-auto"
-            />
-          </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className="hidden md:inline text-[10px] text-muted-foreground">
+          Enter to send · Shift+Enter newline
+        </span>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={!hasActiveWorkspace || !question.trim() || isSubmitting}
+          className="h-7 rounded-lg px-3 gap-1.5"
+        >
+          {isSubmitting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Send className="h-3.5 w-3.5" />
+          )}
+          <span>{isSubmitting ? 'Sending…' : 'Send'}</span>
+        </Button>
+      </div>
+    </>
+  );
 
-          {/* Submit Action Bar */}
-          <div className="shrink-0 flex items-center justify-between gap-2 pt-0.5">
-            <div className="flex items-center gap-2 min-w-0">
-              {onUploadFiles && (
-                <>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={handleFileChange}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!hasActiveWorkspace || isUploading || isSubmitting}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="h-8 px-2.5 text-xs gap-1.5"
-                    title="Upload GeoTIFF, LAZ/LAS, PNG, or any input file"
-                  >
-                    {isUploading ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>Uploading…</span>
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-3.5 w-3.5" />
-                        <span>Upload</span>
-                      </>
-                    )}
-                  </Button>
-                </>
-              )}
-              <span className="text-[11px] text-muted-foreground font-mono truncate">
-                {question.length > 0 ? `${question.length} chars` : 'Ready to analyze'}
-              </span>
-            </div>
-
-            <Button
-              onClick={() => handleSubmit()}
-              disabled={!hasActiveWorkspace || !question.trim() || isSubmitting || isRunning}
-              size="sm"
-              variant="default"
-              className="gap-1.5 h-8 px-4 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>Dispatching…</span>
-                </>
-              ) : isRunning ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>Analysis Running…</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-3.5 w-3.5 fill-current" />
-                  <span>Send</span>
-                </>
-              )}
-            </Button>
-          </div>
-        </>
-      )}
-    </div>
+  return (
+    <ChatComposer
+      onSubmit={handleSubmit}
+      drawer={drawerNode}
+      header={headerNode}
+      footer={footerNode}
+    >
+      <ChatComposerInput
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={handleKeyDown}
+        disabled={!hasActiveWorkspace}
+        placeholder={
+          hasActiveWorkspace
+            ? 'Ask GeoLLM, inspect outputs, or run a spatial analysis…'
+            : 'Create or select a workspace to start…'
+        }
+      />
+    </ChatComposer>
   );
 };

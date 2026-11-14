@@ -38,7 +38,7 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({
   return (
     <div
       className={cn(
-        'prose prose-invert max-w-none text-xs leading-relaxed text-foreground',
+        'max-w-none text-[13px] leading-relaxed text-foreground',
         className
       )}
       dangerouslySetInnerHTML={{ __html: htmlMarkup }}

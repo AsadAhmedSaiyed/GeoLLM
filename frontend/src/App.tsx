@@ -16,11 +16,7 @@ import { TimeSeriesPanel } from '@/components/TimeSeriesPanel';
 import { TiffPreviewModal, PreviewTarget } from '@/components/TiffPreviewModal';
 import { StacModal } from '@/components/StacModal';
 import { useResizableOverlay } from '@/hooks/useResizableOverlay';
-import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from '@/components/ui/resizable';
+import { ChatLayout } from '@/components/ui/chat';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { Terminal } from 'lucide-react';
@@ -80,11 +76,10 @@ export function App() {
   );
   const [focusOutputsNonce, setFocusOutputsNonce] = useState(0);
   const [injectedPrompt, setInjectedPrompt] = useState<string | null>(null);
-  const [isQueryFolded, setIsQueryFolded] = useState(false);
-  const [workspaceTurns, setWorkspaceTurns] = useState<Record<string, Array<{ role: 'user' | 'assistant'; content: string; timestamp?: number; type?: any; thumb_url?: string; fly_to_bbox?: number[]; follow_ups?: string[] }>>>({});
+  const [workspaceTurns, setWorkspaceTurns] = useState<Record<string, Array<{ id?: string; seq?: number; role: 'user' | 'assistant'; content: string; timestamp?: number; type?: any; question?: string; thumb_url?: string; fly_to_bbox?: number[]; follow_ups?: string[] }>>>({});
   const [globeFlyToBbox, setGlobeFlyToBbox] = useState<number[] | null>(null);
 
-  // Chat Workspace Overlay Hook: Anchored Left, Expands Right Only
+  // Chat Workspace Overlay Hook: Anchored Left, Expands Right up to 88% viewport
   const {
     panelWidth,
     isCollapsed,
@@ -94,9 +89,9 @@ export function App() {
     setIsCollapsed,
   } = useResizableOverlay({
     storageKey: 'geollm_chat_overlay_width',
-    defaultWidth: 460,
-    minWidth: 320,
-    maxWidth: 850,
+    defaultWidth: 480,
+    minWidth: 340,
+    maxWidthRatio: 0.88,
     snapThreshold: 180,
   });
   const [terrain3DModal, setTerrain3DModal] = useState<Terrain3DModalState>({
@@ -218,6 +213,12 @@ export function App() {
 
     setWorkspaces((prev) => [...prev, newWs]);
     setActiveWorkspaceId(newWs.id);
+    setWorkspaceTurns((prev) => {
+      const next = { ...prev };
+      delete next[freeId];
+      return next;
+    });
+    api.clearWorkspaceConversation(freeId).catch(() => {});
     toast.success(`Workspace "${name}" allocated to Container #${freeId.replace('task_', '')}`);
   };
 
@@ -227,7 +228,15 @@ export function App() {
 
     try {
       resetSlotState(ws.containerId);
-      await api.resetTask(ws.containerId);
+      setWorkspaceTurns((prev) => {
+        const next = { ...prev };
+        delete next[ws.containerId];
+        return next;
+      });
+      await Promise.allSettled([
+        api.clearWorkspaceConversation(ws.containerId),
+        api.resetTask(ws.containerId),
+      ]);
     } catch {
       // ignore
     }
@@ -277,12 +286,12 @@ export function App() {
     const targetContainerId = targetSlotId || activeWorkspace.containerId;
     setIsSubmitting(true);
 
-    // Optimistically record user turn in local state
+    // Optimistically record user turn in local state (seconds to match backend time.time())
     setWorkspaceTurns((prev) => ({
       ...prev,
       [targetContainerId]: [
         ...(prev[targetContainerId] || []),
-        { role: 'user', content: question, timestamp: Date.now() },
+        { role: 'user', content: question, timestamp: Date.now() / 1000 },
       ],
     }));
 
@@ -303,6 +312,20 @@ export function App() {
 
       if (res.type === 'task_delegated') {
         toast.info(`Geospatial task delegated to Container #${targetContainerId.replace('task_', '')}`);
+        setWorkspaceTurns((prev) => ({
+          ...prev,
+          [targetContainerId]: [
+            ...(prev[targetContainerId] || []),
+            {
+              role: 'assistant',
+              content: `Delegated complex geospatial task to specialized container sub-agent: *${question}*`,
+              timestamp: res.timestamp || Date.now() / 1000,
+              seq: res.seq,
+              type: 'task_delegated',
+              question,
+            },
+          ],
+        }));
         setTasks((prev) => ({
           ...prev,
           [targetContainerId]: {
@@ -323,6 +346,8 @@ export function App() {
             {
               role: 'assistant',
               content: res.reply || 'Workspace container is currently executing another task.',
+              timestamp: res.timestamp || Date.now() / 1000,
+              seq: res.seq,
               type: 'clarification',
               follow_ups: [
                 'Switch to Workspace 2',
@@ -343,6 +368,8 @@ export function App() {
             {
               role: 'assistant',
               content: res.reply || '',
+              timestamp: res.timestamp || Date.now() / 1000,
+              seq: res.seq,
               type: 'visual_reply',
               thumb_url: res.thumb_url,
               fly_to_bbox: res.fly_to_bbox,
@@ -359,6 +386,8 @@ export function App() {
             {
               role: 'assistant',
               content: res.reply || '',
+              timestamp: res.timestamp || Date.now() / 1000,
+              seq: res.seq,
               type: res.type,
               follow_ups: res.follow_ups,
             },
@@ -456,6 +485,16 @@ export function App() {
     }
   };
 
+  const handleClearHistory = async (tid: string) => {
+    try {
+      await api.clearWorkspaceConversation(tid);
+      setWorkspaceTurns((prev) => ({ ...prev, [tid]: [] }));
+      toast.success('Chat history cleared');
+    } catch (err) {
+      toast.error(`Failed to clear chat history: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const tasksStatus = useMemo<Record<string, { status: TaskStatus; step?: string }>>(() => {
     const map: Record<string, { status: TaskStatus; step?: string }> = {};
     Object.entries(tasks).forEach(([tid, t]) => {
@@ -528,27 +567,27 @@ export function App() {
                   <div
                     onClick={toggleCollapse}
                     title="Click or drag right to expand Chat Workspace"
-                    className="w-12 h-full flex flex-col items-center justify-between py-4 cursor-pointer select-none hover:bg-slate-800/40 transition-colors"
+                    className="w-12 h-full flex flex-col items-center justify-between py-4 cursor-pointer select-none hover:bg-muted/50 transition-colors"
                   >
                     <div className="flex flex-col items-center gap-3">
-                      <div className="p-2 rounded-none-none bg-[#0F766E]/20 text-[#2DD4BF] border border-[#14B8A6]/40">
+                      <div className="p-2 rounded-lg bg-primary/15 text-primary border border-primary/30">
                         <Terminal className="h-4 w-4" />
                       </div>
-                      <span className="font-mono text-[10px] font-bold text-slate-300 [writing-mode:vertical-rl] rotate-180 tracking-wider uppercase">
+                      <span className="font-mono text-[10px] font-bold text-foreground [writing-mode:vertical-rl] rotate-180 tracking-wider uppercase">
                         {activeWorkspace?.name || 'Console'}
                       </span>
                     </div>
 
                     <div className="flex flex-col items-center gap-2">
                       <span
-                        className={`h-2.5 w-2.5 rounded-none-none ${
+                        className={`h-2.5 w-2.5 rounded-full ${
                           activeTask.status === 'running'
-                            ? 'bg-sky-400 animate-pulse'
+                            ? 'bg-primary animate-pulse'
                             : activeTask.status === 'done'
                             ? 'bg-emerald-400'
                             : activeTask.status === 'failed'
-                            ? 'bg-rose-400'
-                            : 'bg-slate-500'
+                            ? 'bg-destructive'
+                            : 'bg-muted-foreground'
                         }`}
                       />
                       <span className="text-[10px] font-mono text-muted-foreground">
@@ -557,104 +596,76 @@ export function App() {
                     </div>
                   </div>
                 ) : (
-                  /* When Expanded: Full Console & Worker Cockpit with Vertical Slider */
-                  <div className="flex-1 flex flex-col h-full min-w-[320px] overflow-hidden">
-                    <ResizablePanelGroup
-                      direction="vertical"
-                      autoSaveId="geollm_chat_vertical_slider"
-                      className="h-full w-full"
-                    >
-                      {/* Top Panel: Query Console (Slide Up/Down) */}
-                      <ResizablePanel
-                        id="chat-top-query"
-                        defaultSize={isQueryFolded ? 8 : 34}
-                        minSize={8}
-                        maxSize={70}
-                        collapsible
-                        className="flex flex-col min-h-0 bg-card"
-                      >
-                        <QueryConsole
-                          selectedFiles={selectedFiles}
-                          onRemoveFile={handleToggleFile}
-                          onClearAllFiles={() => setSelectedFiles([])}
-                          onUploadFiles={handleUploadFiles}
-                          onSubmit={handleSubmitTask}
-                          isSubmitting={isSubmitting}
-                          isRunning={isSubmitting || activeTask.status === 'running'}
-                          hasActiveWorkspace={Boolean(activeWorkspace)}
-                          injectedPrompt={injectedPrompt}
-                          onInjectedPromptConsumed={() => setInjectedPrompt(null)}
-                          isFolded={isQueryFolded}
-                          onToggleFold={() => setIsQueryFolded((prev) => !prev)}
-                        />
-                      </ResizablePanel>
-
-                      {/* Slider Handle (Drag up to reveal output, drag down to enlarge query) */}
-                      <ResizableHandle withHandle />
-
-                      {/* Bottom Panel: Output Cockpit */}
-                      <ResizablePanel
-                        id="chat-bottom-output"
-                        defaultSize={isQueryFolded ? 92 : 66}
-                        minSize={30}
-                        className="flex flex-col min-h-0 bg-background"
-                      >
-                        <div className="flex-1 overflow-y-auto p-2.5 min-h-0">
-                          {activeWorkspace ? (
-                            <SingleWorkerSlot
-                              taskId={activeContainerId}
-                              task={activeTask}
-                              conversationTurns={workspaceTurns[activeContainerId] || []}
-                              onSelectFollowUp={(prompt) => {
-                                setInjectedPrompt(prompt);
-                              }}
-                              onFlyToBbox={(bbox) => {
-                                setGlobeFlyToBbox(bbox);
-                              }}
-                              onApprovePlan={handleApprovePlan}
-                              onRevisePlan={handleRevisePlan}
-                              onCancelTask={handleCancelTask}
-                              onResetTask={handleResetTask}
-                              onPreviewFile={(art) => openArtifactPreview(art)}
-                              onSwitchToGlobe={(art) => {
-                                if (art) {
-                                  setPendingGlobeOverlay(art);
-                                  toast.info('Projecting georeferenced raster onto 3D Globe...');
-                                }
-                              }}
-                              onSeeOutputs={() => setFocusOutputsNonce((n) => n + 1)}
-                              onOpenTerrain3D={(info) => {
-                                setTerrain3DModal({
-                                  isOpen: true,
-                                  taskId: info.taskId,
-                                  payloadUrl: info.payloadUrl,
-                                  availableTextures: info.availableTextures,
-                                  title: info.title,
-                                });
-                              }}
-                              onNotify={handleNotify}
-                              renderTimeSeriesPanel={({ taskId, runDir, onFrameChange }) => (
-                                <TimeSeriesPanel
-                                  taskId={taskId}
-                                  runDir={runDir}
-                                  onFrameChange={onFrameChange}
-                                />
-                              )}
+                  /* When Expanded: Unified Astryx ChatLayout (Feed Top -> Bottom-Anchored Composer) */
+                  <ChatLayout className="flex-1 min-w-[320px] overflow-hidden">
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      {activeWorkspace ? (
+                        <SingleWorkerSlot
+                          taskId={activeContainerId}
+                          task={activeTask}
+                          conversationTurns={workspaceTurns[activeContainerId] || []}
+                          onSelectFollowUp={(prompt) => {
+                            setInjectedPrompt(prompt);
+                          }}
+                          onFlyToBbox={(bbox) => {
+                            setGlobeFlyToBbox(bbox);
+                          }}
+                          onApprovePlan={handleApprovePlan}
+                          onRevisePlan={handleRevisePlan}
+                          onCancelTask={handleCancelTask}
+                          onResetTask={handleResetTask}
+                          onClearHistory={handleClearHistory}
+                          onPreviewFile={(art) => openArtifactPreview(art)}
+                          onSwitchToGlobe={(art) => {
+                            if (art) {
+                              setPendingGlobeOverlay(art);
+                              toast.info('Projecting georeferenced raster onto 3D Globe...');
+                            }
+                          }}
+                          onSeeOutputs={() => setFocusOutputsNonce((n) => n + 1)}
+                          onOpenTerrain3D={(info) => {
+                            setTerrain3DModal({
+                              isOpen: true,
+                              taskId: info.taskId,
+                              payloadUrl: info.payloadUrl,
+                              availableTextures: info.availableTextures,
+                              title: info.title,
+                            });
+                          }}
+                          onNotify={handleNotify}
+                          renderTimeSeriesPanel={({ taskId, runDir, onFrameChange }) => (
+                            <TimeSeriesPanel
+                              taskId={taskId}
+                              runDir={runDir}
+                              onFrameChange={onFrameChange}
                             />
-                          ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-muted-foreground">
-                              <div className="text-sm font-semibold text-foreground mb-1">
-                                No Active Workspace Selected
-                              </div>
-                              <div className="text-xs text-muted-foreground max-w-xs">
-                                Create or select a workspace tab in the top navigation bar to open its sandbox container.
-                              </div>
-                            </div>
                           )}
+                        />
+                      ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-center p-6 text-muted-foreground">
+                          <div className="text-sm font-semibold text-foreground mb-1">
+                            No Active Workspace Selected
+                          </div>
+                          <div className="text-xs text-muted-foreground max-w-xs">
+                            Create or select a workspace tab in the top navigation bar to open its sandbox container.
+                          </div>
                         </div>
-                      </ResizablePanel>
-                    </ResizablePanelGroup>
-                  </div>
+                      )}
+                    </div>
+
+                    <QueryConsole
+                      selectedFiles={selectedFiles}
+                      onRemoveFile={handleToggleFile}
+                      onClearAllFiles={() => setSelectedFiles([])}
+                      onUploadFiles={handleUploadFiles}
+                      onSubmit={handleSubmitTask}
+                      isSubmitting={isSubmitting}
+                      isRunning={activeTask.status === 'running'}
+                      hasActiveWorkspace={Boolean(activeWorkspace)}
+                      injectedPrompt={injectedPrompt}
+                      onInjectedPromptConsumed={() => setInjectedPrompt(null)}
+                    />
+                  </ChatLayout>
                 )}
 
                 {/* Right-Edge Drag Handle: Drag right to expand, drag left to contract, double-click to collapse/expand */}

@@ -230,13 +230,13 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-5xl max-h-[90vh] bg-card border border-border rounded-none shadow-2xl flex flex-col overflow-hidden"
+        className="w-full max-w-5xl max-h-[90vh] bg-card border border-border rounded-lg shadow-2xl flex flex-col overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 bg-card border-b border-border gap-4 flex-wrap">
           <div className="flex items-center gap-2.5 min-w-0">
             <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-none text-[11px] font-bold uppercase tracking-wider ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold uppercase tracking-wider ${
                 isTif
                   ? 'bg-teal-500/15 text-teal-400 border border-teal-500/30'
                   : 'bg-sky-500/15 text-sky-400 border border-sky-500/30'
@@ -261,7 +261,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                 <select
                   value={colormap}
                   onChange={(e) => setColormap(e.target.value as ColormapId)}
-                  className="bg-background border border-border rounded-none px-2 py-1 text-[11px] text-foreground outline-none cursor-pointer"
+                  className="bg-background border border-border rounded-lg px-2 py-1 text-[11px] text-foreground outline-none cursor-pointer"
                 >
                   <option value="default">Native / Viridis</option>
                   <option value="ndvi">NDVI (Brown–Green)</option>
@@ -273,7 +273,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
             )}
 
             {/* Zoom Controls */}
-            <div className="flex items-center bg-background border border-border rounded-none p-0.5">
+            <div className="flex items-center bg-background border border-border rounded-lg p-0.5">
               <button
                 type="button"
                 onClick={() => setZoom((prev) => Math.max(0.5, prev - 0.25))}
@@ -308,7 +308,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                   onOverlayOnGlobe(previewTarget);
                   onClose();
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition-colors"
                 title="Project this georeferenced raster onto the 3D Globe"
               >
                 <Globe className="h-3.5 w-3.5" />
@@ -319,7 +319,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
             <a
               href={previewTarget.url}
               download={previewTarget.name}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition-colors"
               title="Download file"
             >
               <Download className="h-3.5 w-3.5" />
@@ -331,7 +331,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
               onClick={onClose}
               aria-label="Close dialog"
               title="Close (Esc)"
-              className="p-1.5 rounded-none bg-slate-800/80 border border-border text-muted-foreground hover:text-white transition-colors"
+              className="p-1.5 rounded-lg bg-slate-800/80 border border-border text-muted-foreground hover:text-white transition-colors"
             >
               <X className="h-4 w-4" />
             </button>
@@ -348,7 +348,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
           )}
 
           {error && (
-            <div className="bg-rose-950/30 border border-rose-500/40 text-rose-300 px-4 py-3 rounded-none text-xs font-mono">
+            <div className="bg-rose-950/30 border border-rose-500/40 text-rose-300 px-4 py-3 rounded-lg text-xs font-mono">
               {error}
             </div>
           )}
@@ -365,7 +365,7 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
               <canvas
                 ref={canvasRef}
                 style={{ display: loading || error ? 'none' : 'block' }}
-                className="max-w-full max-h-[62vh] object-contain rounded-none shadow-lg border border-border"
+                className="max-w-full max-h-[62vh] object-contain rounded-lg shadow-lg border border-border"
               />
             ) : isImage ? (
               <img
@@ -373,13 +373,13 @@ export const TiffPreviewModal: React.FC<TiffPreviewModalProps> = ({
                 alt={previewTarget.name}
                 onLoad={handleImageLoad}
                 style={{ display: loading || error ? 'none' : 'block' }}
-                className="max-w-full max-h-[62vh] object-contain rounded-none shadow-lg"
+                className="max-w-full max-h-[62vh] object-contain rounded-lg shadow-lg"
               />
             ) : (
               <iframe
                 src={previewTarget.url}
                 title={previewTarget.name}
-                className="w-[75vw] h-[60vh] border border-border rounded-none bg-background text-foreground"
+                className="w-[75vw] h-[60vh] border border-border rounded-lg bg-background text-foreground"
               />
             )}
           </div>

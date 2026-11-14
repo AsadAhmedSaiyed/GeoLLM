@@ -41,17 +41,6 @@ export default {
           DEFAULT: 'var(--card)',
           foreground: 'var(--card-foreground)',
         },
-        cockpit: {
-          950: '#070A0F',
-          900: '#0B0F17',
-          800: '#111827',
-          700: '#1E293B',
-          600: '#334155',
-        },
-        tealAccent: {
-          DEFAULT: '#0F766E',
-          bright: '#14B8A6',
-        },
       },
       borderRadius: {
         lg: 'var(--radius)',

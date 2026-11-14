@@ -100,7 +100,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
 
   if (loading) {
     return (
-      <div className="bg-card border border-border rounded-none p-3 flex items-center gap-2 text-muted-foreground text-xs">
+      <div className="bg-card border border-border rounded-lg p-3 flex items-center gap-2 text-muted-foreground text-xs">
         <Loader2 className="h-4 w-4 animate-spin text-sky-400" />
         <span>Loading time series timeline...</span>
       </div>
@@ -117,7 +117,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
   // Single-frame guard: Don't show play/scrub controls for a static single frame
   if (totalFrames <= 1) {
     return (
-      <div className="bg-card border border-border rounded-none px-3.5 py-2.5 flex items-center justify-between">
+      <div className="bg-card border border-border rounded-lg px-3.5 py-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-bold text-sky-400 uppercase text-[11px] tracking-wider">
             Single Frame Observation
@@ -127,7 +127,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
           </span>
         </div>
         {currentFrame.value !== undefined && currentFrame.value !== null && (
-          <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-none bg-sky-500/15 text-sky-400 border border-sky-500/30">
+          <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-400 border border-sky-500/30">
             {typeof currentFrame.value === 'number'
               ? currentFrame.value.toFixed(4)
               : String(currentFrame.value)}{' '}
@@ -186,7 +186,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
         : height / 2;
 
     sparklineElement = (
-      <div className="bg-background border border-border rounded-none p-2 mb-2.5">
+      <div className="bg-background border border-border rounded-lg p-2 mb-2.5">
         <div className="flex items-center justify-between text-[10px] font-mono mb-1">
           <span className="font-semibold text-foreground">{chartTitle}</span>
           <span className="text-muted-foreground">
@@ -247,7 +247,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
   }
 
   return (
-    <div className="bg-card border border-border rounded-none p-3">
+    <div className="bg-card border border-border rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-bold text-foreground">
@@ -258,7 +258,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
           </span>
         </div>
         {typeof currentFrame.value === 'number' && (
-          <div className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-none bg-sky-500/15 text-sky-400 border border-sky-500/30">
+          <div className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-400 border border-sky-500/30">
             {currentFrame.value.toFixed(4)} {timeline.unit || ''}
           </div>
         )}
@@ -271,7 +271,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
           type="button"
           onClick={() => setIsPlaying((prev) => !prev)}
           title={isPlaying ? 'Pause' : 'Play'}
-          className="h-7 w-7 rounded-none bg-[#0284C7] hover:bg-[#0369A1] text-white flex items-center justify-center transition-colors shrink-0"
+          className="h-7 w-7 rounded-lg bg-[#0284C7] hover:bg-[#0369A1] text-white flex items-center justify-center transition-colors shrink-0"
         >
           {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 ml-0.5" />}
         </button>
@@ -297,7 +297,7 @@ export const TimeSeriesPanel: React.FC<TimeSeriesPanelProps> = ({
           <select
             value={playbackSpeed}
             onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
-            className="bg-background border border-border text-foreground rounded-none px-1.5 py-0.5 text-[11px] outline-none"
+            className="bg-background border border-border text-foreground rounded-lg px-1.5 py-0.5 text-[11px] outline-none"
           >
             <option value={1500}>0.5x</option>
             <option value={800}>1x</option>

@@ -630,20 +630,20 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
             type="button"
             onClick={() => setAoiMode(true)}
             title="Click and drag on the 3D globe to draw an Area of Interest"
-            className="inline-flex items-center gap-1.5 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3.5 py-1.5 rounded-none text-xs font-semibold shadow-lg transition-colors"
+            className="inline-flex items-center gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-lg transition-colors"
           >
             <SquareDashedMousePointer className="h-3.5 w-3.5" />
             <span>Draw AOI Bounding Box</span>
           </button>
         ) : (
-          <div className="flex items-center gap-1.5 bg-slate-900/95 px-2.5 py-1 rounded-none border border-teal-500 shadow-lg">
+          <div className="flex items-center gap-1.5 bg-slate-900/95 px-2.5 py-1 rounded-lg border border-teal-500 shadow-lg">
             <span className="text-[11.5px] text-teal-400 font-semibold px-1">
               Click & Drag on Globe...
             </span>
             <button
               type="button"
               onClick={clearAoi}
-              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-none text-[11px] font-semibold transition-colors"
+              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors"
             >
               Cancel Drawing
             </button>
@@ -652,7 +652,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
         {/* When AOI is active: stats + Clear / Retrieve STAC / Send to Workspace */}
         {selectedBbox && (
-          <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md px-2.5 py-1 rounded-none border border-slate-700 shadow-xl">
+          <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md px-2.5 py-1 rounded-lg border border-slate-700 shadow-xl">
             <span className="font-mono text-sky-400 text-[11px] font-semibold px-1">
               AOI: {aoiAreaKm2 ? `${aoiAreaKm2} km²` : 'Selected'}
             </span>
@@ -661,7 +661,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
               type="button"
               onClick={clearAoi}
               title="Clear selected Area of Interest (Esc)"
-              className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-none text-[11px] font-bold transition-colors"
+              className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors"
             >
               <X className="h-3 w-3" />
               <span>Clear AOI</span>
@@ -672,7 +672,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                 type="button"
                 onClick={() => onOpenStacSearchWithAoi(selectedBbox)}
                 title="Search Microsoft Planetary Computer satellite data for this area"
-                className="inline-flex items-center gap-1 bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-none text-[11px] font-semibold transition-colors"
+                className="inline-flex items-center gap-1 bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg text-[11px] font-semibold transition-colors"
               >
                 <Satellite className="h-3 w-3" />
                 <span>Retrieve Satellite Data</span>
@@ -684,7 +684,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                 type="button"
                 onClick={() => onSendAoiToTask(selectedBbox, activeTaskId)}
                 title={`Send AOI coordinates into ${activeWorkspaceName || activeTaskId}`}
-                className="inline-flex items-center gap-1 bg-[#0F766E] hover:bg-[#0D9488] text-white px-3 py-1 rounded-none text-[11px] font-semibold transition-colors"
+                className="inline-flex items-center gap-1 bg-primary hover:bg-[#0D9488] text-white px-3 py-1 rounded-lg text-[11px] font-semibold transition-colors"
               >
                 <Zap className="h-3 w-3" />
                 <span>Send to Workspace</span>
@@ -698,10 +698,10 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
           type="button"
           onClick={() => setShowInspector((prev) => !prev)}
           title="Toggle Metadata Inspector Panel"
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none text-[11.5px] font-medium backdrop-blur-md border transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11.5px] font-medium border shadow-lg transition-colors ${
             showInspector
-              ? 'bg-teal-500/20 text-teal-400 border-teal-500'
-              : 'bg-slate-900/90 text-muted-foreground border-slate-700 hover:text-foreground'
+              ? 'bg-card text-sky-400 border-sky-400/50'
+              : 'bg-card text-muted-foreground border-border hover:text-foreground'
           }`}
         >
           <Info className="h-3.5 w-3.5" />
@@ -714,7 +714,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
         <div className="absolute top-[58px] right-4 z-[18] flex flex-col items-end gap-2.5 max-h-[calc(100%-190px)] pointer-events-none">
           {/* Floating Metadata Inspector Card */}
           {showInspector && (
-            <div className="w-[280px] bg-card/95 backdrop-blur-md border border-border rounded-none p-3.5 text-[11.5px] text-muted-foreground shadow-2xl pointer-events-auto shrink-0">
+            <div className="w-[280px] bg-card border border-border rounded-lg p-3.5 text-[11.5px] text-muted-foreground shadow-2xl pointer-events-auto shrink-0">
               <div className="flex items-center justify-between mb-2.5 border-b border-border pb-1.5">
                 <span className="font-bold text-foreground text-xs">Metadata Inspector</span>
                 <button
@@ -821,7 +821,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
           {/* Workspace Outputs & Analysis Overlays */}
           {(workspaceOutputs.length > 0 || activeLayers.length > 0 || overlayError) && (
-            <div className="w-[275px] bg-card/95 backdrop-blur-md border border-border rounded-none p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
+            <div className="w-[275px] bg-card border border-border rounded-lg p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
               <div
                 onClick={() => setOverlaysCollapsed((prev) => !prev)}
                 className={`flex justify-between items-center cursor-pointer select-none ${
@@ -829,7 +829,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                 }`}
               >
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <Layers className="h-3.5 w-3.5 text-teal-400 shrink-0" />
+                  <Layers className="h-3.5 w-3.5 text-sky-400 shrink-0" />
                   <span className="font-semibold text-[11.5px] text-foreground truncate">
                     Analysis Overlays
                   </span>
@@ -843,7 +843,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="font-mono text-[10px] text-sky-400 bg-sky-400/15 px-1.5 py-0.5 rounded-none">
+                  <span className="font-mono text-[10px] text-sky-400 bg-sky-400/15 px-1.5 py-0.5 rounded-lg">
                     {workspaceOutputs.length}
                   </span>
                   {overlaysCollapsed ? (
@@ -938,7 +938,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                                   ? 'Click to preview image'
                                   : filename
                             }
-                            className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-none border transition-colors ${
+                            className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border transition-colors ${
                               mountedLayer
                                 ? 'bg-teal-500/15 border-teal-500/40'
                                 : 'bg-muted border-border'

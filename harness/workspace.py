@@ -235,15 +235,25 @@ def append_conversation_turn(
     content: str,
     runs_dir: Optional[Path] = None,
     extra: Optional[dict] = None,
-) -> None:
+) -> dict:
     """Appends a turn to runs/task_X/conversation.jsonl so chat history is durable."""
     ws = get_workspace_dir(task_id, runs_dir)
     ws.mkdir(parents=True, exist_ok=True)
     conv_file = ws / "conversation.jsonl"
+    now = time.time()
+    seq = 1
+    if conv_file.is_file():
+        try:
+            with open(conv_file, "r", encoding="utf-8") as rf:
+                seq = sum(1 for line in rf if line.strip()) + 1
+        except Exception:
+            seq = 1
     turn = {
+        "id": f"{task_id}_{seq}_{int(now * 1000)}",
+        "seq": seq,
         "role": role,
         "content": content,
-        "timestamp": time.time(),
+        "timestamp": now,
     }
     if extra:
         turn.update(extra)
@@ -253,6 +263,7 @@ def append_conversation_turn(
             f.write(json.dumps(turn) + "\n")
     except Exception:
         pass
+    return turn
 
 
 def load_conversation(task_id: str, runs_dir: Optional[Path] = None) -> List[dict]:
@@ -265,15 +276,31 @@ def load_conversation(task_id: str, runs_dir: Optional[Path] = None) -> List[dic
     try:
         import json
         with open(conv_file, "r", encoding="utf-8") as f:
-            for line in f:
+            for idx, line in enumerate(f, start=1):
                 line = line.strip()
                 if line:
                     try:
-                        turns.append(json.loads(line))
+                        item = json.loads(line)
+                        if "seq" not in item:
+                            item["seq"] = idx
+                        if "id" not in item:
+                            item["id"] = f"{task_id}_{item['seq']}"
+                        turns.append(item)
                     except Exception:
                         pass
     except Exception:
         pass
     return turns
+
+
+def clear_conversation(task_id: str, runs_dir: Optional[Path] = None) -> None:
+    """Deletes durable conversation history (conversation.jsonl) for a workspace."""
+    ws = get_workspace_dir(task_id, runs_dir)
+    conv_file = ws / "conversation.jsonl"
+    if conv_file.is_file():
+        try:
+            conv_file.unlink()
+        except Exception:
+            pass
 
 

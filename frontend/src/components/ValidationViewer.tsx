@@ -102,7 +102,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
 
     return (
       <div
-        className="rounded-none bg-card p-3 text-foreground"
+        className="rounded-lg bg-card p-3 text-foreground"
         style={{
           border: `1px solid ${borderColor}`,
           borderLeft: `4px solid ${borderColor}`,
@@ -121,7 +121,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
             </span>
           )}
           <span
-            className="ml-auto font-mono text-[10px] px-2 py-0.5 rounded-none font-bold uppercase"
+            className="ml-auto font-mono text-[10px] px-2 py-0.5 rounded-lg font-bold uppercase"
             style={{ background: badgeBg, color: badgeColor }}
           >
             {ev.verdict || (ev.state === 'started' ? 'Checking inputs…' : 'Checking…')}
@@ -227,7 +227,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
               {ev.raster_paths.map((rp) => (
                 <span
                   key={rp}
-                  className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-none"
+                  className="font-mono text-[10px] bg-muted text-foreground px-1.5 py-0.5 rounded-lg"
                 >
                   {cleanName(rp)}
                 </span>
@@ -253,7 +253,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const ev = activity as SSEVisionGridEvent;
     const fileName = cleanName(ev.image);
     return (
-      <div className="rounded-none bg-card border border-border p-2 text-foreground">
+      <div className="rounded-lg bg-card border border-border p-2 text-foreground">
         <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-sky-400">
           <Grid className="h-3.5 w-3.5 shrink-0" />
           <span>
@@ -274,7 +274,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const fileName = cleanName(ev.image);
     return (
       <div
-        className="rounded-none bg-card border border-border p-2 text-foreground"
+        className="rounded-lg bg-card border border-border p-2 text-foreground"
         style={{ borderLeft: '3px solid #3B82F6' }}
       >
         <div className="flex items-center gap-2">
@@ -292,7 +292,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
             src={ev.thumb_url}
             alt={`Tile inspection ${ev.tile_id}`}
             loading="lazy"
-            className="w-full max-h-[260px] object-contain mt-1.5 rounded-none border border-border bg-background"
+            className="w-full max-h-[260px] object-contain mt-1.5 rounded-lg border border-border bg-background"
           />
         )}
       </div>
@@ -306,7 +306,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const fileName = cleanName(ev.image);
     return (
       <div
-        className="rounded-none bg-card border border-border p-2 text-foreground"
+        className="rounded-lg bg-card border border-border p-2 text-foreground"
         style={{ borderLeft: `4px solid ${color}` }}
       >
         <div className="flex items-center gap-2 text-[11px]">
@@ -339,7 +339,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const pct = ev.budget > 0 ? Math.round((ev.steps_used / ev.budget) * 100) : 0;
     return (
       <div className="px-2 py-1 text-[10px] text-muted-foreground flex items-center gap-2">
-        <div className="flex-1 h-1 bg-muted rounded-none overflow-hidden">
+        <div className="flex-1 h-1 bg-muted rounded-lg overflow-hidden">
           <div
             className="h-full bg-emerald-500 transition-all"
             style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
@@ -358,7 +358,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const isBad = ev.reason !== 'valid';
     return (
       <div
-        className="rounded-none bg-card p-2.5 text-foreground"
+        className="rounded-lg bg-card p-2.5 text-foreground"
         style={{ border: isBad ? '1px solid #EF4444' : '1px solid #10B981' }}
       >
         <div
@@ -387,7 +387,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
 
     return (
       <div
-        className="rounded-none bg-card border border-border p-3 mt-1.5 text-foreground"
+        className="rounded-lg bg-card border border-border p-3 mt-1.5 text-foreground"
         style={{ borderLeft: `4px solid ${color}` }}
       >
         <div className="flex items-center gap-2 font-bold text-xs mb-2 text-foreground">
@@ -396,13 +396,13 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
         </div>
 
         <div className="grid grid-cols-2 gap-2.5 mb-2.5">
-          <div className="p-2 text-center bg-muted border border-border rounded-none">
+          <div className="p-2 text-center bg-muted border border-border rounded-lg">
             <div className="text-[10px] text-muted-foreground">Verdict</div>
             <div className="text-xs font-extrabold font-mono mt-0.5" style={{ color }}>
               {(ev.final_verdict || '').toUpperCase()}
             </div>
           </div>
-          <div className="p-2 text-center bg-muted border border-border rounded-none">
+          <div className="p-2 text-center bg-muted border border-border rounded-lg">
             <div className="text-[10px] text-muted-foreground">Area Verified</div>
             <div className="text-xs font-extrabold font-mono text-foreground mt-0.5">
               {ev.verified_area_pct}%
@@ -448,7 +448,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
               {ev.flagged_regions.map((f) => (
                 <div
                   key={f.tile_id}
-                  className="text-[10.5px] p-1.5 rounded-none bg-rose-500/10 border border-rose-500/30 text-rose-200"
+                  className="text-[10.5px] p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-200"
                 >
                   <span className="font-mono font-semibold">{f.tile_id}:</span> {f.rationale}
                 </div>
@@ -465,7 +465,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const ev = activity as SSEVisionFeedbackEvent;
     return (
       <div
-        className="rounded-none bg-card border border-border p-2 mb-1.5 text-foreground"
+        className="rounded-lg bg-card border border-border p-2 mb-1.5 text-foreground"
         style={{ borderLeft: '3px solid #F59E0B' }}
       >
         <div className="font-mono text-[11px] font-semibold text-amber-400">
@@ -487,7 +487,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
   if (type === 'vision_consensus_done') {
     const ev = activity as SSEVisionConsensusDoneEvent;
     return (
-      <div className="rounded-none bg-card border border-sky-600 p-2 text-foreground">
+      <div className="rounded-lg bg-card border border-sky-600 p-2 text-foreground">
         <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-sky-400">
           <Handshake className="h-3.5 w-3.5 shrink-0" />
           <span>Consensus Re-verification Complete</span>
@@ -504,7 +504,7 @@ export const ValidationViewer: React.FC<ValidationViewerProps> = ({ activity }) 
     const ev = activity as SSEVisionInsufficientDataEvent;
     return (
       <div
-        className="rounded-none bg-card border border-rose-500 p-2.5 text-foreground"
+        className="rounded-lg bg-card border border-rose-500 p-2.5 text-foreground"
         style={{ borderLeft: '4px solid #EF4444' }}
       >
         <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold text-rose-400">

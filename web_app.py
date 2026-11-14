@@ -230,6 +230,14 @@ async def get_workspace_conversation(task_id: str):
     return JSONResponse({"turns": turns})
 
 
+@app.delete("/api/workspace/{task_id}/conversation")
+async def delete_workspace_conversation(task_id: str):
+    """Clears durable conversation history for this workspace without wiping container outputs."""
+    from harness.workspace import clear_conversation
+    clear_conversation(task_id, runs_dir=RUNS_DIR)
+    return JSONResponse({"ok": True, "task_id": task_id})
+
+
 @app.post("/api/workspace/{task_id}/message")
 async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayload):
     """Unified conversational assistant endpoint.
@@ -364,17 +372,19 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
     if started_tid is None:
         return JSONResponse({"error": "Failed to allocate container slot."}, status_code=500)
 
-    append_conversation_turn(
+    delegated_turn = append_conversation_turn(
         task_id,
         "assistant",
         f"Delegated complex geospatial task to specialized container sub-agent: *{user_text}*",
         runs_dir=RUNS_DIR,
-        extra={"type": "task_delegated"},
+        extra={"type": "task_delegated", "question": user_text},
     )
     return JSONResponse({
         "type": "task_delegated",
         "task_id": task_id,
         "status": "running",
+        "seq": delegated_turn.get("seq"),
+        "timestamp": delegated_turn.get("timestamp"),
     })
 
 
@@ -494,7 +504,7 @@ async def reset_task(task_id: str):
             ts.state = {}
             ts.result = None
 
-        # Clean workspace on disk and delete checkpoint
+        # Clean workspace on disk and delete checkpoint (preserve conversation.jsonl unless explicitly cleared/deleted)
         from harness.workspace import clean_workspace
         from harness.checkpoint import delete_checkpoint
         clean_workspace(task_id, RUNS_DIR)

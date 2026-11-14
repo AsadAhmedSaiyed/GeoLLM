@@ -212,6 +212,8 @@ export const api = {
     current_step?: string;
     elapsed?: number;
     queued_prompt?: string;
+    seq?: number;
+    timestamp?: number;
     error?: string;
   }> {
     return request(`/api/workspace/${encodeURIComponent(taskId)}/message`, {
@@ -221,8 +223,27 @@ export const api = {
     });
   },
 
-  async getWorkspaceConversation(taskId: string): Promise<{ turns: Array<{ role: string; content: string; timestamp?: number; thumb_url?: string; fly_to_bbox?: number[] }> }> {
+  async getWorkspaceConversation(taskId: string): Promise<{
+    turns: Array<{
+      id?: string;
+      seq?: number;
+      role: string;
+      content: string;
+      timestamp?: number;
+      type?: 'conversational_reply' | 'visual_reply' | 'task_delegated' | 'clarification';
+      question?: string;
+      thumb_url?: string;
+      fly_to_bbox?: number[];
+      follow_ups?: string[];
+    }>;
+  }> {
     return request(`/api/workspace/${encodeURIComponent(taskId)}/conversation`);
+  },
+
+  async clearWorkspaceConversation(taskId: string): Promise<{ ok: boolean; task_id: string }> {
+    return request(`/api/workspace/${encodeURIComponent(taskId)}/conversation`, {
+      method: 'DELETE',
+    });
   },
 };
 

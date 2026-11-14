@@ -339,7 +339,7 @@ export const StacModal: React.FC<StacModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-card border border-border rounded-none w-full max-w-4xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-foreground"
+        className="bg-card border border-border rounded-lg w-full max-w-4xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-foreground"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -358,7 +358,7 @@ export const StacModal: React.FC<StacModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-none text-muted-foreground hover:text-white hover:bg-muted cursor-pointer"
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-white hover:bg-muted cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -367,7 +367,7 @@ export const StacModal: React.FC<StacModalProps> = ({
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
           {/* Controls Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-muted border border-border rounded-none p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-muted border border-border rounded-lg p-4">
             {/* Modality Pills */}
             <div className="md:col-span-2">
               <label className="block text-[11px] font-semibold text-foreground mb-1.5 uppercase tracking-wider">
@@ -385,7 +385,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                         .map((c) => c.id);
                       setSelectedCollections(matching.slice(0, 2));
                     }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-none text-xs font-medium border transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
                       selectedModality === key
                         ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
                         : 'bg-card border-border text-muted-foreground hover:text-foreground'
@@ -409,9 +409,9 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <label
                       key={c.id}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-none border text-xs cursor-pointer transition-colors ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${
                         isChecked
-                          ? 'bg-[#0F766E]/25 border-[#14B8A6]/50 text-[#2DD4BF]'
+                          ? 'bg-sky-500/15 border-sky-400/50 text-sky-400'
                           : 'bg-card border-border text-foreground hover:border-border'
                       }`}
                     >
@@ -427,7 +427,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                             setSelectedCollections([...selectedCollections, c.id]);
                           }
                         }}
-                        className="rounded-none border-border bg-muted"
+                        className="rounded-lg border-border bg-muted"
                       />
                       <span>{c.title}</span>
                     </label>
@@ -491,7 +491,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                 max={100}
                 value={maxCloud}
                 onChange={(e) => setMaxCloud(Number(e.target.value))}
-                className="w-full accent-[#14B8A6] cursor-pointer"
+                className="w-full accent-primary cursor-pointer"
               />
             </div>
           </div>
@@ -534,14 +534,14 @@ export const StacModal: React.FC<StacModalProps> = ({
 
           {/* Error Alert */}
           {errorMsg && (
-            <div className="p-3 rounded-none bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs">
+            <div className="p-3 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs">
               {errorMsg}
             </div>
           )}
 
           {/* Active Downloads Progress Panel */}
           {Object.keys(activeDownloads).length > 0 && (
-            <div className="bg-muted border border-border rounded-none p-3.5 space-y-2.5">
+            <div className="bg-muted border border-border rounded-lg p-3.5 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 font-semibold text-foreground">
                   <Download className="h-4 w-4 text-sky-400" />
@@ -568,7 +568,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                   <button
                     type="button"
                     onClick={handleCancelAllDownloads}
-                    className="text-[10.5px] px-2 py-0.5 rounded-none bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
+                    className="text-[10.5px] px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
                   >
                     ✕ Cancel All
                   </button>
@@ -585,7 +585,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <div
                       key={dl.stage_id}
-                      className="bg-card border border-border rounded-none p-2"
+                      className="bg-card border border-border rounded-lg p-2"
                     >
                       <div className="flex items-center justify-between text-[11px] mb-1">
                         <span
@@ -637,7 +637,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                           )}
                         </div>
                       </div>
-                      <div className="w-full h-1.5 bg-muted rounded-none overflow-hidden">
+                      <div className="w-full h-1.5 bg-muted rounded-lg overflow-hidden">
                         <div
                           className={`h-full transition-all ${
                             isDone
@@ -676,7 +676,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                   return (
                     <div
                       key={item.id}
-                      className="bg-muted border border-border rounded-none overflow-hidden flex flex-col"
+                      className="bg-muted border border-border rounded-lg overflow-hidden flex flex-col"
                     >
                       <div className="h-36 bg-background flex items-center justify-center overflow-hidden border-b border-border">
                         {item.thumbnail ? (
@@ -703,20 +703,20 @@ export const StacModal: React.FC<StacModalProps> = ({
                             {item.id}
                           </div>
                           <div className="flex flex-wrap gap-1 font-mono text-[10px]">
-                            <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-none">
+                            <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-lg">
                               {dt}
                             </span>
-                            <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded-none">
+                            <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded-lg">
                               {item.collection}
                             </span>
                             {cloud && (
-                              <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-none">
+                              <span className="bg-muted text-foreground px-1.5 py-0.5 rounded-lg">
                                 {cloud}
                               </span>
                             )}
                             {item.aoi_coverage_pct != null && (
                               <span
-                                className={`px-1.5 py-0.5 rounded-none font-semibold ${
+                                className={`px-1.5 py-0.5 rounded-lg font-semibold ${
                                   item.aoi_coverage_pct >= 90
                                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                     : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
@@ -728,7 +728,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                               </span>
                             )}
                             {item.nodata_pct != null && (
-                              <span className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded-none">
+                              <span className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded-lg">
                                 {item.nodata_pct}% nodata
                               </span>
                             )}
@@ -745,7 +745,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleDownloadAllCore(item)}
-                                className="flex items-center gap-1 bg-[#0F766E] hover:bg-[#14B8A6] text-white text-[10px] font-semibold px-2 py-0.5 rounded-none cursor-pointer transition-colors"
+                                className="flex items-center gap-1 bg-primary hover:bg-primary/90 text-primary-foreground text-[10px] font-semibold px-2 py-0.5 rounded-md cursor-pointer transition-colors"
                                 title="Download essential bands together"
                               >
                                 <Zap className="h-3 w-3" />
@@ -763,7 +763,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => handleCancelItemDownloads(item)}
-                                  className="text-[10px] px-1.5 py-0.5 rounded-none bg-rose-500/20 text-rose-300 border border-rose-500/40 cursor-pointer"
+                                  className="text-[10px] px-1.5 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40 cursor-pointer"
                                 >
                                   ✕ Cancel
                                 </button>
@@ -807,7 +807,7 @@ export const StacModal: React.FC<StacModalProps> = ({
                                       ? 'Click to cancel download'
                                       : a.description || a.title || a.key
                                   }
-                                  className={`font-mono text-[10px] px-2 py-0.5 rounded-none border cursor-pointer transition-colors flex items-center gap-1 ${
+                                  className={`font-mono text-[10px] px-2 py-0.5 rounded-lg border cursor-pointer transition-colors flex items-center gap-1 ${
                                     isStaged
                                       ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
                                       : isDownloading

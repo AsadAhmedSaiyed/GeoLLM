@@ -5,25 +5,39 @@ interface UseResizableOverlayOptions {
   defaultWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  maxWidthRatio?: number;
   snapThreshold?: number;
 }
 
+const getDynamicMaxWidth = (maxWidth?: number, maxWidthRatio = 0.88): number => {
+  if (typeof window === 'undefined') return maxWidth ?? 1200;
+  const viewportCap = Math.max(420, Math.floor(window.innerWidth * maxWidthRatio));
+  return maxWidth ? Math.max(maxWidth, viewportCap) : viewportCap;
+};
+
 export function useResizableOverlay({
   storageKey = 'geollm_chat_overlay_width',
-  defaultWidth = 460,
-  minWidth = 320,
-  maxWidth = 850,
+  defaultWidth = 480,
+  minWidth = 340,
+  maxWidth,
+  maxWidthRatio = 0.88,
   snapThreshold = 180,
 }: UseResizableOverlayOptions = {}) {
+  const [effectiveMaxWidth, setEffectiveMaxWidth] = useState<number>(() =>
+    getDynamicMaxWidth(maxWidth, maxWidthRatio)
+  );
+
   const [panelWidth, setPanelWidth] = useState<number>(() => {
+    const cap = getDynamicMaxWidth(maxWidth, maxWidthRatio);
     try {
       const saved = localStorage.getItem(storageKey);
       if (saved) {
         const parsed = parseInt(saved, 10);
-        if (parsed >= minWidth && parsed <= maxWidth) return parsed;
+        if (parsed >= minWidth && parsed <= cap) return parsed;
+        if (parsed > cap) return cap;
       }
     } catch {}
-    return defaultWidth;
+    return Math.min(defaultWidth, cap);
   });
 
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
@@ -38,6 +52,16 @@ export function useResizableOverlay({
   const startXRef = useRef(0);
   const startWidthRef = useRef(panelWidth);
   const lastExpandedWidthRef = useRef(panelWidth);
+
+  useEffect(() => {
+    const onResize = () => {
+      const nextCap = getDynamicMaxWidth(maxWidth, maxWidthRatio);
+      setEffectiveMaxWidth(nextCap);
+      setPanelWidth((prev) => Math.min(nextCap, Math.max(minWidth, prev)));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [maxWidth, maxWidthRatio, minWidth]);
 
   // Sync state to localStorage
   useEffect(() => {
@@ -84,7 +108,7 @@ export function useResizableOverlay({
           setIsCollapsed(true);
         } else {
           setIsCollapsed(false);
-          const clamped = Math.min(maxWidth, Math.max(minWidth, newWidth));
+          const clamped = Math.min(effectiveMaxWidth, Math.max(minWidth, newWidth));
           setPanelWidth(clamped);
           lastExpandedWidthRef.current = clamped;
         }
@@ -99,15 +123,34 @@ export function useResizableOverlay({
       window.addEventListener('mousemove', onMouseMove);
       window.addEventListener('mouseup', onMouseUp);
     },
-    [isCollapsed, panelWidth, snapThreshold, minWidth, maxWidth]
+    [isCollapsed, panelWidth, snapThreshold, minWidth, effectiveMaxWidth]
+  );
+
+  const setPresetWidth = useCallback(
+    (preset: 'compact' | 'wide' | 'max') => {
+      setIsCollapsed(false);
+      const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
+      const target =
+        preset === 'compact'
+          ? 460
+          : preset === 'wide'
+            ? Math.floor(vw * 0.62)
+            : effectiveMaxWidth;
+      const clamped = Math.min(effectiveMaxWidth, Math.max(minWidth, target));
+      setPanelWidth(clamped);
+      lastExpandedWidthRef.current = clamped;
+    },
+    [effectiveMaxWidth, minWidth]
   );
 
   return {
     panelWidth,
+    effectiveMaxWidth,
     isCollapsed,
     isDragging,
     toggleCollapse,
     handleMouseDown,
+    setPresetWidth,
     setIsCollapsed,
   };
 }
