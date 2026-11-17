@@ -70,13 +70,31 @@ def _safe_inputs(requested, allowed_originals):
 
 
 
-def _call_executor(code, files, attempt_dir, cfg):
+def _call_executor(code, files, attempt_dir, cfg, question=""):
+    from harness.resource_sizer import estimate_job_resources, next_memory_tier
+
     params = inspect.signature(run_code).parameters
     task_id = os.environ.get("GEOLLM_TASK_ID", "")
     needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "terrain", "lidar", "raster", "dask", "xarray", "rioxarray", "sklearn", "statsmodels", "ruptures"))
     custom_image = os.environ.get("GEOLLM_IMAGE_TS", "geollm-runtime-ts") if needs_ts else os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
-    wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id, "image": custom_image}
-    return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params and v is not None})
+
+    q = question or os.environ.get("GEOLLM_QUESTION", "")
+    profile = estimate_job_resources(q, files, default_memory=cfg.sandbox_memory, default_cpus=cfg.sandbox_cpus)
+    mem = profile.memory
+    cpus = profile.cpus
+
+    def _invoke(mem_val, cpu_val):
+        wanted = {"timeout": cfg.sandbox_timeout_s, "memory": mem_val, "cpus": cpu_val, "task_id": task_id, "image": custom_image}
+        return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params and v is not None})
+
+    res = _invoke(mem, cpus)
+    # Automatic OOM safety net: double RAM once if container was OOM-killed
+    if res.get("oom"):
+        bigger = next_memory_tier(mem)
+        if bigger:
+            print(f"[GeoLLM] OOM detected at {mem} — retrying with {bigger}...", flush=True)
+            res = _invoke(bigger, cpus)
+    return res
 
 
 

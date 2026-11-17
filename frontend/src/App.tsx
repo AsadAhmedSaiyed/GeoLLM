@@ -3,7 +3,7 @@
 // GlobeView (MapLibre 3D Globe), Terrain3DViewer (Three.js DEM/LiDAR), TiffPreviewModal, StacModal, and SupervisorDrawer.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Workspace } from '@/types/task';
+import { Workspace, ContainerCapacity } from '@/types/task';
 import { ArtifactItem, TaskStatus } from '@/types/sse';
 import { api, ApiError } from '@/services/api';
 import { useMultiTaskStreams, DEFAULT_TASK_STATE } from '@/hooks/useTaskStream';
@@ -78,6 +78,24 @@ export function App() {
   const [injectedPrompt, setInjectedPrompt] = useState<string | null>(null);
   const [workspaceTurns, setWorkspaceTurns] = useState<Record<string, Array<{ id?: string; seq?: number; role: 'user' | 'assistant'; content: string; timestamp?: number; type?: any; question?: string; thumb_url?: string; fly_to_bbox?: number[]; follow_ups?: string[] }>>>({});
   const [globeFlyToBbox, setGlobeFlyToBbox] = useState<number[] | null>(null);
+  const [containerCapacity, setContainerCapacity] = useState<ContainerCapacity | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      api.getTasksWithCapacity()
+        .then(({ capacity }) => {
+          if (!cancelled && capacity) setContainerCapacity(capacity);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const id = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   // Chat Workspace Overlay Hook: Anchored Left, Expands Right up to 88% viewport
   const {
@@ -196,16 +214,25 @@ export function App() {
   }, []);
 
   // Handlers for Workspaces
-  const handleCreateWorkspace = (name: string) => {
-    if (workspaces.length >= 3) {
-      toast.warning('All 3 sandbox slots allocated', {
-        description: 'Delete a workspace to free a container slot.',
-      });
-      return;
+  const handleCreateWorkspace = async (name: string) => {
+    const usedIds = workspaces.map((w) => w.containerId);
+    let freeId: string | undefined = (['task_1', 'task_2', 'task_3'] as const).find(
+      (cid) => !usedIds.includes(cid)
+    );
+
+    if (!freeId) {
+      try {
+        const created = await api.createTask();
+        freeId = created.task_id;
+        if (created.capacity) setContainerCapacity(created.capacity);
+      } catch (err) {
+        toast.warning('Cannot allocate new container', {
+          description: err instanceof Error ? err.message : 'Maximum dynamic limit reached.',
+        });
+        return;
+      }
     }
 
-    const usedIds = workspaces.map((w) => w.containerId);
-    const freeId = (['task_1', 'task_2', 'task_3'] as const).find((cid) => !usedIds.includes(cid));
     if (!freeId) return;
 
     const newWs: Workspace = {
@@ -219,7 +246,7 @@ export function App() {
     setActiveWorkspaceId(newWs.id);
     setWorkspaceTurns((prev) => {
       const next = { ...prev };
-      delete next[freeId];
+      delete next[freeId!];
       return next;
     });
     api.clearWorkspaceConversation(freeId).catch(() => {});
@@ -237,9 +264,10 @@ export function App() {
         delete next[ws.containerId];
         return next;
       });
+      const isDynamicExtra = !['task_1', 'task_2', 'task_3'].includes(ws.containerId);
       await Promise.allSettled([
         api.clearWorkspaceConversation(ws.containerId),
-        api.resetTask(ws.containerId),
+        isDynamicExtra ? api.deleteTask(ws.containerId) : api.resetTask(ws.containerId),
       ]);
     } catch {
       // ignore
@@ -335,7 +363,14 @@ export function App() {
       if (selectedFiles.length > 0) setSelectedFiles([]);
 
       if (res.type === 'task_delegated') {
-        toast.info(`Geospatial task delegated to Container #${targetContainerId.replace('task_', '')}`);
+        const isQueued = res.status === 'queued';
+        if (isQueued) {
+          toast.info(`Container #${targetContainerId.replace('task_', '')} queued`, {
+            description: res.current_step || 'Waiting for free RAM...',
+          });
+        } else {
+          toast.info(`Geospatial task delegated to Container #${targetContainerId.replace('task_', '')}`);
+        }
         setWorkspaceTurns((prev) => ({
           ...prev,
           [targetContainerId]: [
@@ -354,9 +389,9 @@ export function App() {
           ...prev,
           [targetContainerId]: {
             ...DEFAULT_TASK_STATE,
-            status: 'running',
+            status: isQueued ? 'queued' : 'running',
             question,
-            step: 'Starting Container Sandbox',
+            step: res.current_step || (isQueued ? 'Queued — waiting for free RAM' : 'Starting Container Sandbox'),
             elapsed: 0,
           },
         }));
@@ -571,6 +606,7 @@ export function App() {
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         tasksStatus={tasksStatus}
+        capacity={containerCapacity}
         onSelectWorkspace={(id) => {
           setActiveWorkspaceId(id);
           setIsCollapsed(false);

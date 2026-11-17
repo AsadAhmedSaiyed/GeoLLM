@@ -4,6 +4,7 @@
 
 export type TaskStatus =
   | 'idle'
+  | 'queued'
   | 'running'
   | 'pending_approval'
   | 'pending_stac_approval'

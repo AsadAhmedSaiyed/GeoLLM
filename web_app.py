@@ -51,6 +51,11 @@ async def lifespan(app: FastAPI):
         _server_shutting_down = True
         print("[GeoLLM] Server shutdown initiated — terminating sub-agents...", flush=True)
         task_manager.cancel_all()
+        try:
+            from harness.executor import release_all_containers
+            release_all_containers()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="GeoLLM Web Interface", lifespan=lifespan)
@@ -365,7 +370,7 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
         )
 
     # 6. Category C: Complex Geospatial Task -> Check container availability
-    if ts.status in ("running", "pending_approval", "pending_stac_approval"):
+    if ts.status in ("queued", "running", "pending_approval", "pending_stac_approval"):
         busy_msg = (
             f"Workspace **{task_id}** is currently busy running an analysis (*{ts.step}*). "
             "To prevent overwriting active calculations, please wait for this run to finish or switch to another workspace."
@@ -412,8 +417,9 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
     )
     return JSONResponse({
         "type": "task_delegated",
-        "task_id": task_id,
-        "status": "running",
+        "task_id": started_tid,
+        "status": ts.status,
+        "step": ts.step,
         "seq": delegated_turn.get("seq"),
         "timestamp": delegated_turn.get("timestamp"),
     })
@@ -423,8 +429,10 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
 @app.get("/api/tasks")
 async def list_tasks():
     tasks = []
-    for tid in task_manager.tasks:
-        ts = task_manager.tasks[tid]
+    for tid in list(task_manager.tasks.keys()):
+        ts = task_manager.tasks.get(tid)
+        if not ts:
+            continue
         tasks.append({
             "task_id": tid,
             "status": ts.status,
@@ -434,8 +442,26 @@ async def list_tasks():
             "elapsed": round((ts.ended or time.time()) - ts.started, 1) if ts.started else 0,
             "plan": ts.plan,
             "stac_preview": ts.stac_preview,
+            "allocated_ram_gb": ts.allocated_ram_gb,
+            "resource_tier": ts.resource_tier,
         })
-    return JSONResponse({"tasks": tasks})
+    return JSONResponse({"tasks": tasks, "capacity": task_manager.capacity()})
+
+
+@app.post("/api/tasks/create")
+async def create_dynamic_task():
+    ts = task_manager.create_task()
+    if not ts:
+        return JSONResponse({"error": "Maximum dynamic workspace limit reached."}, status_code=400)
+    return JSONResponse({"task_id": ts.task_id, "status": ts.status, "capacity": task_manager.capacity()})
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_dynamic_task(task_id: str):
+    ok = task_manager.delete_task(task_id)
+    if not ok:
+        return JSONResponse({"error": f"Cannot delete workspace '{task_id}'"}, status_code=400)
+    return JSONResponse({"deleted": task_id, "capacity": task_manager.capacity()})
 
 
 @app.get("/api/tasks/{task_id}/stream")

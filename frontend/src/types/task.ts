@@ -7,6 +7,15 @@ import {
   GeoLLMSSEEvent,
 } from './sse';
 
+export interface ContainerCapacity {
+  active_containers: number;
+  total_containers: number;
+  max_containers: number;
+  allocated_ram_gb: number;
+  budget_ram_gb: number;
+  queued_count: number;
+}
+
 export type ActivityItem =
   | {
       type: 'text';

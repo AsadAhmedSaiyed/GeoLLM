@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Workspace } from '@/types/task';
+import { Workspace, ContainerCapacity } from '@/types/task';
 import { TaskStatus } from '@/types/sse';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ interface TaskHeaderProps {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   tasksStatus: Record<string, { status: TaskStatus; step?: string }>;
+  capacity?: ContainerCapacity;
   onSelectWorkspace: (id: string) => void;
   onCreateWorkspace: (name: string) => void;
   onDeleteWorkspace?: (id: string) => void;
@@ -21,6 +22,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
   workspaces,
   activeWorkspaceId,
   tasksStatus,
+  capacity,
   onSelectWorkspace,
   onCreateWorkspace,
   onDeleteWorkspace,
@@ -50,7 +52,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
     if (status === 'failed') {
       return <AlertCircle className="h-3 w-3 text-rose-400" />;
     }
-    if (status === 'pending_approval' || status === 'pending_stac_approval') {
+    if (status === 'queued' || status === 'pending_approval' || status === 'pending_stac_approval') {
       return <Clock className="h-3 w-3 text-amber-400 animate-pulse" />;
     }
     return <span className="h-2 w-2 rounded-full bg-muted-foreground" />;
@@ -68,8 +70,18 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
           </Badge>
         </div>
 
-        <Badge variant="outline" className="font-mono text-[11px] text-muted-foreground">
-          {workspaces.length} / 3 Containers
+        <Badge
+          variant="outline"
+          className="font-mono text-[11px] text-muted-foreground"
+          title={
+            capacity
+              ? `${capacity.active_containers} running, ${capacity.queued_count} queued (${capacity.allocated_ram_gb}/${capacity.budget_ram_gb} GB RAM)`
+              : undefined
+          }
+        >
+          {capacity
+            ? `${workspaces.length} Tabs · ${capacity.allocated_ram_gb}/${capacity.budget_ram_gb} GB`
+            : `${workspaces.length} Containers`}
         </Badge>
       </div>
 
@@ -114,7 +126,7 @@ export const TaskHeader: React.FC<TaskHeaderProps> = ({
         })}
 
         {/* Create Workspace Inline Button */}
-        {workspaces.length < 3 && (
+        {workspaces.length < (capacity?.max_containers ?? 12) && (
           isCreating ? (
             <form onSubmit={handleCreateSubmit} className="flex items-center gap-1 px-1">
               <input

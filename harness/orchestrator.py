@@ -1,12 +1,15 @@
-"""Multi-task orchestrator: runs up to 3 concurrent Pi sub-agent jobs."""
+"""Multi-task orchestrator: runs dynamic concurrent Pi sub-agent jobs with resource-aware queueing."""
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from harness.executor import release_container
 from harness.pi_harness import solve
+from harness.resource_sizer import estimate_job_resources, get_host_budget_gb
 from harness.workspace import (
     MAX_TASKS,
     TASK_IDS,
@@ -21,12 +24,19 @@ from harness.checkpoint import (
     delete_checkpoint,
 )
 
+MAX_DYNAMIC_TASKS = 12
+
+
+def _container_num(task_id: str) -> str:
+    m = re.match(r"^task_(\d+)$", str(task_id or ""))
+    return m.group(1) if m else "?"
+
 
 @dataclass
 class TaskState:
     """Mutable state for one task slot."""
     task_id: str
-    status: str = "idle"          # idle | running | pending_approval | done | partial | failed
+    status: str = "idle"          # idle | queued | running | pending_approval | done | partial | failed
     step: str = ""
     result: Optional[dict] = None
     error: Optional[str] = None
@@ -44,6 +54,8 @@ class TaskState:
     approval_event: threading.Event = field(default_factory=threading.Event)
     revision_feedback: Optional[str] = None
     auto_approve: bool = False
+    allocated_ram_gb: float = 0.0
+    resource_tier: str = ""
     run_id: int = 0
     pi_rpc: Optional[object] = field(default=None, repr=False)
     _thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -210,23 +222,29 @@ def find_artifacts(run_dir) -> list:
 
 
 class TaskManager:
-    """Manages up to MAX_TASKS concurrent geospatial analysis jobs."""
+    """Manages dynamic concurrent geospatial analysis jobs with resource-aware queueing."""
 
     def __init__(self, on_finish: Optional[Callable] = None, auto_approve: bool = False, runs_dir: Optional[Path] = None):
         self._lock = threading.Lock()
         self.on_finish = on_finish
         self.auto_approve = auto_approve
         self.runs_dir = runs_dir if runs_dir is not None else Path("runs")
+        self._pending_queue: list[tuple[str, str, list, dict, int, float, str]] = []
         self.tasks: dict[str, TaskState] = {
             tid: TaskState(task_id=tid) for tid in TASK_IDS
         }
+        # Also discover any previously created dynamic task_4..task_N directories on disk
+        if self.runs_dir.is_dir():
+            for d in sorted(self.runs_dir.iterdir()):
+                if d.is_dir() and re.match(r"^task_(\d+)$", d.name) and d.name not in self.tasks:
+                    self.tasks[d.name] = TaskState(task_id=d.name)
         self._restore_from_disk()
 
     def _restore_from_disk(self):
         """Restore task states and event logs from disk on server startup, and auto-resume incomplete tasks."""
         tasks_to_resume = []
         with self._lock:
-            for tid in TASK_IDS:
+            for tid in list(self.tasks.keys()):
                 ts = self.tasks[tid]
                 ws_dir = get_workspace_dir(tid, self.runs_dir)
                 ts.state["run_dir"] = str(ws_dir)
@@ -414,17 +432,103 @@ class TaskManager:
 
     # ---- public API ----
 
-    def submit_task(self, question: str, files: list, task_id: Optional[str] = None, **kw) -> Optional[str]:
-        """Find a free slot (or use specific task_id), start the job. Returns task_id or None if all busy."""
+    def create_task(self) -> Optional[TaskState]:
+        """Allocate a new dynamic workspace slot (task_4, task_5, ...) up to MAX_DYNAMIC_TASKS."""
         with self._lock:
-            target_ids = [task_id] if task_id and task_id in TASK_IDS else TASK_IDS
+            if len(self.tasks) >= MAX_DYNAMIC_TASKS:
+                return None
+            used_nums = {int(_container_num(tid)) for tid in self.tasks if _container_num(tid).isdigit()}
+            n = 1
+            while n in used_nums:
+                n += 1
+            tid = f"task_{n}"
+            ts = TaskState(task_id=tid)
+            ws_dir = get_workspace_dir(tid, self.runs_dir)
+            ts.state["run_dir"] = str(ws_dir)
+            init_workspace_layout(tid, self.runs_dir)
+            self.tasks[tid] = ts
+            return ts
+
+    def delete_task(self, task_id: str) -> bool:
+        """Stop any running job/warm container for `task_id` and remove its dynamic slot."""
+        if task_id == "task_1":
+            return False
+        self.cancel_task(task_id)
+        release_container(task_id)
+        with self._lock:
+            if task_id not in self.tasks:
+                return False
+            self._pending_queue = [item for item in self._pending_queue if item[0] != task_id]
+            self.tasks.pop(task_id, None)
+        return True
+
+    def capacity(self) -> dict:
+        """Return live host RAM budget, allocated RAM, active and queued container counts."""
+        budget_gb = get_host_budget_gb()
+        with self._lock:
+            active_statuses = ("running", "pending_approval", "pending_stac_approval")
+            active = sum(1 for ts in self.tasks.values() if ts.status in active_statuses)
+            queued = sum(1 for ts in self.tasks.values() if ts.status == "queued")
+            allocated = round(
+                sum(ts.allocated_ram_gb for ts in self.tasks.values() if ts.status in active_statuses),
+                1,
+            )
+            return {
+                "active_containers": active,
+                "total_containers": len(self.tasks),
+                "max_containers": MAX_DYNAMIC_TASKS,
+                "allocated_ram_gb": allocated,
+                "budget_ram_gb": budget_gb,
+                "queued_count": queued,
+            }
+
+    def _drain_queue(self) -> None:
+        """Start queued tasks whenever host RAM budget has room."""
+        to_launch = []
+        budget_gb = get_host_budget_gb()
+        with self._lock:
+            active_statuses = ("running", "pending_approval", "pending_stac_approval")
+            used_gb = sum(ts.allocated_ram_gb for ts in self.tasks.values() if ts.status in active_statuses)
+            active_n = sum(1 for ts in self.tasks.values() if ts.status in active_statuses)
+            remaining = []
+            for item in self._pending_queue:
+                tid, question, files, kw, run_id, needed_gb, tier = item
+                ts = self.tasks.get(tid)
+                if not ts or ts.status != "queued" or ts.run_id != run_id:
+                    continue
+                if active_n == 0 or (used_gb + needed_gb <= budget_gb):
+                    used_gb += needed_gb
+                    active_n += 1
+                    ts.status = "running"
+                    ts.step = f"starting ({tier} · {int(round(needed_gb))}g)"
+                    ts.started = time.time()
+                    ts.allocated_ram_gb = needed_gb
+                    ts.resource_tier = tier
+                    to_launch.append((tid, question, files, kw, run_id))
+                else:
+                    remaining.append(item)
+            self._pending_queue = remaining
+
+        for tid, question, files, kw, run_id in to_launch:
+            self._on_step(tid, {"type": "status", "status": "running", "step": "Allocated container resources — starting..."}, run_id)
+            t = threading.Thread(target=self._work, args=(tid, question, files, kw, run_id), daemon=True)
+            self.tasks[tid]._thread = t
+            t.start()
+
+    def submit_task(self, question: str, files: list, task_id: Optional[str] = None, **kw) -> Optional[str]:
+        """Find a free slot (or use specific task_id), start or queue the job based on host RAM budget."""
+        profile = estimate_job_resources(question, files)
+        budget_gb = get_host_budget_gb()
+
+        with self._lock:
+            if task_id and task_id not in self.tasks and len(self.tasks) < MAX_DYNAMIC_TASKS:
+                self.tasks[task_id] = TaskState(task_id=task_id)
+            target_ids = [task_id] if task_id and task_id in self.tasks else list(self.tasks.keys())
             for tid in target_ids:
                 ts = self.tasks[tid]
                 if ts.status in ("idle", "done", "partial", "failed"):
                     ts.run_id += 1
                     current_run_id = ts.run_id
-                    ts.status = "running"
-                    ts.step = "starting"
                     ts.result = None
                     ts.error = None
                     ts.started = time.time()
@@ -455,19 +559,36 @@ class TaskManager:
                     ts.revision_feedback = None
                     ts.pi_rpc = None
 
-                    save_checkpoint(tid, "task_created", {
-                        "question": question,
-                        "files": files,
-                        "status": "running",
-                        "step": "starting",
-                        "bbox": kw.get("bbox")
-                    }, self.runs_dir)
+                    active_statuses = ("running", "pending_approval", "pending_stac_approval")
+                    used_gb = sum(t_s.allocated_ram_gb for t_s in self.tasks.values() if t_s.status in active_statuses)
+                    active_n = sum(1 for t_s in self.tasks.values() if t_s.status in active_statuses)
 
-                    t = threading.Thread(
-                        target=self._work, args=(tid, question, files, kw, current_run_id), daemon=True
-                    )
-                    ts._thread = t
-                    t.start()
+                    if active_n == 0 or (used_gb + profile.memory_gb <= budget_gb):
+                        ts.status = "running"
+                        ts.step = f"starting ({profile.tier} · {profile.memory})"
+                        ts.allocated_ram_gb = profile.memory_gb
+                        ts.resource_tier = profile.tier
+
+                        save_checkpoint(tid, "task_created", {
+                            "question": question,
+                            "files": files,
+                            "status": "running",
+                            "step": ts.step,
+                            "bbox": kw.get("bbox")
+                        }, self.runs_dir)
+
+                        t = threading.Thread(
+                            target=self._work, args=(tid, question, files, kw, current_run_id), daemon=True
+                        )
+                        ts._thread = t
+                        t.start()
+                    else:
+                        ts.status = "queued"
+                        ts.step = f"Queued — waiting for free RAM ({profile.memory} needed; {used_gb:.0f}/{budget_gb:.0f} GB in use)"
+                        ts.allocated_ram_gb = 0.0
+                        ts.resource_tier = profile.tier
+                        self._pending_queue.append((tid, question, files, kw, current_run_id, profile.memory_gb, profile.tier))
+                        self._on_step(tid, {"type": "status", "status": "queued", "step": ts.step}, current_run_id)
                     return tid
         return None
 
@@ -481,13 +602,15 @@ class TaskManager:
 
     def cancel_task(self, task_id: str) -> bool:
         ts = self.tasks.get(task_id)
-        if not ts or ts.status not in ("running", "pending_approval", "pending_stac_approval"):
+        if not ts or ts.status not in ("queued", "running", "pending_approval", "pending_stac_approval"):
             return False
 
         with self._lock:
             ts.error = "Cancelled by user"
             ts.status = "failed"
             ts.ended = time.time()
+            ts.allocated_ram_gb = 0.0
+            self._pending_queue = [item for item in self._pending_queue if item[0] != task_id]
             ts.approval_event.set()  # unblock if waiting for approval
             pi = ts.pi_rpc
             rd = ts.state.get("run_dir")
@@ -520,8 +643,10 @@ class TaskManager:
         except Exception:
             pass
 
+        release_container(task_id)
         self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "error": "Cancelled by user"}, ts.run_id)
         save_checkpoint(task_id, "failed", {"status": "failed", "error": "Cancelled by user", "step": "Aborted"}, self.runs_dir)
+        self._drain_queue()
 
         if self.on_finish:
             self.on_finish(task_id)
@@ -530,7 +655,7 @@ class TaskManager:
 
 
     def cancel_all(self):
-        for tid in TASK_IDS:
+        for tid in list(self.tasks.keys()):
             self.cancel_task(tid)
 
     def approve_task(self, task_id: str) -> bool:
@@ -685,7 +810,9 @@ class TaskManager:
             self._on_step(task_id, {"type": "finish", "task_id": task_id, "status": "failed", "ok": False, "error": ts.error}, run_id)
 
         finally:
-            ts.ended = time.time()
+            with self._lock:
+                ts.ended = time.time()
+                ts.allocated_ram_gb = 0.0
             rd = ts.state.get("run_dir")
             if rd:
                 # Also promote if any outputs exist in scratch
@@ -706,6 +833,7 @@ class TaskManager:
                     "verified_outputs": [a["name"] for a in arts]
                 }, self.runs_dir)
 
+            self._drain_queue()
             if self.on_finish:
                 self.on_finish(task_id)
 
@@ -734,7 +862,7 @@ class TaskManager:
         if not ts:
             return f"[{task_id}] UNKNOWN"
 
-        container_num = {"task_1": 1, "task_2": 2, "task_3": 3}.get(task_id, "?")
+        container_num = _container_num(task_id)
 
         with self._lock:
             s = dict(ts.state)
@@ -799,10 +927,14 @@ class TaskManager:
 
     def multi_snapshot(self) -> str:
         sections = []
-        for tid in TASK_IDS:
-            ts = self.tasks[tid]
+        with self._lock:
+            tids = list(self.tasks.keys())
+        for tid in tids:
+            ts = self.tasks.get(tid)
+            if not ts:
+                continue
             if ts.status == "idle":
-                container_num = {"task_1": 1, "task_2": 2, "task_3": 3}.get(tid, "?")
+                container_num = _container_num(tid)
                 sections.append(f"--- Container #{container_num} ({tid}) ---\nSTATUS: idle (no job assigned)")
             else:
                 sections.append(self.task_snapshot(tid))

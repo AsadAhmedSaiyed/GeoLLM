@@ -193,7 +193,9 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
   };
 
   const statusLabel =
-    task.status === 'running'
+    task.status === 'queued'
+      ? task.step || 'Queued — waiting for free RAM…'
+      : task.status === 'running'
       ? task.step || 'Running…'
       : task.status === 'pending_stac_approval'
       ? 'STAC Satellite Preview Pending Review'
@@ -1572,7 +1574,8 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
             </Button>
           )}
 
-          {(task.status === 'running' ||
+          {(task.status === 'queued' ||
+            task.status === 'running' ||
             task.status === 'pending_approval' ||
             task.status === 'pending_stac_approval') && (
             <Button

@@ -18,7 +18,7 @@ import {
   StacStagePayload,
   StacDownloadsResponse,
 } from '@/types/stac';
-import { TaskSummary } from '@/types/task';
+import { TaskSummary, ContainerCapacity } from '@/types/task';
 import { ArtifactItem } from '@/types/sse';
 
 export interface TaskSubmissionParams {
@@ -77,10 +77,27 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  // Tasks
+  // Tasks & Dynamic Containers
   async getTasks(): Promise<TaskSummary[]> {
     const data = await request<{ tasks: TaskSummary[] }>('/api/tasks');
     return data.tasks || [];
+  },
+
+  async getTasksWithCapacity(): Promise<{ tasks: TaskSummary[]; capacity?: ContainerCapacity }> {
+    const data = await request<{ tasks: TaskSummary[]; capacity?: ContainerCapacity }>('/api/tasks');
+    return { tasks: data.tasks || [], capacity: data.capacity };
+  },
+
+  async createTask(): Promise<{ task_id: string; status: string; capacity?: ContainerCapacity }> {
+    return request<{ task_id: string; status: string; capacity?: ContainerCapacity }>('/api/tasks/create', {
+      method: 'POST',
+    });
+  },
+
+  async deleteTask(taskId: string): Promise<{ deleted: string; capacity?: ContainerCapacity }> {
+    return request<{ deleted: string; capacity?: ContainerCapacity }>(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE',
+    });
   },
 
   async submitTask(params: TaskSubmissionParams): Promise<TaskSubmissionResponse> {
