@@ -111,8 +111,18 @@ IMPORTANT SCIENTIFIC GUIDANCE
       * In Optical: Water absorbs Red (r < 0.16) and NIR/SWIR. Desert sand and bare soil have high Red (r > 0.22) and high NIR/SWIR. Use `NDWI = (Green - NIR) / (Green + NIR) > 0` or `MNDWI = (Green - SWIR1) / (Green + SWIR1) > 0`. Desert has strongly negative NDWI (-0.3 to -0.6). Never classify bright pixels (brightness > 0.25, r > 0.20, or r > 1.2 * b) as water.
     - Never blindly label unsupervised mathematical clusters as 'trees' or 'vegetation' if their NDVI is low (< 0.3). In arid or desert scenes, low-NDVI surfaces (< 0.2) are bare sand, rock, or urban cover, NEVER trees.
     - Spatial & Semantic Quality Guardrails (for classification or mapping tasks):
-      * Avoid naive single-band or single-threshold rules that cause false positives on bare ground, shadows, or urban surfaces.
-      * Apply data-driven or multi-feature logic where applicable.
+      * Discrete Target vs Continuous Field (The Scale-Imbalance Principle):
+        When detecting discrete, localized targets (such as waterbodies/rivers in arid zones, wildfire burn scars, deforestation parcels, or buildings) that occupy a small fraction of a large scene:
+        - NEVER derive a single global threshold (such as global Otsu) across the whole scene. In a 98% desert scene, global Otsu will bisect the desert itself and classify 40% of the sand as water!
+        - Instead, evaluate thresholds locally within active blocks/tiles (e.g. `geollm_lib.raster.local_adaptive_threshold` or `test_bimodality`) and verify boundary gradients via `geollm_lib.raster.spatial_gradient`.
+      * Unimodal Protection & Permission for Null Detection:
+        - If a scene or tile is statistically unimodal (single continuous class like pure desert, uniform open ocean, or dense continuous forest), DO NOT force an algorithm to slice it in half.
+        - Conclude that 0 candidate pixels exist for the target feature. An AI agent must never hallucinate targets merely because a formula mathematically outputs a cut.
+      * Ambiguity & Physical Observability:
+        - If the user asks for a classification that is physically ambiguous under the supplied single observation alone (e.g. single-date SAR water mapping over arid/flat terrain where specular reflection mimics calm water, or single-band optical without SWIR for built-up):
+          1. State the physical ambiguity and limitations clearly in your plan and final answer.
+          2. Restrict candidates strictly to pixels with high local contrast / steep boundary gradients (`spatial_gradient`), and output a continuous confidence score [0.0, 1.0].
+          3. Set top-level `confidence: "low"` and include `scientific_warning` in `result.json` specifying what additional data (e.g. pre-event SAR baseline, DEM, or optical) is required for unambiguous verification.
       * For spatial maps, incorporate noise removal or morphological smoothing when necessary to eliminate isolated pixel specks and artifacts.
   * For large scenes, use `predict_in_chunks()` to bound memory consumption.
   * For frontend animations and time-series (minimum 3 dates required):
@@ -135,6 +145,13 @@ IMPORTANT SCIENTIFIC GUIDANCE
   percentages or other numerical results. Everything reported must be
   computed from the available data or explicitly identified as an assumption
   or externally supplied value.
+
+- Final Answer UI (OpenUI Lang):
+  * In your FINAL summary response (after all code executions and deliverables are complete — never inside `propose_plan`), include a fenced ```openui code block containing a valid `openui-lang` program visualizing your computed findings (never invent numbers; every value must come from your computed outputs).
+  * Positional OpenUI Lang rules:
+    - First line: `root = Card([hdr, kpis, chart, tbl])` (every defined variable must be referenced by `root`).
+    - Positional args only (NO `key: value` colons):
+      `CardHeader(title, subtitle?)`, `TextContent(text)`, `Callout(variant, title, description)`, `OverviewCardBlock([OverviewCardItem(id, IconText(Icon(name, cat), "neutral", "m", title, sub, false, "vertical"), MetricIndicatorInline(val, sub))], "grid", true)`, `BarChart(labels, [Series(cat, values)], "grouped", xLabel, yLabel)`, `LineChart(labels, [Series(cat, values)], "linear", xLabel, yLabel)`, `PieChart(labels, values, "donut")`, `Table([Col(label, dataArray, "string"|"number")])`.
 """
 
 

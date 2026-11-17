@@ -3,6 +3,7 @@ import { FileInfo } from '@/types/geospatial';
 import { Workspace } from '@/types/task';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { FileUploadModal } from '@/components/FileUploadModal';
 import {
   Folder,
   FileImage,
@@ -45,6 +46,7 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [category, setCategory] = useState<FileCategory>('all');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
   const getFileCategory = (fname: string): FileCategory => {
     const ext = fname.toLowerCase().split('.').pop() || '';
@@ -76,12 +78,6 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
     });
   }, [files, searchTerm, category]);
 
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      onUploadFiles(e.target.files);
-    }
-  };
-
   return (
     <aside className="w-full h-full flex flex-col bg-card border-r border-border select-none text-xs">
       {/* Catalog Header */}
@@ -99,10 +95,13 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
-          <label className="p-1 rounded-lg text-muted-foreground hover:text-sky-400 hover:bg-muted cursor-pointer">
+          <button
+            onClick={() => setIsUploadModalOpen(true)}
+            className="p-1 rounded-lg text-muted-foreground hover:text-sky-400 hover:bg-muted cursor-pointer transition-colors"
+            title="Upload input files"
+          >
             <Upload className="h-3.5 w-3.5" />
-            <input type="file" multiple className="hidden" onChange={handleFileInput} />
-          </label>
+          </button>
         </div>
       </div>
 
@@ -190,13 +189,13 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
                     {f.size_mb} MB • {f.modified}
                   </div>
                 </div>
-                {cat === 'raster' && onInspectTiff && (
+                {onInspectTiff && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onInspectTiff(`data/${f.name}`);
                     }}
-                    title="Inspect GeoTIFF Bands & Colormap"
+                    title={`Inspect ${f.name} details & preview`}
                     className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-sky-400 transition-colors shrink-0"
                   >
                     <Eye className="h-3.5 w-3.5" />
@@ -260,6 +259,13 @@ export const DatasetSidebar: React.FC<DatasetSidebarProps> = ({
           )}
         </div>
       )}
+
+      {/* File Upload Modal */}
+      <FileUploadModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onUpload={onUploadFiles}
+      />
     </aside>
   );
 };

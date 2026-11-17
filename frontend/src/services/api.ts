@@ -3,6 +3,9 @@
 import {
   FileInfo,
   RasterBoundsResponse,
+  RasterStatsResponse,
+  RasterPixelResponse,
+  FileInspectResponse,
   TimelinePayload,
   Terrain3DPayload,
   SupervisorChatMessage,
@@ -38,18 +41,37 @@ export interface ArtifactsResponse {
   timeline_frames?: string[];
 }
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
   if (!res.ok) {
-    let errorMsg = `HTTP ${res.status}`;
+    let errorMsg = `Server error (HTTP ${res.status})`;
+    let errorCode: string | undefined;
     try {
-      const errData = await res.json();
-      if (errData && errData.error) errorMsg = errData.error;
-      else if (errData && errData.detail) errorMsg = errData.detail;
+      const text = await res.text();
+      try {
+        const errData = JSON.parse(text);
+        if (errData?.error) errorMsg = String(errData.error);
+        else if (errData?.detail) errorMsg = String(errData.detail);
+        if (errData?.code) errorCode = String(errData.code);
+      } catch {
+        if (text && text.trim() && text.length < 300) errorMsg = text.trim();
+      }
     } catch {
       // fallback to status code
     }
-    throw new Error(errorMsg);
+    throw new ApiError(errorMsg, res.status, errorCode);
   }
   return res.json() as Promise<T>;
 }
@@ -219,8 +241,39 @@ export const api = {
     );
   },
 
-  getRasterPngUrl(rasterPath: string): string {
-    return `/api/raster/png?path=${encodeURIComponent(rasterPath)}`;
+  async getRasterStats(rasterPath: string, band: number = 1): Promise<RasterStatsResponse> {
+    return request<RasterStatsResponse>(
+      `/api/raster/stats?path=${encodeURIComponent(rasterPath)}&band=${band}`
+    );
+  },
+
+  async getRasterPixel(
+    rasterPath: string,
+    lon: number,
+    lat: number,
+    band: number = 1
+  ): Promise<RasterPixelResponse> {
+    return request<RasterPixelResponse>(
+      `/api/raster/pixel?path=${encodeURIComponent(rasterPath)}&lon=${lon}&lat=${lat}&band=${band}`
+    );
+  },
+
+  async inspectFile(filePath: string): Promise<FileInspectResponse> {
+    return request<FileInspectResponse>(
+      `/api/file/inspect?path=${encodeURIComponent(filePath)}`
+    );
+  },
+
+  getRasterPngUrl(
+    rasterPath: string,
+    options?: { cmap?: string; vmin?: number; vmax?: number; band?: number }
+  ): string {
+    const params = new URLSearchParams({ path: rasterPath });
+    if (options?.cmap) params.set('cmap', options.cmap);
+    if (options?.vmin !== undefined && options.vmin !== null) params.set('vmin', String(options.vmin));
+    if (options?.vmax !== undefined && options.vmax !== null) params.set('vmax', String(options.vmax));
+    if (options?.band) params.set('band', String(options.band));
+    return `/api/raster/png?${params.toString()}`;
   },
 
   async getTimeline(taskId: string): Promise<TimelinePayload> {

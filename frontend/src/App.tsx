@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Workspace } from '@/types/task';
 import { ArtifactItem, TaskStatus } from '@/types/sse';
-import { api } from '@/services/api';
+import { api, ApiError } from '@/services/api';
 import { useMultiTaskStreams, DEFAULT_TASK_STATE } from '@/hooks/useTaskStream';
 import { TaskHeader } from '@/components/TaskHeader';
 import { QueryConsole } from '@/components/QueryConsole';
@@ -419,9 +419,44 @@ export function App() {
         }));
       }
     } catch (err) {
-      toast.error('Assistant error', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      const isRateLimit =
+        (err instanceof ApiError && (err.status === 429 || err.code === 'rate_limit')) ||
+        msg.includes('429') ||
+        /rate limit/i.test(msg);
+      const isAuth =
+        (err instanceof ApiError && (err.status === 401 || err.status === 502 || err.code === 'provider_auth')) ||
+        /api key|expired|401/i.test(msg);
+
+      if (isRateLimit) {
+        toast.warning('Rate limit reached — please wait a few seconds', {
+          description: msg,
+          duration: 6000,
+        });
+      } else if (isAuth) {
+        toast.error('AI provider authentication error', {
+          description: msg,
+          duration: 7000,
+        });
+      } else {
+        toast.error('Server error', {
+          description: msg,
+          duration: 6000,
+        });
+      }
+
+      setWorkspaceTurns((prev) => ({
+        ...prev,
+        [targetContainerId]: [
+          ...(prev[targetContainerId] || []),
+          {
+            role: 'assistant',
+            content: `⚠️ **Request failed:** ${msg}`,
+            timestamp: Date.now() / 1000,
+            type: 'clarification',
+          },
+        ],
+      }));
     } finally {
       setIsSubmitting(false);
     }
@@ -682,6 +717,7 @@ export function App() {
                       onRemoveFile={handleToggleFile}
                       onClearAllFiles={() => setSelectedFiles([])}
                       onUploadFiles={handleUploadFiles}
+                      onPreviewFile={openArtifactPreview}
                       onSubmit={handleSubmitTask}
                       isSubmitting={isSubmitting}
                       isRunning={activeTask.status === 'running'}

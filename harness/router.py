@@ -21,6 +21,30 @@ from harness import chat, llm
 from harness.workspace import get_workspace_dir
 
 
+# Official OpenUI system prompt, generated from the frontend's component library by
+# `node frontend/scripts/gen-openui-prompt.mjs`. It teaches the model the real
+# OpenUI Lang grammar and every component signature the browser can render, so the
+# model itself decides which UI fits each answer (cards, charts, tables, forms...).
+_OPENUI_PROMPT_FILE = Path(__file__).with_name("openui_system_prompt_compact.txt")
+_OPENUI_PROMPT_FALLBACK = Path(__file__).with_name("openui_system_prompt.txt")
+_openui_prompt_cache: Optional[str] = None
+
+
+def _openui_system_prompt() -> str:
+    global _openui_prompt_cache
+    if _openui_prompt_cache is None:
+        for p in (_OPENUI_PROMPT_FILE, _OPENUI_PROMPT_FALLBACK):
+            try:
+                if p.exists():
+                    _openui_prompt_cache = p.read_text(encoding="utf-8")
+                    break
+            except OSError:
+                continue
+        if _openui_prompt_cache is None:
+            _openui_prompt_cache = ""
+    return _openui_prompt_cache
+
+
 ROUTER_PROMPT = """You are the intelligent router and lead conversational AI for GeoLLM, an autonomous geospatial intelligence workbench.
 
 Your job is to classify the user's latest message and decide the correct execution pathway:
@@ -210,23 +234,29 @@ def handle_general_chat(
 ) -> Dict[str, Any]:
     """Handles conceptual remote sensing questions and general chat directly."""
     snapshot_block = (
-        f"\n\n[LIVE MULTI-CONTAINER STATUS (For reference ONLY if the user asks about tasks/containers)]:\n{live_snapshot[:3000]}"
+        f"\n\n[LIVE MULTI-CONTAINER STATUS (For reference ONLY if the user asks about tasks/containers)]:\n{live_snapshot[:1200]}"
         if live_snapshot
         else ""
     )
-    system_prompt = (
+    geollm_context = (
         "You are GeoLLM, an autonomous AI geospatial assistant supervising 3 concurrent analysis containers (task_1, task_2, task_3). "
         f"The user is currently in Workspace {task_id}. "
         "Always respond directly to the user's LATEST message. "
         "If the latest message is a casual greeting (e.g. 'hi', 'hello', 'hi bro', 'salam'), respond warmly and briefly WITHOUT dumping task statuses. "
         "If the user asks about any container or task progress, use the LIVE MULTI-CONTAINER STATUS below to give a specific, accurate update. "
         "You can also explain remote sensing concepts, satellite sensors, spectral indices, and GeoLLM's workflow. "
-        "Keep answers focused, concise, and in clean Markdown."
+        "Never invent facts about tools or libraries you do not know; say so plainly instead."
         + snapshot_block
     )
+    openui_prompt = _openui_system_prompt()
+    if openui_prompt:
+        # OpenUI contract: the whole reply is an OpenUI Lang program rendered by the browser.
+        system_prompt = openui_prompt + "\n\n## Assistant Context\n" + geollm_context
+    else:
+        system_prompt = geollm_context + "\nKeep answers focused, concise, and in clean Markdown."
     msgs = [{"role": "system", "content": system_prompt}]
-    for h in history[-6:]:
-        msgs.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    for h in history[-4:]:
+        msgs.append({"role": h.get("role", "user"), "content": (h.get("content", "") or "")[:800]})
     if not msgs or msgs[-1].get("content") != user_message:
         msgs.append({"role": "user", "content": user_message})
 
@@ -272,7 +302,7 @@ def handle_contextual_inquiry(
     if result_json_file.exists():
         try:
             rj_text = result_json_file.read_text(encoding="utf-8")
-            result_json_snippet = f"\nDetailed outputs/result.json for {task_id}:\n{rj_text[:2500]}"
+            result_json_snippet = f"\nDetailed outputs/result.json for {task_id}:\n{rj_text[:1500]}"
         except Exception:
             pass
 
@@ -289,28 +319,29 @@ def handle_contextual_inquiry(
         except Exception:
             pass
 
-    system_prompt = (
+    geollm_context = (
         "You are GeoLLM, a senior geospatial analyst supervising 3 concurrent analysis containers (Container #1 = task_1, Container #2 = task_2, Container #3 = task_3).\n"
         f"Active Workspace ID: {task_id}\n"
         f"Active Workspace Outputs: {json.dumps(artifacts)}\n"
-        f"Active Workspace Summary & Findings: {summary}\n"
+        f"Active Workspace Summary & Findings: {str(summary)[:1200]}\n"
         f"{result_json_snippet}"
         f"{timeline_info}\n\n"
         "[LIVE MULTI-CONTAINER STATUS — All 3 Workspaces (task_1, task_2, task_3)]:\n"
-        f"{live_snapshot or 'No live snapshot provided.'}\n\n"
+        f"{(live_snapshot or 'No live snapshot provided.')[:1200]}\n\n"
         "CRITICAL INSTRUCTIONS:\n"
-        "1. If the user asks for updates, progress, or what the sub-agent / container is currently doing (e.g. 'any updates?', 'about task 3', 'any updates from container 3?'), report the EXACT live status from LIVE MULTI-CONTAINER STATUS above:\n"
-        "   - What task question it is working on\n"
-        "   - Current status (running, pending_approval, done, failed) and what step/action it is doing right now\n"
-        "   - How many code executions it has completed and elapsed time\n"
-        "   - What output files/deliverables and key findings have been produced.\n"
-        "2. If the user asks a specific question about metrics or findings, cite exact numbers, dates, and file names from the verified analysis above.\n"
-        "3. Never ask for clarification when the answer is already visible in LIVE MULTI-CONTAINER STATUS or the workspace results."
+        "1. If the user asks for updates, progress, or what the sub-agent / container is currently doing, report the EXACT live status from LIVE MULTI-CONTAINER STATUS (task question, status, step, code executions, elapsed time, deliverables).\n"
+        "2. If the user asks about metrics, area changes, or findings, cite exact numbers, dates, and file names from the verified analysis above — use Charts (BarChart, LineChart, PieChart), OverviewCardBlock, and Table in openui-lang.\n"
+        "3. Never fabricate numbers and never ask for clarification when the answer is already visible above."
     )
+    openui_prompt = _openui_system_prompt()
+    if openui_prompt:
+        system_prompt = openui_prompt + "\n\n## Geospatial Workspace Context\n" + geollm_context
+    else:
+        system_prompt = geollm_context
 
     msgs = [{"role": "system", "content": system_prompt}]
-    for h in history[-6:]:
-        msgs.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    for h in history[-4:]:
+        msgs.append({"role": h.get("role", "user"), "content": (h.get("content", "") or "")[:800]})
     if not msgs or msgs[-1].get("content") != user_message:
         msgs.append({"role": "user", "content": user_message})
 

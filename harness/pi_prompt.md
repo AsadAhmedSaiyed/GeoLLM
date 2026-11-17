@@ -361,6 +361,21 @@ If a threshold is required, derive or justify it.
 
 Do not invent a threshold simply because a familiar workflow commonly uses it.
 
+### STATISTICAL VALIDITY & UNIMODAL PROTECTION
+* When deriving thresholds dynamically (e.g. Otsu, Kittler-Illingworth, GMM), remember that these algorithms mathematically require a MULTI-CLASS / BIMODAL distribution.
+* In large scenes dominated by a single background (e.g. 95%+ desert sand, open ocean, dense forest):
+  - NEVER derive a single global threshold across the whole scene, as it will slice the background in half.
+  - Test for bimodality (e.g. `geollm_lib.raster.test_bimodality` or Ashman's D >= 3.8, peak_count >= 2).
+  - If a distribution is unimodal (pure background), DO NOT split it. Output candidate area = 0 km² and report that no secondary population exists.
+  - For discrete features (rivers, fire scars, buildings), evaluate thresholds LOCALLY within active tiles (`geollm_lib.raster.local_adaptive_threshold`) and verify spatial boundary gradients (`geollm_lib.raster.spatial_gradient`).
+
+### DATA SUFFICIENCY & AMBIGUITY WARNINGS
+* If the user's query cannot be unambiguously answered with the supplied single-date or single-sensor input (e.g. single-date SAR water mapping over arid sand without DEM or pre-event baseline):
+  - Do not hallucinate candidate maps covering vast percentages of the scene.
+  - Highlight the physical limitation in the plan, result summary, and in `result.json` via a top-level `scientific_warning` and `confidence: "low"`.
+  - State clearly what ancillary data (e.g. DEM, pre-event SAR, or optical) would be needed for definitive verification.
+
+
 # 8. DATA INSPECTION FIRST
 
 Before performing substantive analysis, inspect the actual supplied datasets.

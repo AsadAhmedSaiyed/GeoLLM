@@ -76,3 +76,74 @@ export interface SupervisorChatResponse {
   proposed_job?: string;
   error?: string;
 }
+
+export interface RasterClassItem {
+  value: number;
+  label: string;
+  color: string;
+}
+
+export interface RasterNumericStats {
+  min: number;
+  max: number;
+  mean: number;
+  median: number;
+  p02: number;
+  p98: number;
+}
+
+export interface RasterStatsResponse {
+  ok: boolean;
+  file_name?: string;
+  path?: string;
+  band?: number;
+  band_count?: number;
+  band_description?: string;
+  artifact_description?: string;
+  units?: string;
+  crs?: string;
+  width?: number;
+  height?: number;
+  is_classified?: boolean;
+  classes?: RasterClassItem[];
+  recommended_cmap?: string;
+  stats?: RasterNumericStats;
+  error?: string;
+}
+
+export interface RasterPixelResponse {
+  ok: boolean;
+  inside: boolean;
+  value?: number | null;
+  is_nodata?: boolean;
+  row?: number;
+  col?: number;
+  units?: string;
+  band?: number;
+  error?: string;
+}
+
+export interface FileInspectResponse {
+  ok: boolean;
+  filename?: string;
+  path?: string;
+  size_mb?: number;
+  extension?: string;
+  category?: 'raster' | 'lidar' | 'vector' | 'image' | 'other';
+  crs?: string;
+  width?: number;
+  height?: number;
+  count?: number;
+  dtypes?: string[];
+  nodata?: number | null;
+  bounds_wgs84?: [number, number, number, number] | null;
+  png_url?: string;
+  point_count?: number;
+  version?: string;
+  feature_count?: number;
+  geometry_types?: string[];
+  format?: string;
+  mode?: string;
+  error?: string;
+}
+

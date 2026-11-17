@@ -8,7 +8,9 @@ if (typeof maplibregl.setWorkerUrl === 'function') {
 }
 import { TaskState } from '@/types/task';
 import { ArtifactItem } from '@/types/sse';
+import { RasterPixelResponse } from '@/types/geospatial';
 import { api } from '@/services/api';
+import { RasterLegendWidget } from '@/components/RasterLegendWidget';
 import {
   SquareDashedMousePointer,
   Satellite,
@@ -127,6 +129,10 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
   const [overlaysCollapsed, setOverlaysCollapsed] = useState<boolean>(false);
   const [overlayLoadingId, setOverlayLoadingId] = useState<string | null>(null);
   const [overlayError, setOverlayError] = useState<string | null>(null);
+  const [rasterCmap, setRasterCmap] = useState<string>('viridis');
+  const [rasterStretch, setRasterStretch] = useState<{ vmin?: number; vmax?: number }>({});
+  const [isInspectMode, setIsInspectMode] = useState<boolean>(false);
+  const [inspectedPixel, setInspectedPixel] = useState<RasterPixelResponse | null>(null);
 
   const clearAoi = () => {
     setSelectedBbox(null);
@@ -538,6 +544,81 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
     [activeTaskId]
   );
 
+  const updateActiveRasterImage = useCallback(
+    (cmapVal?: string, vminVal?: number, vmaxVal?: number) => {
+      const map = mapInstanceRef.current;
+      if (!map || activeLayersRef.current.length === 0) return;
+      const active = activeLayersRef.current[0];
+      if (!active || !active.fullPath) return;
+
+      const sourceId = `src-${active.id}`;
+      const source = map.getSource(sourceId) as maplibregl.ImageSource | undefined;
+      if (source && typeof source.updateImage === 'function') {
+        const newUrl = api.getRasterPngUrl(active.fullPath, {
+          cmap: cmapVal ?? rasterCmap,
+          vmin: vminVal ?? rasterStretch.vmin,
+          vmax: vmaxVal ?? rasterStretch.vmax,
+        });
+        source.updateImage({ url: newUrl });
+      }
+    },
+    [rasterCmap, rasterStretch]
+  );
+
+  const handleColormapChange = (cmap: string) => {
+    setRasterCmap(cmap);
+    updateActiveRasterImage(cmap, rasterStretch.vmin, rasterStretch.vmax);
+  };
+
+  const handleStretchChange = (vmin: number, vmax: number) => {
+    setRasterStretch({ vmin, vmax });
+    updateActiveRasterImage(rasterCmap, vmin, vmax);
+  };
+
+  // Live Pixel Inspection on Hover / Click
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (isInspectMode) {
+      map.getCanvas().style.cursor = 'crosshair';
+    } else {
+      map.getCanvas().style.cursor = '';
+      setInspectedPixel(null);
+    }
+
+    let timeoutId: any = null;
+    const handleMove = (e: maplibregl.MapMouseEvent) => {
+      if (!isInspectMode || activeLayersRef.current.length === 0) return;
+      const active = activeLayersRef.current[0];
+      const rasterPath = active.fullPath;
+      if (!rasterPath) return;
+
+      const lon = e.lngLat.lng;
+      const lat = e.lngLat.lat;
+
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        api
+          .getRasterPixel(rasterPath, lon, lat)
+          .then((res) => {
+            setInspectedPixel(res);
+          })
+          .catch(() => {});
+      }, 60);
+    };
+
+    map.on('mousemove', handleMove);
+    map.on('click', handleMove);
+
+    return () => {
+      clearTimeout(timeoutId);
+      map.off('mousemove', handleMove);
+      map.off('click', handleMove);
+      if (map.getCanvas()) map.getCanvas().style.cursor = '';
+    };
+  }, [isInspectMode]);
+
   // Handle explicit artifact overlay request (e.g. from TiffPreviewModal "Overlay on Globe")
   useEffect(() => {
     if (!pendingOverlay) return;
@@ -821,7 +902,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
 
           {/* Workspace Outputs & Analysis Overlays */}
           {(workspaceOutputs.length > 0 || activeLayers.length > 0 || overlayError) && (
-            <div className="w-[275px] bg-card border border-border rounded-lg p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
+            <div className="w-[300px] bg-card border border-border rounded-lg p-2.5 shadow-2xl pointer-events-auto flex flex-col min-h-0">
               <div
                 onClick={() => setOverlaysCollapsed((prev) => !prev)}
                 className={`flex justify-between items-center cursor-pointer select-none ${
@@ -902,7 +983,7 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                     </div>
                   )}
 
-                  <div className="flex flex-col gap-1 max-h-[220px] overflow-y-auto">
+                  <div className="flex flex-col gap-1 max-h-[420px] overflow-y-auto">
                     {workspaceOutputs.length === 0 ? (
                       <div className="py-2 text-center text-[10.5px] text-muted-foreground">
                         No output files in this workspace yet.
@@ -922,78 +1003,95 @@ export const GlobeView: React.FC<GlobeViewProps> = memo(function GlobeView({
                         const isInteractive = isTiff || (isPng && Boolean(onPreviewArtifact));
 
                         return (
-                          <div
-                            key={`${activeTaskId}-${filename}-${idx}`}
-                            onClick={() => {
-                              if (isTiff) {
-                                void loadGeoTiffOverlay(art);
-                              } else if (isPng && onPreviewArtifact) {
-                                onPreviewArtifact(art);
+                          <React.Fragment key={`${activeTaskId}-${filename}-${idx}`}>
+                            <div
+                              onClick={() => {
+                                if (isTiff) {
+                                  void loadGeoTiffOverlay(art);
+                                } else if (isPng && onPreviewArtifact) {
+                                  onPreviewArtifact(art);
+                                }
+                              }}
+                              title={
+                                isTiff
+                                  ? 'Click to load on globe (replaces overlapping raster)'
+                                  : isPng
+                                    ? 'Click to preview image'
+                                    : filename
                               }
-                            }}
-                            title={
-                              isTiff
-                                ? 'Click to load on globe (replaces overlapping raster)'
-                                : isPng
-                                  ? 'Click to preview image'
-                                  : filename
-                            }
-                            className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border transition-colors ${
-                              mountedLayer
-                                ? 'bg-teal-500/15 border-teal-500/40'
-                                : 'bg-muted border-border'
-                            } ${isInteractive ? 'cursor-pointer hover:border-sky-400/50' : ''}`}
-                          >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              {isTiff ? (
-                                <MapIcon className="h-3 w-3 shrink-0 text-teal-400" />
-                              ) : isPng ? (
-                                <ImageIcon className="h-3 w-3 shrink-0 text-sky-400" />
-                              ) : (
-                                <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
-                              )}
-                              <span className="font-mono text-[10px] text-foreground truncate">
-                                {filename}
-                              </span>
+                              className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border transition-colors ${
+                                mountedLayer
+                                  ? 'bg-teal-500/15 border-teal-500/40'
+                                  : 'bg-muted border-border'
+                              } ${isInteractive ? 'cursor-pointer hover:border-sky-400/50' : ''}`}
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                {isTiff ? (
+                                  <MapIcon className="h-3 w-3 shrink-0 text-teal-400" />
+                                ) : isPng ? (
+                                  <ImageIcon className="h-3 w-3 shrink-0 text-sky-400" />
+                                ) : (
+                                  <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                )}
+                                <span className="font-mono text-[10px] text-foreground truncate">
+                                  {filename}
+                                </span>
+                              </div>
+
+                              <div
+                                className="flex items-center gap-1 shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {isLoading && (
+                                  <Loader2 className="h-3 w-3 animate-spin text-teal-400" />
+                                )}
+                                {mountedLayer && (
+                                  <button
+                                    type="button"
+                                    onClick={() => zoomToExtent(mountedLayer.bbox)}
+                                    title="Zoom to raster bounds"
+                                    className="text-teal-400 hover:text-sky-400 p-0.5 transition-colors"
+                                  >
+                                    <Search className="h-3 w-3" />
+                                  </button>
+                                )}
+                                {isPng && onPreviewArtifact && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onPreviewArtifact(art)}
+                                    title="Preview image"
+                                    className="text-muted-foreground hover:text-sky-400 p-0.5 transition-colors"
+                                  >
+                                    <Eye className="h-3 w-3" />
+                                  </button>
+                                )}
+                                <a
+                                  href={downloadUrl}
+                                  download={filename}
+                                  title={`Download ${filename}`}
+                                  className="text-muted-foreground hover:text-foreground p-0.5 transition-colors"
+                                >
+                                  <Download className="h-3 w-3" />
+                                </a>
+                              </div>
                             </div>
 
-                            <div
-                              className="flex items-center gap-1 shrink-0"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              {isLoading && (
-                                <Loader2 className="h-3 w-3 animate-spin text-teal-400" />
-                              )}
-                              {mountedLayer && (
-                                <button
-                                  type="button"
-                                  onClick={() => zoomToExtent(mountedLayer.bbox)}
-                                  title="Zoom to raster bounds"
-                                  className="text-teal-400 hover:text-sky-400 p-0.5 transition-colors"
-                                >
-                                  <Search className="h-3 w-3" />
-                                </button>
-                              )}
-                              {isPng && onPreviewArtifact && (
-                                <button
-                                  type="button"
-                                  onClick={() => onPreviewArtifact(art)}
-                                  title="Preview image"
-                                  className="text-muted-foreground hover:text-sky-400 p-0.5 transition-colors"
-                                >
-                                  <Eye className="h-3 w-3" />
-                                </button>
-                              )}
-                              <a
-                                href={downloadUrl}
-                                download={filename}
-                                title={`Download ${filename}`}
-                                className="text-muted-foreground hover:text-foreground p-0.5 transition-colors"
-                              >
-                                <Download className="h-3 w-3" />
-                              </a>
-                            </div>
-                          </div>
+                            {/* Dynamic GeoTIFF Legend & Color Controls Embedded Right Below the Selected File */}
+                            {mountedLayer && isTiff && mountedLayer.fullPath && (
+                              <div className="mt-1 mb-1.5 p-2 rounded-lg bg-background/80 border border-teal-500/30 text-xs shadow-inner">
+                                <RasterLegendWidget
+                                  rasterPath={mountedLayer.fullPath}
+                                  activeCmap={rasterCmap}
+                                  onColormapChange={handleColormapChange}
+                                  onStretchChange={handleStretchChange}
+                                  hoverPixel={inspectedPixel}
+                                  isInspectMode={isInspectMode}
+                                  onToggleInspectMode={() => setIsInspectMode((p) => !p)}
+                                  embedded={true}
+                                />
+                              </div>
+                            )}
+                          </React.Fragment>
                         );
                       })
                     )}

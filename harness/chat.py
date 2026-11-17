@@ -55,6 +55,12 @@ def _groq(messages, retry=True):
         patched = [dict(m) for m in messages]
         patched[0]["content"] += _NO_TOOLS
         return _groq(patched, retry=False)
+    if r.status_code == 413 and retry:
+        # Payload exceeded Groq TPM limit; keep system prompt + last user message only and retry
+        sys_msg = [m for m in messages if m.get("role") == "system"][:1]
+        last_user = [m for m in messages if m.get("role") == "user"][-1:]
+        if sys_msg and last_user:
+            return _groq(sys_msg + last_user, retry=False)
     if r.status_code != 200:
         # Automatic fallback to OpenRouter if Groq key is rejected or service errors
         if os.environ.get("OPENROUTER_API_KEY"):

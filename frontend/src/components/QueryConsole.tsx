@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { FileUploadModal } from '@/components/FileUploadModal';
 import {
   ChatComposer,
   ChatComposerDrawer,
@@ -13,6 +14,10 @@ import {
   Loader2,
   AlertCircle,
   Paperclip,
+  Eye,
+  FileImage,
+  Box,
+  FileCode,
 } from 'lucide-react';
 
 interface QueryConsoleProps {
@@ -20,6 +25,7 @@ interface QueryConsoleProps {
   onRemoveFile: (fileName: string) => void;
   onClearAllFiles?: () => void;
   onUploadFiles?: (files: FileList) => Promise<void> | void;
+  onPreviewFile?: (fileName: string) => void;
   onSubmit: (question: string) => void;
   isSubmitting: boolean;
   isRunning?: boolean;
@@ -33,6 +39,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   onRemoveFile,
   onClearAllFiles,
   onUploadFiles,
+  onPreviewFile,
   onSubmit,
   isSubmitting,
   isRunning = false,
@@ -42,6 +49,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
 }) => {
   const [question, setQuestion] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -86,19 +94,53 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
         <span className="text-[11px] font-medium text-muted-foreground mr-1">
           Attached ({selectedFiles.length}):
         </span>
-        {selectedFiles.map((f) => (
-          <Badge key={f} variant="secondary" className="gap-1 pr-1 font-normal">
-            <span className="max-w-[160px] truncate">{f}</span>
-            <button
-              type="button"
-              onClick={() => onRemoveFile(f)}
-              className="rounded-full p-0.5 hover:bg-background/60 cursor-pointer"
-              aria-label={`Remove ${f}`}
+        {selectedFiles.map((f) => {
+          const isTif = /\.(tif|tiff)$/i.test(f);
+          const isLidar = /\.(laz|las)$/i.test(f);
+          const isVector = /\.(geojson|shp|kml|gpkg)$/i.test(f);
+          const isImage = /\.(png|jpg|jpeg|webp)$/i.test(f);
+
+          return (
+            <Badge
+              key={f}
+              variant="secondary"
+              className="gap-1.5 pl-1.5 pr-1 py-1 font-normal bg-card/90 border border-border hover:border-sky-400/60 transition-colors shadow-sm"
             >
-              <X className="h-3 w-3" />
-            </button>
-          </Badge>
-        ))}
+              {isTif && <FileImage className="h-3.5 w-3.5 text-sky-400 shrink-0" />}
+              {isLidar && <Box className="h-3.5 w-3.5 text-purple-400 shrink-0" />}
+              {isVector && <FileCode className="h-3.5 w-3.5 text-teal-400 shrink-0" />}
+              {isImage && <FileImage className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
+
+              <span
+                onClick={() => onPreviewFile?.(f)}
+                className="max-w-[160px] truncate cursor-pointer hover:text-sky-400 font-mono text-[11px] transition-colors"
+                title={`Click to preview ${f}`}
+              >
+                {f}
+              </span>
+
+              {onPreviewFile && (
+                <button
+                  type="button"
+                  onClick={() => onPreviewFile(f)}
+                  title={`Preview ${f}`}
+                  className="rounded p-0.5 text-muted-foreground hover:text-sky-400 hover:bg-muted transition-colors cursor-pointer"
+                >
+                  <Eye className="h-3 w-3" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => onRemoveFile(f)}
+                className="rounded-full p-0.5 hover:bg-background/60 cursor-pointer"
+                aria-label={`Remove ${f}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          );
+        })}
         {selectedFiles.length > 1 && onClearAllFiles && (
           <button
             type="button"
@@ -141,9 +183,9 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
               variant="ghost"
               size="sm"
               disabled={!hasActiveWorkspace || isUploading}
-              onClick={() => fileInputRef.current?.click()}
-              title="Upload GeoTIFF, LAZ, GeoJSON, or imagery"
-              className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setIsUploadModalOpen(true)}
+              title="Attach & preview input files (GeoTIFF, LAZ, GeoJSON, imagery)"
+              className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
             >
               {isUploading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -184,23 +226,33 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
   );
 
   return (
-    <ChatComposer
-      onSubmit={handleSubmit}
-      drawer={drawerNode}
-      header={headerNode}
-      footer={footerNode}
-    >
-      <ChatComposerInput
-        value={question}
-        onChange={(e) => setQuestion(e.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={!hasActiveWorkspace}
-        placeholder={
-          hasActiveWorkspace
-            ? 'Ask GeoLLM, inspect outputs, or run a spatial analysis…'
-            : 'Create or select a workspace to start…'
-        }
-      />
-    </ChatComposer>
+    <>
+      <ChatComposer
+        onSubmit={handleSubmit}
+        drawer={drawerNode}
+        header={headerNode}
+        footer={footerNode}
+      >
+        <ChatComposerInput
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={!hasActiveWorkspace}
+          placeholder={
+            hasActiveWorkspace
+              ? 'Ask GeoLLM, inspect outputs, or run a spatial analysis…'
+              : 'Create or select a workspace to start…'
+          }
+        />
+      </ChatComposer>
+
+      {onUploadFiles && (
+        <FileUploadModal
+          isOpen={isUploadModalOpen}
+          onClose={() => setIsUploadModalOpen(false)}
+          onUpload={onUploadFiles}
+        />
+      )}
+    </>
   );
 };

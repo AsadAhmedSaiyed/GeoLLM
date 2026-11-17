@@ -11,6 +11,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@openuidev/react-lang": "^1.1.1",
+    "@openuidev/react-ui": "^0.18.9",
     "autoprefixer": "^10.4.20",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",

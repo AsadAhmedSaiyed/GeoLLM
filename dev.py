@@ -41,7 +41,7 @@ def main():
     print("="*60 + "\n")
 
     backend_proc = subprocess.Popen(
-        [sys.executable, "web_app.py"],
+        [sys.executable, "-m", "uvicorn", "web_app:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
         cwd=ROOT,
         env=os.environ,
     )

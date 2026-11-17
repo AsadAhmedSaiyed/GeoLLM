@@ -1332,7 +1332,12 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     + patch_hint,
                     cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls,
                     on_event, images=_b64_images([Path(run_dir) / v["file"] for v in agent_bad if (Path(run_dir) / v["file"]).is_file()]))
-                answer = pi.last_assistant_text()
+                rev_text = pi.last_assistant_text()
+                if answer and answer.strip() and rev_text and rev_text.strip():
+                    # Preserve original measurement tables and findings, append the visual revision update
+                    answer = f"{answer}\n\n---\n\n### Visual Revision & Updated Deliverables\n{rev_text}"
+                elif rev_text and rev_text.strip():
+                    answer = rev_text
                 try:
                     from harness.orchestrator import find_artifacts
                     final_arts = find_artifacts(run_dir)
@@ -1429,6 +1434,33 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
         tail = _stderr_tail(run_dir)
         if tail:
             warnings.append(f"pi_stderr.log tail: {tail}")
+
+    # Surface scientific warnings / low confidence directly into the user-facing answer
+    rj_candidates = [
+        run_dir / "outputs" / "result.json",
+        run_dir / "scratch" / "outputs" / "result.json",
+    ]
+    for rj_path in rj_candidates:
+        if rj_path.is_file():
+            try:
+                rj_data = json.loads(rj_path.read_text(encoding="utf-8"))
+                sci_warn = rj_data.get("scientific_warning")
+                interp = rj_data.get("interpretation") or {}
+                conf = interp.get("confidence", "") if isinstance(interp, dict) else ""
+                limits = rj_data.get("limitations", [])
+
+                callout = ""
+                if sci_warn:
+                    callout = f"> ⚠️ **Scientific Alert**: {sci_warn}\n\n"
+                elif isinstance(conf, str) and "low" in conf.lower():
+                    limit_text = f" ({limits[0]})" if limits and isinstance(limits[0], str) else ""
+                    callout = f"> ⚠️ **Scientific Confidence Warning**: Classification confidence is low{limit_text}.\n\n"
+
+                if callout and not answer.startswith("> ⚠️"):
+                    answer = callout + answer
+                break
+            except Exception:
+                pass
 
     step({"type": "status", "status": status})
     return _result(

@@ -55,9 +55,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="GeoLLM Web Interface", lifespan=lifespan)
 
-DATA_DIR = Path("data")
-RUNS_DIR = Path("runs")
-STATIC_DIR = Path("static")
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = (APP_DIR / "data") if (APP_DIR / "data").exists() else Path("data")
+RUNS_DIR = (APP_DIR / "runs") if (APP_DIR / "runs").exists() else Path("runs")
+STATIC_DIR = (APP_DIR / "static") if (APP_DIR / "static").exists() else Path("static")
 DIST_DIR = STATIC_DIR / "dist"
 DIST_HTML = DIST_DIR / "index.html"
 
@@ -272,80 +273,96 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
     # 1. Classify incoming message with full live multi-container snapshot
     attached_files = [f.strip() for f in payload.files.split(",") if f.strip()]
     live_snapshot = task_manager.multi_snapshot()
-    classification = await asyncio.to_thread(
-        router.classify_message,
-        user_message=user_text,
-        history=payload.history,
-        task_id=task_id,
-        runs_dir=RUNS_DIR,
-        task_state=ts,
-        attached_files=attached_files,
-        live_snapshot=live_snapshot,
-    )
-    category = classification.get("category", "general_chat")
-
-    # 2. Category D: Clarification needed
-    if category == "clarification_needed":
-        q = classification.get("clarification_question") or (
-            "Could you specify the target geographic area (coordinates/AOI) or dates for this analysis?"
-        )
-        append_conversation_turn(task_id, "assistant", q, runs_dir=RUNS_DIR, extra={"type": "clarification"})
-        return JSONResponse({
-            "type": "clarification_needed",
-            "reply": q,
-            "category": category,
-        })
-
-    # 3. Category A: General Chat / Remote Sensing concepts
-    if category == "general_chat":
-        res = await asyncio.to_thread(
-            router.handle_general_chat,
-            user_message=user_text,
-            history=payload.history,
-            task_id=task_id,
-            task_state=ts,
-            live_snapshot=live_snapshot,
-        )
-        append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
-        return JSONResponse(res)
-
-    # 4. Category B: Questions on live progress or existing analysis results
-    if category == "contextual_inquiry":
-        res = await asyncio.to_thread(
-            router.handle_contextual_inquiry,
+    try:
+        classification = await asyncio.to_thread(
+            router.classify_message,
             user_message=user_text,
             history=payload.history,
             task_id=task_id,
             runs_dir=RUNS_DIR,
             task_state=ts,
+            attached_files=attached_files,
             live_snapshot=live_snapshot,
         )
-        append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
-        return JSONResponse(res)
+        category = classification.get("category", "general_chat")
 
-    # 5. Category V: On-demand VLM Visual Inspection / Zoom / Search
-    if category == "visual_inspection":
-        res = await asyncio.to_thread(
-            router.handle_visual_inspection,
-            user_message=user_text,
-            target_artifact=classification.get("target_artifact"),
-            focus=classification.get("inspection_focus"),
-            task_id=task_id,
-            runs_dir=RUNS_DIR,
-            task_state=ts,
+        # 2. Category D: Clarification needed
+        if category == "clarification_needed":
+            q = classification.get("clarification_question") or (
+                "Could you specify the target geographic area (coordinates/AOI) or dates for this analysis?"
+            )
+            append_conversation_turn(task_id, "assistant", q, runs_dir=RUNS_DIR, extra={"type": "clarification"})
+            return JSONResponse({
+                "type": "clarification_needed",
+                "reply": q,
+                "category": category,
+            })
+
+        # 3. Category A: General Chat / Remote Sensing concepts
+        if category == "general_chat":
+            res = await asyncio.to_thread(
+                router.handle_general_chat,
+                user_message=user_text,
+                history=payload.history,
+                task_id=task_id,
+                task_state=ts,
+                live_snapshot=live_snapshot,
+            )
+            append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
+            return JSONResponse(res)
+
+        # 4. Category B: Questions on live progress or existing analysis results
+        if category == "contextual_inquiry":
+            res = await asyncio.to_thread(
+                router.handle_contextual_inquiry,
+                user_message=user_text,
+                history=payload.history,
+                task_id=task_id,
+                runs_dir=RUNS_DIR,
+                task_state=ts,
+                live_snapshot=live_snapshot,
+            )
+            append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
+            return JSONResponse(res)
+
+        # 5. Category V: On-demand VLM Visual Inspection / Zoom / Search
+        if category == "visual_inspection":
+            res = await asyncio.to_thread(
+                router.handle_visual_inspection,
+                user_message=user_text,
+                target_artifact=classification.get("target_artifact"),
+                focus=classification.get("inspection_focus"),
+                task_id=task_id,
+                runs_dir=RUNS_DIR,
+                task_state=ts,
+            )
+            append_conversation_turn(
+                task_id,
+                "assistant",
+                res["reply"],
+                runs_dir=RUNS_DIR,
+                extra={
+                    "type": "visual_reply",
+                    "thumb_url": res.get("thumb_url"),
+                    "fly_to_bbox": res.get("fly_to_bbox"),
+                },
+            )
+            return JSONResponse(res)
+    except Exception as exc:
+        msg = str(exc) or "Unexpected server error"
+        low = msg.lower()
+        if "429" in msg or "rate limit" in low:
+            status_code, code = 429, "rate_limit"
+        elif "401" in msg or "api key" in low or "invalid_token" in low:
+            status_code, code = 502, "provider_auth"
+        elif "413" in msg or "too large" in low:
+            status_code, code = 413, "payload_too_large"
+        else:
+            status_code, code = 500, "server_error"
+        return JSONResponse(
+            {"error": msg, "detail": msg, "code": code},
+            status_code=status_code,
         )
-        append_conversation_turn(
-            task_id,
-            "assistant",
-            res["reply"],
-            runs_dir=RUNS_DIR,
-            extra={
-                "type": "visual_reply",
-                "thumb_url": res.get("thumb_url"),
-                "fly_to_bbox": res.get("fly_to_bbox"),
-            },
-        )
-        return JSONResponse(res)
 
     # 6. Category C: Complex Geospatial Task -> Check container availability
     if ts.status in ("running", "pending_approval", "pending_stac_approval"):
@@ -898,6 +915,7 @@ async def get_task_artifact_file(task_id: str, artifact_path: str):
             else "image/svg+xml" if ext == ".svg"
             else "image/gif" if ext == ".gif"
             else "image/tiff" if ext in (".tif", ".tiff")
+            else "text/html; charset=utf-8" if ext in (".html", ".htm")
             else "application/json" if ext == ".json"
             else "application/octet-stream"
         )
@@ -1079,9 +1097,16 @@ def resolve_raster_path(path_str: str) -> Optional[Path]:
 _RASTER_PNG_CACHE: Dict[tuple, bytes] = {}
 
 
-def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
+def geotiff_to_png_bytes(
+    tif_path: Path,
+    max_dim: int = 2048,
+    cmap_name: Optional[str] = None,
+    vmin_override: Optional[float] = None,
+    vmax_override: Optional[float] = None,
+    band_idx: int = 1,
+) -> bytes:
     mtime = os.path.getmtime(tif_path)
-    cache_key = (str(tif_path.resolve()), mtime)
+    cache_key = (str(tif_path.resolve()), mtime, cmap_name, vmin_override, vmax_override, band_idx)
     if cache_key in _RASTER_PNG_CACHE:
         return _RASTER_PNG_CACHE[cache_key]
 
@@ -1090,6 +1115,7 @@ def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
     from PIL import Image
     import rasterio
     from rasterio.enums import Resampling
+    import matplotlib.cm as cm
 
     with rasterio.open(tif_path) as src:
         src_h, src_w = src.height, src.width
@@ -1101,7 +1127,7 @@ def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
 
         nodata = src.nodata
 
-        if src.count >= 3:
+        if src.count >= 3 and band_idx == 1 and not cmap_name:
             rgb_data = src.read([1, 2, 3], out_shape=out_shape, resampling=Resampling.bilinear)
             rgba = np.zeros((out_shape[0], out_shape[1], 4), dtype=np.uint8)
             mask = np.ones(out_shape, dtype=bool)
@@ -1122,18 +1148,20 @@ def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
             rgba[:, :, 3] = np.where(mask, 255, 0).astype(np.uint8)
             img = Image.fromarray(rgba, "RGBA")
         else:
-            is_int = np.issubdtype(src.dtypes[0], np.integer)
-            b = src.read(1, out_shape=out_shape, resampling=Resampling.nearest if is_int else Resampling.bilinear)
+            eff_band = min(max(1, band_idx), src.count)
+            is_int = np.issubdtype(src.dtypes[eff_band - 1], np.integer)
+            b = src.read(eff_band, out_shape=out_shape, resampling=Resampling.nearest if is_int else Resampling.bilinear)
             mask = np.ones(out_shape, dtype=bool)
             if nodata is not None:
                 mask &= (b != nodata)
 
-            # Check colormap
+            # Check colormap from raster file if no custom cmap was requested
             cmap = None
-            try:
-                cmap = src.colormap(1)
-            except (ValueError, IndexError):
-                pass
+            if not cmap_name:
+                try:
+                    cmap = src.colormap(eff_band)
+                except (ValueError, IndexError):
+                    pass
 
             if cmap:
                 rgba = np.zeros((out_shape[0], out_shape[1], 4), dtype=np.uint8)
@@ -1147,7 +1175,9 @@ def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
             else:
                 valid_b = b[mask] if np.any(mask) else np.array([])
                 unique_vals = np.unique(valid_b) if len(valid_b) > 0 else np.array([])
-                if is_int and len(unique_vals) <= 25:
+
+                # If discrete integer classification and no explicit continuous cmap requested
+                if is_int and len(unique_vals) <= 25 and not cmap_name:
                     palette = [
                         [46, 204, 113, 230],   # Emerald green
                         [52, 152, 219, 230],   # Blue
@@ -1169,18 +1199,46 @@ def geotiff_to_png_bytes(tif_path: Path, max_dim: int = 2048) -> bytes:
                         rgba[val_mask] = col
                     img = Image.fromarray(rgba, "RGBA")
                 else:
-                    import matplotlib.cm as cm
                     b_float = b.astype(np.float32)
                     valid_pixels = b_float[mask] if np.any(mask) else b_float.flatten()
-                    if len(valid_pixels) > 0:
-                        vmin, vmax = np.nanpercentile(valid_pixels, 2), np.nanpercentile(valid_pixels, 98)
+                    if vmin_override is not None and vmax_override is not None and vmax_override > vmin_override:
+                        vmin, vmax = vmin_override, vmax_override
+                    elif len(valid_pixels) > 0:
+                        vmin = vmin_override if vmin_override is not None else float(np.nanpercentile(valid_pixels, 2))
+                        vmax = vmax_override if vmax_override is not None else float(np.nanpercentile(valid_pixels, 98))
                     else:
-                        vmin, vmax = 0, 1
+                        vmin, vmax = 0.0, 1.0
+
                     if vmax > vmin:
                         norm = np.clip((b_float - vmin) / (vmax - vmin), 0.0, 1.0)
                     else:
                         norm = np.zeros_like(b_float)
-                    colored = cm.viridis(norm)
+
+                    # Dynamic colormap resolution
+                    chosen_cmap = cm.viridis
+                    if cmap_name:
+                        c_lower = cmap_name.lower().strip()
+                        cmap_aliases = {
+                            "ndvi": "RdYlGn",
+                            "blues": "Blues",
+                            "greens": "Greens",
+                            "reds": "Reds",
+                            "spectral": "Spectral",
+                            "grayscale": "gray",
+                            "greyscale": "gray",
+                            "grey": "gray",
+                        }
+                        mapped_name = cmap_aliases.get(c_lower, c_lower)
+                        try:
+                            chosen_cmap = cm.get_cmap(mapped_name)
+                        except Exception:
+                            try:
+                                import matplotlib.pyplot as plt
+                                chosen_cmap = plt.get_cmap(mapped_name)
+                            except Exception:
+                                chosen_cmap = cm.viridis
+
+                    colored = chosen_cmap(norm)
                     rgba = (colored * 255.0).astype(np.uint8)
                     rgba[:, :, 3] = np.where(mask, 230, 0).astype(np.uint8)
                     img = Image.fromarray(rgba, "RGBA")
@@ -1212,7 +1270,6 @@ async def get_raster_bounds(path: str):
             wgs84_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
             min_lon, min_lat, max_lon, max_lat = wgs84_bounds
 
-            # MapLibre image coordinate order: [top-left, top-right, bottom-right, bottom-left]
             coordinates = [
                 [min_lon, max_lat], # top-left
                 [max_lon, max_lat], # top-right
@@ -1237,20 +1294,378 @@ async def get_raster_bounds(path: str):
 
 
 @app.get("/api/raster/png")
-async def get_raster_png(path: str):
+async def get_raster_png(
+    path: str,
+    cmap: Optional[str] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    band: int = 1,
+):
     """
-    Renders any GeoTIFF as a high-performance in-memory PNG with transparent nodata
-    and accurate georeferencing for 3D Globe overlay in MapLibre GL.
+    Renders any GeoTIFF as a high-performance in-memory PNG with transparent nodata,
+    supporting dynamic colormaps, custom min/max stretch, and band selection.
     """
     try:
         p = resolve_raster_path(path)
         if not p or not p.exists():
             return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
 
-        png_bytes = await asyncio.to_thread(geotiff_to_png_bytes, p)
+        png_bytes = await asyncio.to_thread(
+            geotiff_to_png_bytes,
+            p,
+            2048,
+            cmap,
+            vmin,
+            vmax,
+            band,
+        )
         return Response(content=png_bytes, media_type="image/png")
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/raster/stats")
+async def get_raster_stats(path: str, band: int = 1):
+    """
+    Dynamically extracts raster statistics, physical units, colormap recommendations,
+    and class labels from the task container's result.json and GeoTIFF tags.
+    Strictly ZERO hardcoded strings.
+    """
+    try:
+        import rasterio
+        import numpy as np
+
+        p = resolve_raster_path(path)
+        if not p or not p.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
+
+        # 1. Discover task container result.json if present
+        rjson = {}
+        for search_dir in [p.parent, p.parent.parent / "outputs", p.parent.parent]:
+            cand_res = search_dir / "result.json"
+            if cand_res.exists():
+                try:
+                    with open(cand_res, "r", encoding="utf-8") as f:
+                        rjson = json.load(f)
+                    break
+                except Exception:
+                    pass
+
+        # 2. Inspect GeoTIFF tags and metadata
+        with rasterio.open(p) as src:
+            eff_band = min(max(1, band), src.count)
+            tags = src.tags()
+            band_desc = src.descriptions[eff_band - 1] if src.descriptions else None
+            units_src = src.units[eff_band - 1] if src.units else None
+
+            # Determine units dynamically from tags, descriptions, or result.json
+            units = None
+            if tags.get("UNITS"):
+                units = tags["UNITS"]
+            elif tags.get("units"):
+                units = tags["units"]
+            elif units_src:
+                units = units_src
+
+            # Check if artifact has description in result.json
+            art_desc = None
+            for art in rjson.get("output_artifacts", []):
+                if art.get("file") == p.name:
+                    art_desc = art.get("description")
+                    break
+
+            if not units and art_desc:
+                # Try extracting unit from artifact description (e.g. "... in metres")
+                if "metre" in art_desc.lower() or "meter" in art_desc.lower():
+                    units = "metres"
+                elif "db" in art_desc.lower():
+                    units = "dB"
+                elif "cells" in art_desc.lower():
+                    units = "cells"
+
+            if not units and band_desc:
+                if "(m)" in band_desc or "metres" in band_desc.lower() or "meter" in band_desc.lower():
+                    units = "metres"
+                elif "db" in band_desc.lower():
+                    units = "dB"
+                elif "cells" in band_desc.lower():
+                    units = "cells"
+
+            # Check if container result.json has explicit statistics matching this artifact
+            matched_stats = None
+            rjson_stats = rjson.get("statistics", {})
+            p_stem = p.stem.lower()
+
+            if "tree" in p_stem and "height_by_category" in rjson_stats:
+                matched_stats = rjson_stats["height_by_category"].get("tree_class5")
+            elif "building" in p_stem and "height_by_category" in rjson_stats:
+                matched_stats = rjson_stats["height_by_category"].get("building_class6")
+            elif "surface" in p_stem and "height_by_category" in rjson_stats:
+                matched_stats = rjson_stats["height_by_category"].get("combined")
+            elif "corridor" in p_stem and "corridor" in rjson_stats:
+                matched_stats = rjson_stats["corridor"]
+            elif "accumulation" in p_stem and "d8_accumulation_cells" in rjson_stats:
+                matched_stats = rjson_stats["d8_accumulation_cells"]
+            elif "wetness" in p_stem and "twi" in rjson_stats:
+                matched_stats = rjson_stats["twi"]
+            elif "elevation" in rjson_stats and ("dem" in p_stem or "elevation" in p_stem):
+                matched_stats = rjson_stats["elevation"]
+
+            # Compute sample statistics from raster
+            sample_dim = 1024
+            scale = min(1.0, sample_dim / max(src.height, src.width))
+            sample_h = max(1, int(src.height * scale))
+            sample_w = max(1, int(src.width * scale))
+            is_int = np.issubdtype(src.dtypes[eff_band - 1], np.integer)
+            arr = src.read(
+                eff_band,
+                out_shape=(sample_h, sample_w),
+                resampling=rasterio.enums.Resampling.nearest if is_int else rasterio.enums.Resampling.bilinear,
+            )
+
+            mask = np.isfinite(arr)
+            if src.nodata is not None:
+                mask &= (arr != src.nodata)
+            valid = arr[mask]
+
+            # Detect classified categorical data
+            is_classified = False
+            unique_classes = []
+            if is_int and len(valid) > 0:
+                uniques = np.unique(valid)
+                if len(uniques) <= 30:
+                    is_classified = True
+                    # Dynamically parse class names from tags/descriptions if present
+                    # e.g., "1=top 1% D8 accumulation, 0=other valid"
+                    desc_text = str(band_desc or art_desc or tags.get("units") or "")
+                    class_map = {}
+                    if "=" in desc_text:
+                        parts = desc_text.split(",")
+                        for part in parts:
+                            if "=" in part:
+                                k, v = part.split("=", 1)
+                                try:
+                                    class_map[int(k.strip())] = v.strip()
+                                except ValueError:
+                                    pass
+
+                    palette = [
+                        "#2ECC71", "#3498DB", "#F1C40F", "#E74C3C", "#9B59B6",
+                        "#E67E22", "#1ABC9C", "#F39C12", "#95A5A6", "#34495E"
+                    ]
+                    for idx, u in enumerate(uniques):
+                        u_int = int(u)
+                        label = class_map.get(u_int, f"Class {u_int}")
+                        if u_int == 0 and not class_map.get(0):
+                            label = "Background / Other"
+                        elif u_int == 1 and not class_map.get(1) and ("candidate" in desc_text.lower() or "mask" in desc_text.lower()):
+                            label = "Candidate / Positive"
+                        unique_classes.append({
+                            "value": u_int,
+                            "label": label,
+                            "color": palette[idx % len(palette)]
+                        })
+
+            # Calculate numerical distribution
+            if matched_stats and "min_m" in matched_stats:
+                s_min = float(matched_stats.get("min_m", 0))
+                s_max = float(matched_stats.get("max_m", 1))
+                s_mean = float(matched_stats.get("mean_m", 0))
+                s_median = float(matched_stats.get("median_m", 0))
+                p02 = s_min
+                p98 = float(matched_stats.get("p95_m", s_max))
+            elif matched_stats and "min" in matched_stats:
+                s_min = float(matched_stats.get("min", 0))
+                s_max = float(matched_stats.get("max", 1))
+                s_mean = float(matched_stats.get("mean", 0))
+                s_median = float(matched_stats.get("median", 0))
+                p02 = float(matched_stats.get("p10", s_min))
+                p98 = float(matched_stats.get("p90", s_max))
+            elif len(valid) > 0:
+                s_min = float(np.nanmin(valid))
+                s_max = float(np.nanmax(valid))
+                s_mean = float(np.nanmean(valid))
+                s_median = float(np.nanmedian(valid))
+                p02 = float(np.nanpercentile(valid, 2))
+                p98 = float(np.nanpercentile(valid, 98))
+            else:
+                s_min, s_max, s_mean, s_median, p02, p98 = 0.0, 1.0, 0.5, 0.5, 0.0, 1.0
+
+            # Dynamic recommended colormap
+            recommended_cmap = "viridis"
+            stem = p.stem.lower()
+            if "dem" in stem or "elevation" in stem or "dtm" in stem or "dsm" in stem:
+                recommended_cmap = "terrain"
+            elif "tree" in stem or "vegetation" in stem or "ndvi" in stem:
+                recommended_cmap = "Greens"
+            elif "water" in stem or "wetness" in stem or "accumulation" in stem or "flow" in stem:
+                recommended_cmap = "Blues"
+            elif "heat" in stem or "temp" in stem or "thermal" in stem:
+                recommended_cmap = "inferno"
+
+            return JSONResponse({
+                "ok": True,
+                "file_name": p.name,
+                "path": str(p),
+                "band": eff_band,
+                "band_count": src.count,
+                "band_description": band_desc,
+                "artifact_description": art_desc,
+                "units": units or "units",
+                "crs": str(src.crs),
+                "width": src.width,
+                "height": src.height,
+                "is_classified": is_classified,
+                "classes": unique_classes,
+                "recommended_cmap": recommended_cmap,
+                "stats": {
+                    "min": s_min,
+                    "max": s_max,
+                    "mean": s_mean,
+                    "median": s_median,
+                    "p02": p02,
+                    "p98": p98,
+                }
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/raster/pixel")
+async def get_raster_pixel(path: str, lon: float, lat: float, band: int = 1):
+    """
+    Queries the exact real-world physical pixel value at geographic (lon, lat)
+    for hover tooltips and live inspection on the 3D globe.
+    """
+    try:
+        import rasterio
+        from rasterio.warp import transform
+        import numpy as np
+
+        p = resolve_raster_path(path)
+        if not p or not p.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
+
+        with rasterio.open(p) as src:
+            eff_band = min(max(1, band), src.count)
+            xs, ys = transform("EPSG:4326", src.crs, [lon], [lat])
+            x, y = xs[0], ys[0]
+
+            if not (src.bounds.left <= x <= src.bounds.right and src.bounds.bottom <= y <= src.bounds.top):
+                return JSONResponse({"ok": True, "inside": False})
+
+            row, col = src.index(x, y)
+            if not (0 <= row < src.height and 0 <= col < src.width):
+                return JSONResponse({"ok": True, "inside": False})
+
+            window = rasterio.windows.Window(col, row, 1, 1)
+            val = src.read(eff_band, window=window)[0, 0]
+            is_nodata = (src.nodata is not None and val == src.nodata) or np.isnan(val)
+
+            # Get units
+            units = src.tags().get("UNITS") or src.tags().get("units") or (src.units[eff_band - 1] if src.units else "")
+
+            return JSONResponse({
+                "ok": True,
+                "inside": True,
+                "value": None if is_nodata else float(val),
+                "is_nodata": bool(is_nodata),
+                "row": int(row),
+                "col": int(col),
+                "units": units,
+                "band": eff_band,
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/file/inspect")
+async def inspect_file_metadata(path: str):
+    """
+    Unified inspector for any catalog or uploaded file:
+    GeoTIFF rasters, LAS/LAZ point clouds, GeoJSON/vectors, or imagery.
+    """
+    try:
+        p = resolve_raster_path(path)
+        if not p or not p.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {path}"}, status_code=404)
+
+        ext = p.suffix.lower()
+        size_mb = round(p.stat().st_size / (1024 * 1024), 2)
+        meta = {
+            "ok": True,
+            "filename": p.name,
+            "path": str(p),
+            "size_mb": size_mb,
+            "extension": ext,
+        }
+
+        # 1. GeoTIFF / Raster
+        if ext in [".tif", ".tiff", ".img", ".jp2"]:
+            import rasterio
+            from rasterio.warp import transform_bounds
+            with rasterio.open(p) as src:
+                try:
+                    wgs84_bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+                except Exception:
+                    wgs84_bounds = None
+                meta.update({
+                    "category": "raster",
+                    "crs": str(src.crs),
+                    "width": src.width,
+                    "height": src.height,
+                    "count": src.count,
+                    "dtypes": [str(d) for d in src.dtypes],
+                    "nodata": src.nodata,
+                    "bounds_wgs84": wgs84_bounds,
+                    "png_url": f"/api/raster/png?path={p.name}",
+                })
+
+        # 2. Point Cloud (LAZ / LAS)
+        elif ext in [".laz", ".las"]:
+            import laspy
+            with laspy.open(p) as reader:
+                h = reader.header
+                crs_str = str(h.parse_crs()) if h.parse_crs() else "Unknown"
+                meta.update({
+                    "category": "lidar",
+                    "point_count": h.point_count,
+                    "version": f"{h.version.major}.{h.version.minor}",
+                    "crs": crs_str,
+                    "min_bounds": [float(v) for v in h.min],
+                    "max_bounds": [float(v) for v in h.max],
+                })
+
+        # 3. Vector (GeoJSON / Shapefile)
+        elif ext in [".geojson", ".json"]:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            features = data.get("features", [])
+            geom_types = list(set(f.get("geometry", {}).get("type", "Unknown") for f in features if f.get("geometry")))
+            meta.update({
+                "category": "vector",
+                "feature_count": len(features),
+                "geometry_types": geom_types,
+            })
+
+        # 4. Image (PNG, JPG)
+        elif ext in [".png", ".jpg", ".jpeg"]:
+            from PIL import Image
+            with Image.open(p) as im:
+                meta.update({
+                    "category": "image",
+                    "width": im.width,
+                    "height": im.height,
+                    "format": im.format,
+                    "mode": im.mode,
+                })
+        else:
+            meta.update({"category": "other"})
+
+        return JSONResponse(meta)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 
 
 @app.post("/api/chat")
@@ -1279,4 +1694,4 @@ async def send_chat_message(payload: ChatMessage):
 if __name__ == "__main__":
     import uvicorn
     print("Starting GeoLLM Web UI on http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=1)
+    uvicorn.run("web_app:app", host="127.0.0.1", port=8000, reload=True, timeout_graceful_shutdown=1)

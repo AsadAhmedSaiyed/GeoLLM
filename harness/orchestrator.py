@@ -59,7 +59,7 @@ def find_artifacts(run_dir) -> list:
     if not rd.exists():
         return artifacts
 
-    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".gpkg", ".csv", ".json", ".gif", ".svg"}
+    valid_exts = {".png", ".tif", ".tiff", ".geojson", ".gpkg", ".csv", ".json", ".gif", ".svg", ".html", ".htm"}
     excluded_names = {"feedback", "events", "stderr", "stdout", "code.py", "script.py", "last_status", "plan.json", "vision_revision.json", ".flag", "checkpoint.json", "task.lock"}
 
     # Auto-promote any live scratch outputs so deliverables are immediately visible as they are generated

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { TaskState, ActivityItem } from '@/types/task';
 import { ArtifactItem } from '@/types/sse';
 import { MarkdownView } from '@/components/MarkdownView';
+import { OpenUIRenderer } from '@/components/OpenUIRenderer';
 import { ValidationViewer } from '@/components/ValidationViewer';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +36,7 @@ import {
   ArrowDown,
   ArrowUp,
   Map,
+  Sparkles,
 } from 'lucide-react';
 
 const getBasename = (p?: string | null): string => {
@@ -262,17 +264,37 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
     );
   });
 
+  const htmlCardArt = artifacts.find((a) => {
+    const name = typeof a === 'string' ? a : a.name || '';
+    return name.toLowerCase().endsWith('.html') || name.toLowerCase().endsWith('.htm');
+  });
+
   const isDone = task.status === 'done';
   const isFailed = task.status === 'failed';
 
-  // Collect the final assistant narrative from accumulated text activities
-  const finalAnswer = (() => {
-    if (!isDone && !isFailed) return null;
+  // Collect the assistant findings / narrative from accumulated text activities
+  // Persists across vision feedback loops and file changes
+  const findingsContent = useMemo(() => {
     const textParts = (task.activities || [])
       .filter((a): a is { type: 'text'; text: string; timestamp: number } => a.type === 'text' && !!a.text?.trim())
       .map((a) => a.text);
-    return textParts.length > 0 ? textParts.join('') : null;
-  })();
+
+    if (task.answer && task.answer.trim()) {
+      // Guard against vision revision updates overwriting detailed measurement tables
+      const hasTable = task.answer.includes('|') || task.answer.includes('MEASURED') || task.answer.includes('Spectral class');
+      if (!hasTable && textParts.length > 1) {
+        const earlierWithTable = textParts.find(
+          (t) => (t.includes('|') || t.includes('MEASURED') || t.includes('Spectral class')) && t !== task.answer
+        );
+        if (earlierWithTable) {
+          return `${earlierWithTable}\n\n---\n\n### Visual Revision & Updated Deliverables\n${task.answer}`;
+        }
+      }
+      return task.answer;
+    }
+
+    return textParts.length > 0 ? textParts.join('\n\n') : null;
+  }, [task.answer, task.activities]);
 
   const relevantActivities = useMemo(() => {
     const raw = (task.activities || []).filter(
@@ -658,27 +680,68 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
         </div>
       )}
 
-      {/* 5. Findings / Summary Card */}
-      {(task.answer || finalAnswer) && (
-        <div className="bg-muted border border-border rounded-lg p-3.5">
+      {/* 5. Findings / Summary Card (Persistent across vision feedback loops) */}
+      {findingsContent && (
+        <div className="bg-muted border border-border rounded-lg p-3.5 shadow-sm">
           <div className="flex items-center gap-2 mb-2.5">
             {isDone ? (
               <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
-            ) : (
+            ) : isFailed ? (
               <XCircle className="h-4 w-4 text-rose-400 shrink-0" />
+            ) : (
+              <Sparkles className="h-4 w-4 text-sky-400 shrink-0 animate-pulse" />
             )}
             <span className="font-bold text-[13px] text-foreground">
-              {isDone ? 'Analysis Complete — Findings & Evidence' : 'Task Failed — Details'}
+              {isDone
+                ? 'Analysis Complete — Findings & Evidence'
+                : isFailed
+                ? 'Task Failed — Details'
+                : 'Current Analysis Findings'}
             </span>
             {isDone && (
               <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-lg font-semibold font-mono">
                 DONE
               </span>
             )}
+            {!isDone && !isFailed && (
+              <span className="text-[10px] bg-sky-500/20 text-sky-400 px-2 py-0.5 rounded-lg font-semibold font-mono">
+                LIVE
+              </span>
+            )}
           </div>
           <div className="max-h-[550px] overflow-y-auto text-foreground text-xs leading-relaxed">
-            <MarkdownView content={task.answer || finalAnswer} />
+            <OpenUIRenderer content={findingsContent} isStreaming={!isDone && !isFailed} />
           </div>
+        </div>
+      )}
+
+      {/* 5b. Interactive Generative HTML Card if produced */}
+      {htmlCardArt && (
+        <div className="bg-card rounded-xl p-3 border border-sky-500/30 shadow-md">
+          <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-border text-[11px] text-sky-400">
+            <span className="flex items-center gap-1.5 font-semibold">
+              <Sparkles className="h-4 w-4 text-sky-400" />
+              <span>
+                Interactive Analysis Card (
+                {getBasename(typeof htmlCardArt === 'string' ? htmlCardArt : htmlCardArt.name)})
+              </span>
+            </span>
+            <span className="text-[10px] font-mono bg-sky-500/20 text-sky-400 px-2 py-0.5 rounded-full">
+              Interactive Generative UI
+            </span>
+          </div>
+          <iframe
+            src={
+              typeof htmlCardArt === 'object' && htmlCardArt.url
+                ? htmlCardArt.url
+                : `/api/tasks/${taskId}/artifacts/${getBasename(
+                    typeof htmlCardArt === 'string' ? htmlCardArt : htmlCardArt.name
+                  )}`
+            }
+            title="Interactive Analysis Card"
+            className="w-full h-[500px] rounded-lg border border-border bg-white"
+            sandbox="allow-scripts allow-same-origin"
+          />
         </div>
       )}
 
@@ -916,7 +979,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   );
                 }
 
-                // B. Assistant Markdown Text
+                // B. Assistant Markdown & OpenUI Text
                 if (act.type === 'text' && 'text' in act) {
                   if (!act.text || !act.text.trim()) return null;
                   return (
@@ -924,7 +987,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                       key={i}
                       className="px-2.5 py-1.5 bg-card rounded-lg border border-border text-foreground text-[11.5px]"
                     >
-                      <MarkdownView content={act.text} />
+                      <OpenUIRenderer content={act.text} isStreaming={!isDone && !isFailed} />
                     </div>
                   );
                 }
@@ -1605,7 +1668,7 @@ export const SingleWorkerSlot: React.FC<SingleWorkerSlotProps> = ({
                   </div>
                 )}
 
-                <MarkdownView content={turn.content} />
+                <OpenUIRenderer content={turn.content} onSendMessage={onSelectFollowUp} />
 
                 {turn.thumb_url && (
                   <div className="mt-2.5 inline-flex flex-col gap-2 rounded-lg border border-border bg-card p-2">
