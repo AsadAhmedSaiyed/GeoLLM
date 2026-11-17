@@ -13,6 +13,7 @@ Capabilities:
 7. elevation_profile: Dynamic cross-section sampling along arbitrary transect line A -> B.
 8. generate_terrain_3d_payload: Lightweight downsampled height grid (<1MB) for WebGL/Three.js.
 9. save_shaded_relief: Publication-ready hypsometric colormap draped over shaded relief.
+10. calculate_twi: Scientific Kirkby & Beven Topographic Wetness Index with D8 flow routing.
 """
 
 from __future__ import annotations
@@ -598,5 +599,171 @@ def fetch_orthophoto_for_bounds(
     out_p.parent.mkdir(parents=True, exist_ok=True)
     cropped.save(out_p, format="PNG", optimize=True)
     return str(out_p)
+
+
+# =====================================================================
+# 10. SCIENTIFIC TOPOGRAPHIC WETNESS INDEX (TWI & D8 HYDROLOGY)
+# =====================================================================
+
+def calculate_twi(
+    dem: np.ndarray,
+    dx: float,
+    dy: float,
+    min_slope_deg: float = 0.1,
+    fill_depressions: bool = True,
+    return_components: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Computes Kirkby & Beven (1979) Topographic Wetness Index (TWI):
+        TWI = ln( a / tan(beta) )
+    where:
+        a = specific upslope contributing area (m²/m) via Priority-Flood + D8 flow accumulation
+        beta = local surface gradient in radians (clipped to min_slope_deg)
+
+    Includes Wang & Liu (2006) Priority-Flood depression filling with acyclic flat tie-breaking
+    so DEM noise pits do not trap runoff and river networks remain continuous.
+
+    Args:
+        dem: 2D elevation matrix (Digital Elevation Model).
+        dx: Cell size in physical meters along X axis.
+        dy: Cell size in physical meters along Y axis.
+        min_slope_deg: Minimum slope floor in degrees to prevent ln(infinity) in flat plains.
+        fill_depressions: If True (default), fills sinks via Priority-Flood before D8 routing.
+        return_components: If True, returns (twi, flow_accumulation_cells, slope_deg).
+                           If False, returns twi array.
+
+    Returns:
+        TWI float32 array or (twi, flow_accumulation_cells, slope_deg).
+    """
+    import heapq
+
+    dem_arr = np.asarray(dem, dtype=np.float64)
+    valid_mask = np.isfinite(dem_arr)
+    if not np.any(valid_mask):
+        empty = np.full(dem_arr.shape, np.nan, dtype=np.float32)
+        return (empty, empty, empty) if return_components else empty
+
+    nrows, ncols = dem_arr.shape
+    fill_val = float(np.nanmedian(dem_arr[valid_mask]))
+    dem_infilled = np.where(valid_mask, dem_arr, fill_val)
+
+    # 1. Slope in radians via Horn's gradient on original surface
+    dz_dx = sobel(dem_infilled, axis=1, mode="nearest") / (8.0 * dx)
+    dz_dy = sobel(dem_infilled, axis=0, mode="nearest") / (8.0 * dy)
+    rise_run = np.sqrt(dz_dx**2 + dz_dy**2)
+    slope_rad = np.arctan(rise_run)
+    slope_deg = (slope_rad * (180.0 / np.pi)).astype(np.float32)
+
+    min_slope_rad = np.radians(max(0.01, min_slope_deg))
+    safe_tan_slope = np.tan(np.maximum(slope_rad, min_slope_rad))
+
+    neighbor_offsets = [
+        (-1, -1), (-1,  0), (-1,  1),
+        ( 0, -1),           ( 0,  1),
+        ( 1, -1), ( 1,  0), ( 1,  1),
+    ]
+    diag_dist = float(np.hypot(dx, dy))
+    distances = [
+        diag_dist, float(dy), diag_dist,
+        float(dx),            float(dx),
+        diag_dist, float(dy), diag_dist,
+    ]
+
+    # 2. Priority-Flood depression filling (Wang & Liu 2006) for continuous hydrological routing
+    routed_dem = dem_infilled.copy()
+    visit_rank = np.full((nrows, ncols), -1, dtype=np.int64)
+    parent_dir = np.full((nrows, ncols), -1, dtype=np.int8)
+
+    if fill_depressions:
+        seen = np.zeros((nrows, ncols), dtype=bool)
+        heap: list = []
+        serial = 0
+
+        # Seed perimeter outlets and cells adjacent to invalid/nodata masks
+        for r in range(nrows):
+            for c in range(ncols):
+                if not valid_mask[r, c]:
+                    continue
+                is_edge = (r == 0 or r == nrows - 1 or c == 0 or c == ncols - 1)
+                if not is_edge:
+                    for dr, dc in neighbor_offsets:
+                        if not valid_mask[r + dr, c + dc]:
+                            is_edge = True
+                            break
+                if is_edge:
+                    seen[r, c] = True
+                    visit_rank[r, c] = serial
+                    serial += 1
+                    heapq.heappush(heap, (float(routed_dem[r, c]), r, c))
+
+        while heap:
+            z, r, c = heapq.heappop(heap)
+            for dir_idx, (dr, dc) in enumerate(neighbor_offsets):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < nrows and 0 <= nc < ncols and valid_mask[nr, nc] and not seen[nr, nc]:
+                    seen[nr, nc] = True
+                    # Reverse direction points from (nr, nc) back toward outlet (r, c)
+                    parent_dir[nr, nc] = 7 - dir_idx
+                    if routed_dem[nr, nc] < z:
+                        routed_dem[nr, nc] = z
+                    visit_rank[nr, nc] = serial
+                    serial += 1
+                    heapq.heappush(heap, (float(routed_dem[nr, nc]), nr, nc))
+
+    # 3. D8 Flow Direction via steepest descent on depression-filled surface
+    padded_dem = np.pad(routed_dem, pad_width=1, mode="edge")
+    center_z = padded_dem[1:-1, 1:-1]
+    best_drop = np.zeros((nrows, ncols), dtype=np.float64)
+    best_dir = np.full((nrows, ncols), -1, dtype=np.int8)
+
+    for dir_idx, ((dr, dc), dist) in enumerate(zip(neighbor_offsets, distances)):
+        neighbor_z = padded_dem[1 + dr : 1 + dr + nrows, 1 + dc : 1 + dc + ncols]
+        drop = (center_z - neighbor_z) / dist
+        steeper = drop > best_drop
+        best_drop[steeper] = drop[steeper]
+        best_dir[steeper] = dir_idx
+
+    # Resolve flat filled depressions using Priority-Flood parent pointers toward the spill outlet
+    if fill_depressions:
+        flat_unresolved = (best_dir < 0) & (parent_dir >= 0) & valid_mask
+        best_dir[flat_unresolved] = parent_dir[flat_unresolved]
+
+    # 4. Flow Accumulation via topological sorting (highest elevation / latest flood visit first)
+    if fill_depressions and np.any(visit_rank >= 0):
+        flat_indices = np.lexsort((-visit_rank.ravel(), -routed_dem.ravel()))
+    else:
+        flat_indices = np.argsort(-routed_dem.ravel())
+
+    order_r = flat_indices // ncols
+    order_c = flat_indices % ncols
+
+    accumulation = np.ones((nrows, ncols), dtype=np.float64)
+
+    for r, c in zip(order_r, order_c):
+        if not valid_mask[r, c]:
+            continue
+        d = best_dir[r, c]
+        if d >= 0:
+            dr, dc = neighbor_offsets[d]
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < nrows and 0 <= nc < ncols and valid_mask[nr, nc]:
+                accumulation[nr, nc] += accumulation[r, c]
+
+    # 5. Specific Catchment Area: a = (flow_accumulation * cell_area) / contour_width
+    cell_area = float(dx * dy)
+    contour_width = float((dx + dy) / 2.0)
+    specific_area = (accumulation * cell_area) / contour_width
+
+    # 6. Kirkby & Beven TWI = ln( a / tan(beta) )
+    twi = np.log(specific_area / safe_tan_slope).astype(np.float32)
+    twi[~valid_mask] = np.nan
+    accumulation_out = accumulation.astype(np.float32)
+    accumulation_out[~valid_mask] = np.nan
+    slope_deg[~valid_mask] = np.nan
+
+    if return_components:
+        return twi, accumulation_out, slope_deg
+    return twi
+
 
 

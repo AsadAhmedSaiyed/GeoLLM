@@ -63,6 +63,117 @@ def _read_status(run_dir):
         return {}
 
 
+def _recover_sandbox_tmp_outputs(run_dir: Path, task_id: str | None = None, cfg=None) -> bool:
+    """If a sandbox container finished writing result.json + deliverables inside .sandbox_tmp
+    right as an RPC timeout fired, promote those completed deliverables so work is not lost.
+    """
+    rd = Path(run_dir)
+    sandbox_tmp = rd / ".sandbox_tmp"
+    if not sandbox_tmp.is_dir():
+        return False
+
+    candidates = sorted(
+        sandbox_tmp.glob("*/output"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    for out_dir in candidates:
+        rj = out_dir / "result.json"
+        if not rj.is_file():
+            continue
+        files = [f for f in out_dir.rglob("*") if f.is_file()]
+        if len(files) < 2:
+            continue
+        try:
+            res_data = json.loads(rj.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        scratch_out = rd / "scratch" / "outputs"
+        scratch_out.mkdir(parents=True, exist_ok=True)
+        canon_out = rd / "outputs"
+        canon_out.mkdir(parents=True, exist_ok=True)
+
+        promoted_names = []
+        for f in sorted(files):
+            for target_dir in (scratch_out, canon_out):
+                target = target_dir / f.name
+                try:
+                    if target.exists():
+                        target.unlink()
+                    try:
+                        os.link(f, target)
+                    except OSError:
+                        shutil.copy2(f, target)
+                except Exception:
+                    pass
+            promoted_names.append(f.name)
+
+        status_payload = {
+            "ok": True,
+            "attempt": max(2, int(_read_status(rd).get("attempt", 1)) + 1),
+            "exit_code": 0,
+            "errors": [],
+            "warnings": [],
+            "artifacts": promoted_names,
+            "result": res_data,
+            "error": "",
+            "message": "Recovered completed sandbox deliverables.",
+        }
+        try:
+            (rd / "last_status.json").write_text(
+                json.dumps(status_payload, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+        return True
+    return False
+
+
+def _run_execution_with_retry(pi, prompt_text: str, cfg, on_event, run_dir: Path, task_id: str | None, step):
+    """Run the post-approval execution prompt; on TimeoutError, recover completed outputs or retry next attempt."""
+    try:
+        return pi.run_prompt(
+            prompt_text,
+            cfg.idle_timeout_s,
+            cfg.total_timeout_s,
+            cfg.max_tool_calls,
+            on_event,
+        )
+    except TimeoutError:
+        if _recover_sandbox_tmp_outputs(run_dir, task_id, cfg):
+            print("[pi] Recovered completed deliverables from .sandbox_tmp after idle timeout.", flush=True)
+            return pi.last_stats
+
+        used_attempts = int(_read_status(run_dir).get("attempt", 1))
+        if used_attempts < cfg.max_tool_calls and pi.proc.poll() is None:
+            next_att = used_attempts + 1
+            step({
+                "type": "status",
+                "status": "running",
+                "step": f"Execution timed out — retrying attempt {next_att}/{cfg.max_tool_calls}...",
+            })
+            try:
+                pi.send({"type": "abort"})
+            except Exception:
+                pass
+            pi.drain()
+            retry_prompt = (
+                f"Attempt {used_attempts} timed out while processing large rasters. "
+                f"Proceed immediately to attempt {next_att}/{cfg.max_tool_calls} with `run_geospatial_code`: "
+                "use larger streaming window blocks (e.g. 512–1024 rows) and avoid writing multi-gigabyte "
+                "intermediate float32 diagnostic rasters so the script finishes well within the timeout."
+            )
+            return pi.run_prompt(
+                retry_prompt,
+                cfg.idle_timeout_s,
+                cfg.total_timeout_s,
+                cfg.max_tool_calls,
+                on_event,
+            )
+        raise
+
+
 def _png_rels(run_dir):
     """PNG/GIF artifact names as recorded by the runner (with fallback across succeeded attempts and durable outputs)."""
     rels = []
@@ -183,12 +294,20 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
             item_id = sc.get("item_id") or sc.get("id")
             dt_str = str(sc.get("datetime") or "scene")[:10]
             assets = sc.get("assets") or ["B04", "B03", "B02", "B08"]
+            scene_bbox = sc.get("bbox")
+            eff_bbox = scene_bbox if (isinstance(scene_bbox, list) and len(scene_bbox) >= 4) else bbox
+            reg_slug = ""
+            if sc.get("region_label"):
+                import re as _re
+                clean_reg = _re.sub(r"[^a-zA-Z0-9]+", "_", str(sc["region_label"]).strip().lower()).strip("_")
+                if clean_reg:
+                    reg_slug = f"{clean_reg}_"
             for asset_key in assets:
                 if run_dir and (run_dir / "cancelled.flag").exists():
                     errors.append("Download cancelled by user")
                     break
                 band_index += 1
-                custom_name = f"{col}_{dt_str}_{asset_key}.tif"
+                custom_name = f"{reg_slug}{col}_{dt_str}_{asset_key}.tif"
                 step({
                     "type": "status",
                     "status": "running",
@@ -244,7 +363,7 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                     collection=col,
                     item_id=item_id,
                     asset_key=asset_key,
-                    bbox_wgs84=bbox,
+                    bbox_wgs84=eff_bbox,
                     output_dir=data_dir,
                     custom_filename=custom_name,
                     progress_callback=_on_band_progress,
@@ -605,12 +724,14 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                 if task_state:
                     task_state.status = "running"
                 pi.drain()
-                stats = pi.run_prompt(
+                stats = _run_execution_with_retry(
+                    pi,
                     resume_prompt,
-                    cfg.idle_timeout_s,
-                    cfg.total_timeout_s,
-                    cfg.max_tool_calls,
+                    cfg,
                     on_event,
+                    run_dir,
+                    task_id,
+                    step,
                 )
                 answer = pi.last_assistant_text()
         else:
@@ -868,10 +989,15 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     plan_file.unlink()
                     step({"type": "status", "status": "running"})
                     pi.drain()
-                    stats = pi.run_prompt(
+                    stats = _run_execution_with_retry(
+                        pi,
                         "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
                         "Write all requested GeoTIFF/PNG files and verify deliverables.",
-                        cfg.idle_timeout_s, cfg.total_timeout_s, cfg.max_tool_calls, on_event
+                        cfg,
+                        on_event,
+                        run_dir,
+                        task_id,
+                        step,
                     )
                     answer = pi.last_assistant_text()
 
@@ -932,11 +1058,15 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     step({"type": "status", "status": "running"})
                     task_state.status = "running"
                     pi.drain()
-                    stats = pi.run_prompt(
+                    stats = _run_execution_with_retry(
+                        pi,
                         "Plan approved! Proceed to implement and run the analysis with `run_geospatial_code`. "
                         "Write all requested GeoTIFF/PNG files and verify deliverables.",
-                        cfg.idle_timeout_s, cfg.total_timeout_s,
-                        cfg.max_tool_calls, on_event
+                        cfg,
+                        on_event,
+                        run_dir,
+                        task_id,
+                        step,
                     )
                     answer = pi.last_assistant_text()
                     break
@@ -1252,15 +1382,29 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
     # Ground truth for status = the sandbox runner's own record, not the model's words.
     status, artifacts = "failed", []
     sf = run_dir / "last_status.json"
+    if session_problem and not (run_dir / "outputs" / "result.json").is_file():
+        _recover_sandbox_tmp_outputs(run_dir, task_id, cfg)
+
     if sf.exists():
         last = json.loads(sf.read_text(encoding="utf-8"))
         artifacts = last.get("artifacts", [])
         warnings += last.get("warnings", [])
-        if last.get("ok"):
+        has_deliverables = (
+            bool(artifacts)
+            or bool(last.get("result"))
+            or not (run_dir / "plan_approved.flag").exists()
+        )
+        if last.get("ok") and has_deliverables:
             status = "partial" if session_problem else "ok"
+            if not answer and isinstance(last.get("result"), dict):
+                res_summary = last["result"].get("summary")
+                if isinstance(res_summary, str) and res_summary.strip():
+                    answer = res_summary.strip()
             if session_problem:
                 warnings.append("Sandbox succeeded, but the Pi session ended with a problem "
                                 "afterwards; the written summary may be missing or incomplete.")
+        elif last.get("ok") and not has_deliverables:
+            warnings.append("Inspection succeeded, but the analysis execution timed out or failed before producing deliverables.")
         else:
             warnings.append(f"Last execution did not succeed: {last.get('message', '')[:300]}")
     else:

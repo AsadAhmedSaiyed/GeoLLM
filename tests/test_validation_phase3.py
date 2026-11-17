@@ -370,8 +370,8 @@ class TestFeatureGate:
         assert len(result) == 1
         assert result[0]["file"] == "map.png"
 
-    def test_default_mode_is_legacy(self, tmp_path):
-        """When GEOLLM_VALIDATION_MODE is not set, legacy path runs."""
+    def test_default_mode_is_agentic(self, tmp_path):
+        """When GEOLLM_VALIDATION_MODE is not set, agentic path is the default."""
         from harness import visual_check
 
         task = _task()
@@ -429,10 +429,10 @@ class TestGetMode:
         from harness.validation.config import get_mode
         return get_mode()
 
-    def test_default_is_legacy(self):
+    def test_default_is_agentic(self):
         env = {k: v for k, v in os.environ.items() if k != "GEOLLM_VALIDATION_MODE"}
         with mock.patch.dict(os.environ, env, clear=True):
-            assert self._mode() == "legacy"
+            assert self._mode() == "agentic"
 
     def test_agentic_when_set(self):
         with mock.patch.dict(os.environ, {"GEOLLM_VALIDATION_MODE": "agentic"}):

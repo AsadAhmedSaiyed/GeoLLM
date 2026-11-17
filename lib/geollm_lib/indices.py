@@ -5,9 +5,28 @@ from .io import band_for, check_explicit, read_band
 
 
 def _nd(a, b):
+    denom = a + b
+    # Check if xarray DataArray or Dask array
+    if hasattr(denom, "where"):
+        try:
+            diff = a - b
+            # xarray DataArray .where replaces values where condition is FALSE
+            safe_denom = denom.where(denom != 0)
+            return (diff / safe_denom).astype("float32")
+        except Exception:
+            pass
+    try:
+        import dask.array as da
+        if isinstance(denom, da.Array):
+            diff = a - b
+            safe_denom = da.where(denom != 0, denom, np.nan)
+            return (diff / safe_denom).astype("float32")
+    except ImportError:
+        pass
+
     with np.errstate(divide="ignore", invalid="ignore"):
-        out = (a - b) / (a + b)
-    out[(a + b) == 0] = np.nan
+        safe_denom = np.where(denom == 0, np.nan, denom)
+        out = (a - b) / safe_denom
     return out.astype("float32")
 
 
@@ -22,15 +41,27 @@ def _refl(arr):
 def to_surface_reflectance(arr, tags=None, filename=""):
     """Convert raw sensor DN array to physical Bottom-of-Atmosphere surface reflectance [0..1].
 
-    Automatically harmonizes Sentinel-2 L2A Processing Baseline 04.00+ (post-2022-01-25)
-    which encodes surface reflectance with BOA_ADD_OFFSET = -1000 (DN = reflectance * 10000 + 1000),
-    as well as standard 0..10000 integer reflectance.
+    Automatically harmonizes:
+    - USGS Landsat 8/9 Collection 2 Level-2 surface reflectance (reflectance = DN * 0.0000275 - 0.2)
+    - Sentinel-2 L2A Processing Baseline 04.00+ (post-2022-01-25) which encodes surface reflectance
+      with BOA_ADD_OFFSET = -1000 (DN = reflectance * 10000 + 1000)
+    - Standard 0..10000 integer reflectance.
     """
     import re
     arr = np.asarray(arr, dtype="float32").copy()
     tags = tags or {}
     if not np.isfinite(arr).any() or np.nanpercentile(arr, 99) <= 2.0:
         return arr
+
+    col_str = str(tags.get("collection", "") or tags.get("sensor", "")).lower()
+    fname_str = str(filename).lower()
+    is_landsat = (
+        "landsat" in col_str
+        or "landsat" in fname_str
+        or any(k in fname_str for k in ("lc08", "lc09", "lt05", "le07"))
+    )
+    if is_landsat:
+        return np.clip(arr * 0.0000275 - 0.2, 0.0001, 1.5).astype("float32")
 
     boa_offset = tags.get("BOA_ADD_OFFSET") or tags.get("boa_add_offset")
     offset_val = 0.0
@@ -47,8 +78,8 @@ def to_surface_reflectance(arr, tags=None, filename=""):
             if m:
                 acq_date = m.group(1)
         is_s2 = (
-            "sentinel-2" in str(tags.get("collection", "")).lower()
-            or "sentinel-2" in str(filename).lower()
+            "sentinel-2" in col_str
+            or "sentinel-2" in fname_str
             or baseline is not None
         )
         if is_s2:
@@ -61,6 +92,26 @@ def to_surface_reflectance(arr, tags=None, filename=""):
                 pass
 
     return np.clip((arr + offset_val) / 10000.0, 0.0001, 1.5).astype("float32")
+
+
+def to_celsius(arr, tags=None, filename=""):
+    """Convert raw thermal sensor DN (e.g. Landsat C2L2 ST_B10 / lwir11) or Kelvin to Land Surface Temperature in °C.
+
+    USGS Landsat Collection 2 Level-2 Surface Temperature scaling:
+        Kelvin = DN * 0.00341802 + 149.0
+        Celsius = Kelvin - 273.15
+    """
+    arr = np.asarray(arr, dtype="float32").copy()
+    valid = arr[np.isfinite(arr)]
+    if valid.size == 0:
+        return arr
+    med = float(np.median(valid))
+    if med > 1000.0:
+        kelvin = arr * 0.00341802 + 149.0
+        return (kelvin - 273.15).astype("float32")
+    if 180.0 <= med <= 360.0:
+        return (arr - 273.15).astype("float32")
+    return arr
 
 
 def _savi(b):
@@ -109,6 +160,8 @@ def _ibi(b):
 
 INDEX_DEFS = {
     "ndvi": (("nir", "red"), "Vegetation greenness/vigour. ~0.5-0.9 dense healthy vegetation, 0.2-0.4 sparse or stressed, ~0 bare soil or built-up, negative water.", lambda b: _nd(b["nir"], b["red"])),
+    "ndre": (("nir", "red_edge"), "Normalized Difference Red-Edge Index. Sensitive to canopy chlorophyll content and early crop stress.", lambda b: _nd(b["nir"], b["red_edge"])),
+    "ndci": (("red_edge", "red"), "Normalized Difference Chlorophyll Index. Detects algal blooms and chlorophyll-a concentration in water.", lambda b: _nd(b["red_edge"], b["red"])),
     "msavi2": (("nir", "red"), "Modified Soil-Adjusted Vegetation Index 2 (Qi et al. 1994). Suppresses bare soil background noise in arid/semi-arid and urban environments.", _msavi2),
     "savi": (("nir", "red"), "Soil-adjusted vegetation index, better for sparse vegetation (L=0.5).", _savi),
     "evi": (("nir", "red", "blue"), "Enhanced vegetation index, less saturated in dense canopy.", _evi),
@@ -120,6 +173,7 @@ INDEX_DEFS = {
     "ibi": (("swir1", "nir", "red", "green"), "Index-Based Built-Up Index (Xu 2008). Suppresses vegetation and water/soil noise to isolate built-up impervious surfaces.", _ibi),
     "bsi": (("swir1", "red", "nir", "blue"), "Bare Soil Index. High values indicate exposed bare soil, sand, or cleared/disturbed ground.", _bsi),
     "ui": (("swir2", "nir"), "Urban Index (Kawamura 1996). Uses SWIR2 and NIR to highlight dense urban/impervious structures.", lambda b: _nd(b["swir2"], b["nir"])),
+    "lst": (("thermal",), "Land Surface Temperature in degrees Celsius (°C) from thermal infrared band.", lambda b: b["thermal"]),
 }
 
 
@@ -143,5 +197,8 @@ def compute_index(name, src, bands=None):
         else:
             idx = band_for(src, role)
         raw = read_band(src, idx)
-        arrays[role] = to_surface_reflectance(raw, tags=tags, filename=fname)
+        if role == "thermal":
+            arrays[role] = to_celsius(raw, tags=tags, filename=fname)
+        else:
+            arrays[role] = to_surface_reflectance(raw, tags=tags, filename=fname)
     return fn(arrays)

@@ -145,7 +145,12 @@ def promote_outputs(task_id: str, source_dir: Path, runs_dir: Optional[Path] = N
 
         target = dest_dir / item.name
         try:
-            shutil.copy2(item, target)
+            if target.exists():
+                target.unlink()
+            try:
+                os.link(item, target)
+            except OSError:
+                shutil.copy2(item, target)
             promoted.append(target)
         except Exception:
             pass

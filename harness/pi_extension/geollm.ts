@@ -359,6 +359,16 @@ export default function (pi: ExtensionAPI) {
           thumbnail: Type.Optional(Type.String({ description: "Signed preview thumbnail URL from search_stac." })),
           cloud_cover: Type.Optional(Type.Number({ description: "Cloud cover percentage." })),
           aoi_coverage_pct: Type.Optional(Type.Number({ description: "AOI overlap percentage." })),
+          bbox: Type.Optional(
+            Type.Array(Type.Number(), {
+              description: "Optional per-scene AOI bounding box [min_lon, min_lat, max_lon, max_lat] for multi-region comparisons.",
+            })
+          ),
+          region_label: Type.Optional(
+            Type.String({
+              description: "Optional short region prefix for multi-region comparisons (e.g. 'dubai', 'riyadh').",
+            })
+          ),
         }),
         { description: "List of selected satellite scenes to preview and stage upon user approval." }
       ),

@@ -97,12 +97,14 @@ class PiRPC:
                 stats["streamed_chars"] += len(u.get("delta") or "")
         elif t == "tool_execution_start":
             stats["tool_calls"] += 1
+            stats["tool_in_flight"] = True
             name = ev.get("toolName") or ev.get("name") or "?"
             args = ev.get("args") or ev.get("input") or ev.get("arguments") or ""
             self._say(f"tool #{stats['tool_calls']} start: {name} {_short(args, 100)}", stats)
             if stats["tool_calls"] == 1:   # learn the real field names; remove later
                 self._say(f"(debug) tool event keys: {sorted(ev)}", stats)
         elif t == "tool_execution_end":
+            stats["tool_in_flight"] = False
             raw = json.dumps(ev, default=str)
             m = _EXEC.search(raw)
             if m:

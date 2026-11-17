@@ -189,37 +189,148 @@ def points_to_dsm_dtm(
 def read_point_cloud(
     file_path: Union[str, Path],
     max_points: Optional[int] = 5_000_000,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+    chunk_size: int = 500_000,
+    classes: Optional[List[int]] = None,
+    return_classification: bool = False,
+) -> Union[Tuple[np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """
-    Reads LiDAR point clouds from CSV, TXT, XYZ, or LAS/LAZ.
-    - Text/CSV format: expects columns 'x,y,z' or 'X Y Z'
-    - LAS/LAZ format: uses laspy if installed
+    Reads LiDAR point clouds from CSV, TXT, XYZ, or LAS/LAZ using memory-bounded streaming chunks.
+    - LAS/LAZ: Uses laspy chunk_iterator to stream points without loading entire file into RAM.
+    - Spatial Bounding Box: If bbox=(min_x, min_y, max_x, max_y) is specified, only points within the
+      box are accumulated.
+    - Classification Filter: If classes=[2, 5, 6] is given, filters LAS points by ASPRS classification code.
+    - If return_classification=True, returns (x, y, z, classification).
     """
     p = Path(file_path)
     suffix = p.suffix.lower()
 
+    min_x, min_y, max_x, max_y = (
+        (bbox[0], bbox[1], bbox[2], bbox[3]) if bbox is not None else (-np.inf, -np.inf, np.inf, np.inf)
+    )
+
     if suffix in (".las", ".laz"):
         try:
             import laspy
+            x_chunks, y_chunks, z_chunks, c_chunks = [], [], [], []
+            total_loaded = 0
+
             with laspy.open(p) as fh:
-                las = fh.read()
-                x = np.asarray(las.x[:max_points], dtype=np.float64)
-                y = np.asarray(las.y[:max_points], dtype=np.float64)
-                z = np.asarray(las.z[:max_points], dtype=np.float32)
-                return x, y, z
+                points_to_fetch = min(chunk_size, max_points or chunk_size)
+                for chunk in fh.chunk_iterator(points_to_fetch):
+                    cx = np.asarray(chunk.x, dtype=np.float64)
+                    cy = np.asarray(chunk.y, dtype=np.float64)
+                    cz = np.asarray(chunk.z, dtype=np.float32)
+                    cc = (
+                        np.asarray(chunk.classification, dtype=np.uint8)
+                        if hasattr(chunk, "classification")
+                        else np.zeros(len(cx), dtype=np.uint8)
+                    )
+
+                    mask = None
+                    if bbox is not None:
+                        mask = (cx >= min_x) & (cx <= max_x) & (cy >= min_y) & (cy <= max_y)
+                    if classes is not None:
+                        cls_mask = np.isin(cc, classes)
+                        mask = cls_mask if mask is None else (mask & cls_mask)
+                    if mask is not None:
+                        if not np.any(mask):
+                            continue
+                        cx, cy, cz, cc = cx[mask], cy[mask], cz[mask], cc[mask]
+
+                    needed = max_points - total_loaded if max_points is not None else len(cx)
+                    if needed <= 0:
+                        break
+
+                    if len(cx) > needed:
+                        cx, cy, cz, cc = cx[:needed], cy[:needed], cz[:needed], cc[:needed]
+
+                    x_chunks.append(cx)
+                    y_chunks.append(cy)
+                    z_chunks.append(cz)
+                    c_chunks.append(cc)
+                    total_loaded += len(cx)
+
+                    if max_points is not None and total_loaded >= max_points:
+                        break
+
+            if not x_chunks:
+                empty_x = np.empty(0, dtype=np.float64)
+                empty_y = np.empty(0, dtype=np.float64)
+                empty_z = np.empty(0, dtype=np.float32)
+                if return_classification:
+                    return empty_x, empty_y, empty_z, np.empty(0, dtype=np.uint8)
+                return empty_x, empty_y, empty_z
+
+            out_x = np.concatenate(x_chunks)
+            out_y = np.concatenate(y_chunks)
+            out_z = np.concatenate(z_chunks)
+            if return_classification:
+                return out_x, out_y, out_z, np.concatenate(c_chunks)
+            return out_x, out_y, out_z
+
         except ImportError:
             raise ImportError(
                 "Reading binary .las/.laz files requires 'laspy'. "
                 "Install via 'pip install laspy[lazrs]' or provide point clouds as XYZ/CSV or GeoTIFF DTM/DSM."
             )
 
-    # Standard ASCII/CSV point clouds
-    delimiter = "," if suffix == ".csv" else None
-    data = np.loadtxt(p, delimiter=delimiter, max_rows=max_points, usecols=(0, 1, 2), dtype=np.float64)
-    x = data[:, 0]
-    y = data[:, 1]
-    z = data[:, 2].astype(np.float32)
-    return x, y, z
+    # Standard ASCII/CSV point clouds via memory-safe chunked reading
+    import pandas as pd
+    delimiter = "," if suffix == ".csv" else r"\s+"
+    x_chunks, y_chunks, z_chunks = [], [], []
+    total_loaded = 0
+
+    reader = pd.read_csv(
+        p,
+        sep=delimiter,
+        header=None,
+        usecols=[0, 1, 2],
+        names=["x", "y", "z"],
+        dtype={"x": np.float64, "y": np.float64, "z": np.float32},
+        chunksize=chunk_size,
+    )
+
+    for chunk_df in reader:
+        cx = chunk_df["x"].values
+        cy = chunk_df["y"].values
+        cz = chunk_df["z"].values
+
+        if bbox is not None:
+            mask = (cx >= min_x) & (cx <= max_x) & (cy >= min_y) & (cy <= max_y)
+            if not np.any(mask):
+                continue
+            cx, cy, cz = cx[mask], cy[mask], cz[mask]
+
+        needed = max_points - total_loaded if max_points is not None else len(cx)
+        if needed <= 0:
+            break
+
+        if len(cx) > needed:
+            cx, cy, cz = cx[:needed], cy[:needed], cz[:needed]
+
+        x_chunks.append(cx)
+        y_chunks.append(cy)
+        z_chunks.append(cz)
+        total_loaded += len(cx)
+
+        if max_points is not None and total_loaded >= max_points:
+            break
+
+    if not x_chunks:
+        empty_x = np.empty(0, dtype=np.float64)
+        empty_y = np.empty(0, dtype=np.float64)
+        empty_z = np.empty(0, dtype=np.float32)
+        if return_classification:
+            return empty_x, empty_y, empty_z, np.empty(0, dtype=np.uint8)
+        return empty_x, empty_y, empty_z
+
+    out_x = np.concatenate(x_chunks)
+    out_y = np.concatenate(y_chunks)
+    out_z = np.concatenate(z_chunks)
+    if return_classification:
+        return out_x, out_y, out_z, np.zeros(len(out_x), dtype=np.uint8)
+    return out_x, out_y, out_z
 
 
 # =====================================================================
@@ -251,9 +362,11 @@ def generate_lidar_3d_payload(
     with rasterio.open(p) as src:
         scale_x = max_dim / float(src.width)
         scale_y = max_dim / float(src.height)
-        scale = min(scale_x, scale_y)
+        # Never upsample: interpolating a coarse raster only invents fake slopes.
+        scale = min(scale_x, scale_y, 1.0)
         out_w = max(int(src.width * scale), 16)
         out_h = max(int(src.height * scale), 16)
+        src_w, src_h = src.width, src.height
 
         data = src.read(
             1,
@@ -264,6 +377,9 @@ def generate_lidar_3d_payload(
         src_nodata = src.nodata
         bounds = [float(src.bounds.left), float(src.bounds.bottom), float(src.bounds.right), float(src.bounds.top)]
         dx_m, dy_m = resolve_cell_size(src.transform, src.crs, src.bounds)
+        # Cell size of the *output* grid (source cell size scaled by the resample factor)
+        dx_m = float(dx_m) * (src_w / float(out_w))
+        dy_m = float(dy_m) * (src_h / float(out_h))
         crs_str = str(src.crs or "EPSG:4326")
 
     # If DTM is provided or raster is a DSM with a paired DTM, subtract to create CHM
@@ -314,24 +430,13 @@ def generate_lidar_3d_payload(
     # Removes LiDAR spike noise and sharpens real structures.
     # ---------------------------------------------------------------
 
-    # 1. Spike removal: median filter eliminates isolated noise points
-    #    (single-return outliers, power-line artifacts, edge noise)
+    # Spike removal only: a 3x3 median filter removes isolated noise returns
+    # (power lines, birds, edge noise) while keeping building walls and
+    # individual tree crowns intact. Feature-specific shaping (flat roofs,
+    # rounded crowns, water) is done by the 3D viewer after classification,
+    # so we deliberately do NOT max-filter or blur here — those filters merged
+    # neighbouring trees into flat-topped plateaus that looked like mountains.
     data_clean = median_filter(data_clean, size=3).astype(np.float32)
-
-    # 2. Building/structure levelling: flat rooftops in reality are uneven in CHM
-    #    due to LiDAR return variation. Maximum filter over high regions snaps
-    #    rooftops to their true flat profile, restoring clean building edges.
-    #    Applied only to definite elevated structures (>= 4 m above ground).
-    building_mask = data_clean >= 4.0
-    data_levelled = maximum_filter(data_clean, size=5).astype(np.float32)
-    data_clean = np.where(building_mask, data_levelled, data_clean)
-
-    # 3. Vegetation crown smoothing: Gaussian blur rounds spiked tree tops
-    #    into natural hemispherical canopy shapes without smearing building edges.
-    #    Applied only to vegetated/mid-height areas (< 4 m, not structure tops).
-    veg_mask = data_clean < 4.0
-    data_smoothed = gaussian_filter(data_clean, sigma=0.9).astype(np.float32)
-    data_clean = np.where(veg_mask, data_smoothed, data_clean)
 
     # Clamp back to valid range after filtering
     data_clean = np.clip(data_clean, min_z, max_z)
@@ -344,7 +449,7 @@ def generate_lidar_3d_payload(
     hs = multi_directional_hillshade(data_clean, dx_m, dy_m)
 
     payload = {
-        "version": "1.0",
+        "version": "2.0",
         "type": "lidar_mesh_3d",
         "is_lidar": True,
         "default_surface": "lidar_canopy",

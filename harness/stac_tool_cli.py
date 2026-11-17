@@ -98,12 +98,13 @@ async def _handle_search(payload: dict) -> dict:
 
 
 SCIENTIFIC_REQUIRED_ASSETS = {
-    "sentinel-2-l2a": ["B02", "B03", "B04", "B08", "B11", "B12", "SCL"],
-    "landsat-c2-l2": ["blue", "green", "red", "nir08", "swir16", "swir22", "qa_pixel"],
+    "sentinel-2-l2a": ["B02", "B03", "B04", "B05", "B08", "B11", "B12", "SCL"],
+    "landsat-c2-l2": ["blue", "green", "red", "nir08", "swir16", "swir22", "thermal", "qa_pixel"],
     "sentinel-1-rtc": ["vv", "vh"],
     "sentinel-1-grd": ["vv", "vh"],
     "cop-dem-glo-30": ["data"],
     "esa-worldcover": ["map"],
+    "emit-l2a-rfl": ["reflectance"],
 }
 
 
@@ -142,6 +143,8 @@ async def _handle_propose_preview(payload: dict) -> dict:
         cov = sc.get("aoi_coverage_pct")
         nodata = sc.get("nodata_pct")
         item_assets = {}
+        sc_bbox = sc.get("bbox")
+        eff_bbox = sc_bbox if (isinstance(sc_bbox, list) and len(sc_bbox) >= 4) else bbox
 
         # Fetch & sign thumbnail/metadata if missing
         if item_id and (not thumb or dt is None or cov is None):
@@ -160,7 +163,7 @@ async def _handle_propose_preview(payload: dict) -> dict:
                     if geom:
                         try:
                             from shapely.geometry import box as shapely_box, shape as shapely_shape
-                            aoi_poly = shapely_box(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+                            aoi_poly = shapely_box(float(eff_bbox[0]), float(eff_bbox[1]), float(eff_bbox[2]), float(eff_bbox[3]))
                             feat_poly = shapely_shape(geom)
                             if not feat_poly.is_valid:
                                 feat_poly = feat_poly.buffer(0)
@@ -189,7 +192,7 @@ async def _handle_propose_preview(payload: dict) -> dict:
             except Exception:
                 pass
 
-        enriched_scenes.append({
+        scene_entry = {
             "collection": col,
             "item_id": item_id,
             "label": sc.get("label") or f"{col} ({(dt or '')[:10]})",
@@ -199,7 +202,11 @@ async def _handle_propose_preview(payload: dict) -> dict:
             "cloud_cover": round(float(cloud), 1) if cloud is not None else None,
             "aoi_coverage_pct": round(float(cov), 1) if cov is not None else None,
             "nodata_pct": nodata,
-        })
+            "bbox": [round(float(x), 5) for x in eff_bbox[:4]],
+        }
+        if sc.get("region_label"):
+            scene_entry["region_label"] = str(sc["region_label"]).strip()
+        enriched_scenes.append(scene_entry)
 
     if not payload.get("allow_partial_coverage"):
         date_counts = {}

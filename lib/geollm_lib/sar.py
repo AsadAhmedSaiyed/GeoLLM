@@ -6,11 +6,11 @@ from .io import read_role
 
 
 def is_db(arr):
-    """True if values look like dB (negative values exist), False if they look like linear backscatter, None if neither."""
+    """True if values look like dB (median is negative), False if they look like linear backscatter, None if neither."""
     v = arr[np.isfinite(arr)]
     if v.size == 0:
         return None
-    if v.min() < 0:
+    if np.percentile(v, 50) < 0:
         return True
     return False if np.percentile(v, 99) <= 5 else None
 

@@ -2,6 +2,7 @@
 
 export interface FileInfo {
   name: string;
+  size_bytes?: number;
   size_mb: number;
   modified: string;
 }

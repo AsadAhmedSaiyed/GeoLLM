@@ -215,44 +215,60 @@ def ols_trend(
     mask: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Compute vectorized ordinary least squares trend per pixel over time."""
+    from scipy.special import stdtr
+
     T, H, W = stack.shape
     d0 = dates[0]
     days = np.array([(d - d0).total_seconds() / 86400.0 for d in dates], dtype=np.float64)
-    x = days / 365.2425
+    x = (days / 365.2425)[:, None]  # (T, 1)
 
-    flat = stack.reshape(T, -1)
-    N = flat.shape[1]
-
-    slope_arr = np.full(N, np.nan, dtype=np.float32)
-    intercept_arr = np.full(N, np.nan, dtype=np.float32)
-    r_val_arr = np.full(N, np.nan, dtype=np.float32)
-    p_val_arr = np.full(N, np.nan, dtype=np.float32)
-    std_err_arr = np.full(N, np.nan, dtype=np.float32)
-
-    active = np.ones(N, dtype=bool)
+    flat = stack.reshape(T, -1).astype(np.float64)
+    valid = np.isfinite(flat)
     if mask is not None:
-        active &= mask.ravel()
+        valid &= np.asarray(mask, dtype=bool).ravel()[None, :]
 
-    for i in np.where(active)[0]:
-        y = flat[:, i]
-        valid = np.isfinite(y)
-        if np.sum(valid) < 3:
-            continue
-        xv = x[valid]
-        yv = y[valid]
-        res = scipy.stats.linregress(xv, yv)
-        slope_arr[i] = res.slope
-        intercept_arr[i] = res.intercept
-        r_val_arr[i] = res.rvalue
-        p_val_arr[i] = res.pvalue
-        std_err_arr[i] = res.stderr
+    n = valid.sum(axis=0)
+    ok_n = n >= 3
+    n_safe = np.maximum(n, 1)
+
+    xm = (x * valid).sum(axis=0) / n_safe
+    ym = np.where(valid, flat, 0.0).sum(axis=0) / n_safe
+
+    dx = np.where(valid, x - xm[None, :], 0.0)
+    dy = np.where(valid, flat - ym[None, :], 0.0)
+
+    ssx = (dx ** 2).sum(axis=0)
+    ssy = (dy ** 2).sum(axis=0)
+    sxy = (dx * dy).sum(axis=0)
+
+    ok = ok_n & (ssx > 1e-12)
+    ssx_safe = np.where(ok, ssx, 1.0)
+
+    slope = np.where(ok, sxy / ssx_safe, np.nan)
+    intercept = np.where(ok, ym - slope * xm, np.nan)
+
+    denom_r = np.sqrt(ssx_safe * np.where(ssy > 1e-12, ssy, 1.0))
+    r_val = np.where(ok & (ssy > 1e-12), np.clip(sxy / denom_r, -1.0, 1.0), 0.0)
+    r_val = np.where(ok, r_val, np.nan)
+
+    df = np.maximum(n - 2, 1)
+    ssr = np.maximum(ssy - (sxy ** 2) / ssx_safe, 0.0)
+    std_err = np.where(ok, np.sqrt(ssr / (df * ssx_safe)), np.nan)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_stat = np.abs(slope) / std_err
+        p_val = np.where(
+            ok,
+            np.where(std_err > 0, stdtr(df, -t_stat) * 2.0, np.where(np.abs(slope) > 0, 0.0, 1.0)),
+            np.nan,
+        )
 
     return {
-        "slope": slope_arr.reshape(H, W),
-        "intercept": intercept_arr.reshape(H, W),
-        "r_value": r_val_arr.reshape(H, W),
-        "p_value": p_val_arr.reshape(H, W),
-        "std_err": std_err_arr.reshape(H, W),
+        "slope": slope.reshape(H, W).astype(np.float32),
+        "intercept": intercept.reshape(H, W).astype(np.float32),
+        "r_value": r_val.reshape(H, W).astype(np.float32),
+        "p_value": p_val.reshape(H, W).astype(np.float32),
+        "std_err": std_err.reshape(H, W).astype(np.float32),
     }
 
 
@@ -262,34 +278,42 @@ def mann_kendall(
     mask: np.ndarray | None = None,
     alpha: float = 0.05,
 ) -> dict[str, np.ndarray]:
-    """Vectorized / pixel-wise Mann-Kendall non-parametric monotonic trend test."""
+    """Vectorized pixel-wise Mann-Kendall non-parametric monotonic trend test across (T, H, W)."""
     T, H, W = stack.shape
-    flat = stack.reshape(T, -1)
-    N = flat.shape[1]
-
-    tau_arr = np.full(N, np.nan, dtype=np.float32)
-    p_arr = np.full(N, np.nan, dtype=np.float32)
-    sig_arr = np.zeros(N, dtype=bool)
-
-    active = np.ones(N, dtype=bool)
+    flat = stack.reshape(T, -1).astype(np.float64)
     if mask is not None:
-        active &= mask.ravel()
+        flat = np.where(np.asarray(mask, dtype=bool).ravel()[None, :], flat, np.nan)
 
-    t_idx = np.arange(T)
-    for i in np.where(active)[0]:
-        y = flat[:, i]
-        valid = np.isfinite(y)
-        if np.sum(valid) < 4:
-            continue
-        tau, p = scipy.stats.kendalltau(t_idx[valid], y[valid])
-        tau_arr[i] = tau
-        p_arr[i] = p
-        sig_arr[i] = p < alpha if np.isfinite(p) else False
+    valid = np.isfinite(flat)
+    n = valid.sum(axis=0)
+    ok = n >= 4
+
+    s_stat = np.zeros(flat.shape[1], dtype=np.float64)
+    pairs = np.zeros(flat.shape[1], dtype=np.float64)
+    for i in range(T - 1):
+        yi = flat[i]
+        vi = valid[i]
+        for j in range(i + 1, T):
+            both = vi & valid[j]
+            diff = np.where(both, flat[j] - yi, 0.0)
+            s_stat += np.sign(diff)
+            pairs += both
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tau = np.where(ok & (pairs > 0), s_stat / pairs, np.nan)
+        var_s = n * (n - 1.0) * (2.0 * n + 5.0) / 18.0
+        z = np.where(
+            s_stat > 0,
+            (s_stat - 1.0) / np.sqrt(np.maximum(var_s, 1e-12)),
+            np.where(s_stat < 0, (s_stat + 1.0) / np.sqrt(np.maximum(var_s, 1e-12)), 0.0),
+        )
+        p_val = np.where(ok, scipy.stats.norm.sf(np.abs(z)) * 2.0, np.nan)
+        sig = ok & np.isfinite(p_val) & (p_val < alpha)
 
     return {
-        "tau": tau_arr.reshape(H, W),
-        "p_value": p_arr.reshape(H, W),
-        "significant": sig_arr.reshape(H, W),
+        "tau": tau.reshape(H, W).astype(np.float32),
+        "p_value": p_val.reshape(H, W).astype(np.float32),
+        "significant": sig.reshape(H, W),
     }
 
 
@@ -299,30 +323,32 @@ def sens_slope(
     *,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Compute Sen's slope (median pairwise slope) in units/year."""
+    """Compute vectorized Sen's slope (median pairwise slope) in units/year across (T, H, W)."""
     T, H, W = stack.shape
     d0 = dates[0]
     years = np.array([(d - d0).total_seconds() / (86400.0 * 365.2425) for d in dates], dtype=np.float64)
 
-    flat = stack.reshape(T, -1)
-    N = flat.shape[1]
-    slopes = np.full(N, np.nan, dtype=np.float32)
-
-    active = np.ones(N, dtype=bool)
+    flat = stack.reshape(T, -1).astype(np.float64)
     if mask is not None:
-        active &= mask.ravel()
+        flat = np.where(np.asarray(mask, dtype=bool).ravel()[None, :], flat, np.nan)
 
-    for i in np.where(active)[0]:
-        y = flat[:, i]
-        valid = np.isfinite(y)
-        if np.sum(valid) < 3:
-            continue
-        xv = years[valid]
-        yv = y[valid]
-        res = scipy.stats.siegelslopes(yv, xv)
-        slopes[i] = res[0]
+    valid_n = np.isfinite(flat).sum(axis=0)
+    pair_slopes = []
+    for i in range(T - 1):
+        for j in range(i + 1, T):
+            dt = years[j] - years[i]
+            if abs(dt) > 1e-9:
+                pair_slopes.append((flat[j] - flat[i]) / dt)
 
-    return slopes.reshape(H, W)
+    if not pair_slopes:
+        return np.full((H, W), np.nan, dtype=np.float32)
+
+    all_slopes = np.stack(pair_slopes, axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        med_slope = np.nanmedian(all_slopes, axis=0)
+    med_slope = np.where(valid_n >= 3, med_slope, np.nan)
+    return med_slope.reshape(H, W).astype(np.float32)
 
 
 def seasonal_baseline(
@@ -408,32 +434,37 @@ def change_points(
     first_change_idx = np.full((H, W), -1, dtype=np.int32)
 
     if method == "cusum":
-        flat = stack.reshape(T, -1)
-        for i in range(flat.shape[1]):
-            y = flat[:, i]
-            valid = np.isfinite(y)
-            if np.sum(valid) < 2 * min_size:
-                continue
-            y_v = y[valid]
-            mean_y = np.mean(y_v)
-            std_y = np.std(y_v)
-            if std_y < 1e-6:
-                continue
-            z = (y_v - mean_y) / std_y
-            s_pos = np.zeros(len(z))
-            s_neg = np.zeros(len(z))
-            cps = []
-            for t in range(1, len(z)):
-                s_pos[t] = max(0, s_pos[t - 1] + z[t] - 0.5)
-                s_neg[t] = min(0, s_neg[t - 1] + z[t] + 0.5)
-                if s_pos[t] > threshold or s_neg[t] < -threshold:
-                    cps.append(t)
-                    s_pos[t] = 0
-                    s_neg[t] = 0
-            if cps:
-                r, c = divmod(i, W)
-                change_count[r, c] = len(cps)
-                first_change_idx[r, c] = cps[0]
+        flat = stack.reshape(T, -1).astype(np.float64)
+        valid = np.isfinite(flat)
+        n_valid = valid.sum(axis=0)
+        ok = n_valid >= (2 * min_size)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean_y = np.nanmean(flat, axis=0)
+            std_y = np.nanstd(flat, axis=0)
+        ok &= np.isfinite(std_y) & (std_y >= 1e-6)
+        std_safe = np.where(ok, std_y, 1.0)
+        z = np.where(valid & ok[None, :], (flat - mean_y[None, :]) / std_safe[None, :], 0.0)
+
+        s_pos = np.zeros(flat.shape[1], dtype=np.float64)
+        s_neg = np.zeros(flat.shape[1], dtype=np.float64)
+        c_count = np.zeros(flat.shape[1], dtype=np.int32)
+        f_idx = np.full(flat.shape[1], -1, dtype=np.int32)
+
+        for t in range(1, T):
+            v_t = valid[t] & ok
+            s_pos = np.where(v_t, np.maximum(0.0, s_pos + z[t] - 0.5), s_pos)
+            s_neg = np.where(v_t, np.minimum(0.0, s_neg + z[t] + 0.5), s_neg)
+            hit = v_t & ((s_pos > threshold) | (s_neg < -threshold))
+            if np.any(hit):
+                first_hit = hit & (f_idx == -1)
+                f_idx[first_hit] = t
+                c_count[hit] += 1
+                s_pos[hit] = 0.0
+                s_neg[hit] = 0.0
+
+        change_count = c_count.reshape(H, W)
+        first_change_idx = f_idx.reshape(H, W)
 
     elif method in ("pelt", "binseg"):
         import ruptures as rpt
@@ -444,6 +475,7 @@ def change_points(
             valid = np.isfinite(y)
             if np.sum(valid) < 2 * min_size:
                 continue
+            valid_indices = np.where(valid)[0]
             y_v = y[valid].reshape(-1, 1)
             algo = rpt.Pelt(model="rbf", min_size=min_size) if method == "pelt" else rpt.Binseg(model="rbf", min_size=min_size)
             algo.fit(y_v)
@@ -453,7 +485,8 @@ def change_points(
             if cps:
                 r, c = divmod(i, W)
                 change_count[r, c] = len(cps)
-                first_change_idx[r, c] = cps[0]
+                # Map compressed valid-array index back to the true time axis index (0..T-1)
+                first_change_idx[r, c] = int(valid_indices[cps[0]])
     else:
         raise ValueError(f"Unknown change point method: {method}")
 

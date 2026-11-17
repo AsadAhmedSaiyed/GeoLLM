@@ -62,12 +62,12 @@ _VALID_MODES = ("legacy", "agentic")
 def get_mode() -> str:
     """Single source of truth for the validation mode.
 
-    Reads ``GEOLLM_VALIDATION_MODE``.  Defaults to ``"legacy"`` and falls
+    Reads ``GEOLLM_VALIDATION_MODE``.  Defaults to ``"agentic"`` and falls
     back to ``"legacy"`` (with a warning) for any unrecognised value, so a
-    typo can never silently activate the agentic loop.
+    typo is caught explicitly.
     """
     import logging
-    raw = os.environ.get("GEOLLM_VALIDATION_MODE", "legacy")
+    raw = os.environ.get("GEOLLM_VALIDATION_MODE", "agentic")
     if raw in _VALID_MODES:
         return raw
     logging.getLogger("harness.validation").warning(

@@ -126,12 +126,17 @@ If no local input files are supplied (`files` is `[]`), you must autonomously di
 
 ## Execution Environment Manifest
 The container has the following standard libraries installed:
-* `rasterio` (1.4.x), `geopandas` (1.2.x), `shapely` (2.2.x), `pyproj` (3.7.x)
+* `rasterio` (1.4.x), `geopandas` (1.2.x), `shapely` (2.2.x), `pyproj` (3.7.x), `laspy[lazrs]`
 * `numpy` (2.x), `scipy` (1.17.x), `pandas` (3.x), `matplotlib` (3.11.x), `pillow`
-* `geollm_lib` helper library
+* `xarray`, `rioxarray`, `dask[array]`, `numba` (for out-of-core chunked processing when rasters are large)
+* `geollm_lib` helper library (`io`, `bands`, `indices`, `masks`, `vector`, `align`, `change`, `viz`, `stats`, `result`, `sar`, `hyperspectral`, `temporal`, `series`, `classify`, `viz_ts`, `terrain`, `lidar`, `raster`)
 
 CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
 * Machine learning frameworks like `scikit-learn` (`sklearn`), `statsmodels`, and `ruptures` are installed and supported via `geollm_lib.classify` and `geollm_lib.series`.
+* CONDITIONAL USE OF BIG-DATA, TERRAIN, AND LIDAR HELPERS (Use When Needed, Skip When Not Needed):
+  - **Out-of-Core Raster Streaming (`geollm_lib.raster`)**: Use `open_raster_chunks()`, `save_raster_chunks()`, or `stream_window_blocks()` ONLY when rasters are large (e.g. `>= 10,000 x 10,000` pixels or `> 250 MB`), so full arrays are never materialized in RAM at once. For small/normal rasters that fit comfortably in memory, use standard `rasterio` + `numpy`.
+  - **Hydrology & Topographic Wetness (`geollm_lib.terrain.calculate_twi`)**: When computing runoff pathways, flow accumulation, or topographic wetness from a DEM, use `geollm_lib.terrain.calculate_twi(dem, dx, dy, fill_depressions=True, return_components=True)` (which includes Priority-Flood depression filling and D8 routing) after resolving metric cell sizes via `resolve_cell_size()`. In coastal DEMs, mask out sea/ocean cells (`elevation <= 0 m`) before routing so flat water surfaces do not produce artificial straight flow lines.
+  - **LiDAR Point Clouds (`geollm_lib.lidar`)**: When reading `.las`/`.laz`/`.xyz` point clouds, use `geollm_lib.lidar.read_point_cloud(path, max_points=..., bbox=..., classes=..., return_classification=...)` to stream points in memory-safe chunks. When rendering 3D matplotlib views, keep the Z-axis box aspect at least `0.25–0.35` of the horizontal axes so elevation tick labels remain legible.
 * SENTINEL-2 RGB BAND ORDER RULE: Sentinel-2 visible band files are named B02 (Blue), B03 (Green), and B04 (Red). When creating an RGB composite or passing an array to `classify_with_pretrained()`, you MUST stack them in RED, GREEN, BLUE order:
   ```python
   # B04 is Red (channel 0), B03 is Green (channel 1), B02 is Blue (channel 2)

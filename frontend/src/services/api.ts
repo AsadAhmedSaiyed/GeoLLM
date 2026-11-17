@@ -113,15 +113,103 @@ export const api = {
     return data.files || [];
   },
 
-  async uploadFiles(fileList: File[] | FileList): Promise<{ uploaded: string[] }> {
-    const formData = new FormData();
-    for (let i = 0; i < fileList.length; i++) {
-      formData.append('files', fileList[i]);
+  async uploadFiles(
+    fileList: File[] | FileList,
+    onProgress?: (info: {
+      percent: number;
+      loadedMb: number;
+      totalMb: number;
+      fileName: string;
+      instant?: boolean;
+    }) => void
+  ): Promise<{ uploaded: string[]; instantCount?: number }> {
+    const filesArr = Array.from(fileList);
+    if (filesArr.length === 0) return { uploaded: [] };
+
+    let existingFiles: FileInfo[] = [];
+    try {
+      existingFiles = await this.getFiles();
+    } catch {
+      existingFiles = [];
     }
-    return request<{ uploaded: string[] }>('/api/upload', {
-      method: 'POST',
-      body: formData,
-    });
+
+    const uploaded: string[] = [];
+    let instantCount = 0;
+
+    for (const file of filesArr) {
+      const totalMb = Math.round((file.size / (1024 * 1024)) * 10) / 10;
+      const fileMbExact = file.size / (1024 * 1024);
+      const match = existingFiles.find(
+        (ef) =>
+          ef.name === file.name &&
+          (ef.size_bytes != null
+            ? ef.size_bytes === file.size
+            : Math.abs(ef.size_mb - fileMbExact) < 0.05)
+      );
+
+      if (match) {
+        uploaded.push(file.name);
+        instantCount += 1;
+        onProgress?.({
+          percent: 100,
+          loadedMb: totalMb,
+          totalMb,
+          fileName: file.name,
+          instant: true,
+        });
+        continue;
+      }
+
+      // Stream raw file binary directly to /api/upload/stream with live progress
+      const streamUrl = `/api/upload/stream?filename=${encodeURIComponent(file.name)}&size=${file.size}`;
+      const res = await new Promise<{ uploaded: string[] }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', streamUrl, true);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable && ev.total > 0) {
+            const pct = Math.min(100, Math.round((ev.loaded / ev.total) * 100));
+            const loadedMb = Math.round((ev.loaded / (1024 * 1024)) * 10) / 10;
+            onProgress?.({
+              percent: pct,
+              loadedMb,
+              totalMb,
+              fileName: file.name,
+            });
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              resolve({ uploaded: [file.name] });
+            }
+          } else {
+            let errMsg = `HTTP ${xhr.status}`;
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              if (parsed?.error) errMsg = parsed.error;
+            } catch {
+              // ignore
+            }
+            reject(new Error(errMsg));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error(`Network error while uploading ${file.name}`));
+        xhr.onabort = () => reject(new Error(`Upload aborted for ${file.name}`));
+        xhr.send(file);
+      });
+
+      if (res.uploaded && res.uploaded.length > 0) {
+        uploaded.push(...res.uploaded);
+      }
+    }
+
+    return { uploaded, instantCount };
   },
 
   // Geospatial Visualization Payloads

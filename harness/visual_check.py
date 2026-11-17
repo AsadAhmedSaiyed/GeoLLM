@@ -1,10 +1,50 @@
 """Visual validation of generated PNG maps by a vision model. Secondary to the numerical checks; never fatal."""
 import json
 import os
+import re
 from pathlib import Path
 
-from . import llm, numerical_check, plan as plan_mod, prompts
+import numpy as np
+from matplotlib import image as mpimg
+
+from . import llm, prompts
 from .validation.config import get_mode, get_validation_config
+
+
+def _image_stats(path):
+    """Size and how much of the image is one single colour."""
+    a = mpimg.imread(str(path))
+    h, w = a.shape[:2]
+    s = max(1, max(h, w) // 800)
+    a = a[::s, ::s]
+    rgb = (a[..., :3] if a.ndim == 3 else np.stack([a] * 3, -1))
+    q = (np.clip(rgb, 0, 1) * 255).astype(int) // 8
+    codes = (q[..., 0] << 10) + (q[..., 1] << 5) + q[..., 2]
+    return {
+        "width": int(w),
+        "height": int(h),
+        "dominant_color_fraction": round(float(np.bincount(codes.ravel()).max() / codes.size), 4),
+    }
+
+
+def _parse_json(text):
+    """Extract a JSON object from an LLM reply. Returns a dict, or None if none can be parsed."""
+    if not text:
+        return None
+    m = re.search(r"```json\s*\n(.*?)```", text, re.S)
+    candidates = [m.group(1)] if m else []
+    candidates += re.findall(r"```\s*\n(.*?)```", text, re.S)
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for block in candidates:
+        try:
+            value = json.loads(block.strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def check_images(task, output_dir, pngs, feedback_dir, on_step=None, input_files=None):
@@ -57,11 +97,11 @@ def check_images(task, output_dir, pngs, feedback_dir, on_step=None, input_files
             })
             continue
         try:
-            stats = numerical_check.image_stats(p)
+            stats = _image_stats(p)
             prompt = prompts.VISION + "\n\nTASK: " + task.name + " - " + task.description \
                 + "\nEXPECTED OUTPUTS: " + ", ".join(task.expected_outputs) + "\nIMAGE STATS: " + json.dumps(stats)
             raw_reply = llm.chat_vision(prompt, [str(p)])
-            v = plan_mod.parse_json(raw_reply) or {}
+            v = _parse_json(raw_reply) or {}
             status = v.get("status") if v.get("status") in ("ok", "needs_revision") else "skipped"
             issues = v.get("issues", [])
             recommended = v.get("recommended_action", "")

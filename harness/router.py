@@ -31,8 +31,8 @@ CATEGORIES:
    - Examples: "hello", "what is Sentinel-2 L2A?", "how does NDVI differ from NDWI?", "what can this platform do?"
 
 2. "contextual_inquiry"
-   - Questions about EXISTING workspace results, metrics, summary values, or previous answers in this workspace.
-   - Examples: "what was the net vegetation loss in that run?", "which dates were analyzed?", "summarize the findings", "why did green cover drop in the south?"
+   - Questions about LIVE PROGRESS / STATUS UPDATES of the active sub-agent or any container (task_1, task_2, task_3), OR questions about EXISTING workspace results, metrics, summary values, or previous answers.
+   - Examples: "any updates?", "what is the sub-agent currently doing?", "about task 3", "any updates from container 3?", "what was the net vegetation loss in that run?", "which dates were analyzed?", "summarize the findings".
 
 3. "visual_inspection"
    - User wants to visually inspect, search, check, or zoom into an existing map, raster, or deliverable.
@@ -43,15 +43,18 @@ CATEGORIES:
    - Examples: "compare vegetation changes in Gaza between May 2020 and 2026", "extract canopy height from this LAZ file", "map flooded areas in Valencia from Sentinel-1".
 
 5. "clarification_needed"
-   - An ambiguous request that implies complex analysis but lacks critical context (e.g. Attached Files is [] AND no named geographic place, city, coordinates, or [AOI BBOX: ...] is given).
-   - Examples: "analyze the forest", "detect changes here", "check how tall the trees and buildings are in this area" (when Attached Files is [] and no place/bbox is provided).
+   - An ambiguous request to start a NEW complex analysis that lacks critical context (e.g. Attached Files is [] AND no named geographic place, city, coordinates, or [AOI BBOX: ...] is given, AND it is NOT asking for updates/status on an existing or running task).
+   - Examples: "analyze the forest", "detect changes here" (when Attached Files is [] and no place/bbox is provided).
 
 CURRENT WORKSPACE CONTEXT:
 Workspace ID: {task_id}
 Attached Files for THIS message: {files}
 Existing Artifacts: {artifacts}
 Previous Analysis Summary: {summary}
-Previous Analysis Status: {status}
+Current Workspace Status: {status}
+
+LIVE MULTI-CONTAINER STATUS (All 3 Workspaces):
+{live_snapshot}
 
 CONVERSATION HISTORY:
 {history_snippet}
@@ -60,9 +63,10 @@ USER MESSAGE:
 {user_message}
 
 CRITICAL RULES:
+- If the user asks for status updates, progress, what a sub-agent/container/task is currently doing ("any updates?", "about task 3", "any updates from container 3?", "any updates on this..."), ALWAYS choose "contextual_inquiry" (NEVER choose "clarification_needed").
 - If the user asks to visually inspect, zoom, or search an existing map or raster, choose "visual_inspection".
-- If the question can be accurately answered using the Previous Analysis Summary or Existing Artifacts, choose "contextual_inquiry".
-- If Attached Files is [] and the user refers to "this area" / "here" without a named place, coordinates, or [AOI BBOX: ...], choose "clarification_needed" (do NOT choose "complex_task").
+- If the question can be accurately answered using the Live Multi-Container Status, Previous Analysis Summary, or Existing Artifacts, choose "contextual_inquiry".
+- If Attached Files is [] and the user wants to start a NEW analysis referring to "this area" / "here" without a named place, coordinates, or [AOI BBOX: ...], choose "clarification_needed" (do NOT choose "complex_task").
 - Only choose "complex_task" if real raster math or data processing in Docker is actually required AND enough data/location context exists.
 - Do NOT fabricate analysis results.
 
@@ -93,6 +97,23 @@ def _clean_json(text: str) -> dict:
         raise
 
 
+def _is_progress_or_status_query(user_message: str) -> bool:
+    """Detects when the user is asking for live updates, progress, or status of a sub-agent/container/task."""
+    q = user_message.lower().strip()
+    status_patterns = (
+        r"\bany\s+updates?\b",
+        r"\bwhat\s+is\s+(?:the\s+)?(?:sub[\s-]?agent|container|task|agent)\b",
+        r"\babout\s+(?:task|container|workspace)\s*[#]?\s*[123]\b",
+        r"\b(?:from|in|on)\s+(?:task|container|workspace)\s*[#]?\s*[123]\b",
+        r"\bstatus\s+of\b",
+        r"\bprogress\s+(?:of|on)\b",
+        r"\bhow\s+is\s+(?:it|the\s+task|task\s*[123]|container\s*[123])\s+(?:going|doing|progressing)\b",
+        r"\bis\s+(?:it|task\s*[123]|container\s*[123])\s+(?:done|finished|still\s+running)\b",
+        r"\bwhat\s+happened\s+(?:in|to|with)\s+(?:task|container)\b",
+    )
+    return any(re.search(pat, q) for pat in status_patterns)
+
+
 def classify_message(
     user_message: str,
     history: List[Dict[str, str]],
@@ -100,18 +121,30 @@ def classify_message(
     runs_dir: Optional[Path] = None,
     task_state: Optional[Any] = None,
     attached_files: Optional[List[str]] = None,
+    live_snapshot: str = "",
 ) -> Dict[str, Any]:
     """Classifies user intent using the fast router LLM."""
+    if _is_progress_or_status_query(user_message):
+        return {
+            "category": "contextual_inquiry",
+            "reasoning": "User is asking for live progress or status updates on a task/container.",
+            "target_artifact": None,
+            "inspection_focus": None,
+            "clarification_question": None,
+        }
+
     ws_dir = get_workspace_dir(task_id, runs_dir)
     status_file = ws_dir / "last_status.json"
     summary = "No previous analysis in this workspace."
-    status = getattr(task_state, "status", "idle")
+    live_status = getattr(task_state, "status", "idle") if task_state else "idle"
+    status = live_status
     artifacts = []
 
     if status_file.exists():
         try:
             sdata = json.loads(status_file.read_text(encoding="utf-8"))
-            status = "done" if sdata.get("ok") else "failed"
+            if live_status not in ("running", "pending_approval", "pending_stac_approval"):
+                status = "done" if sdata.get("ok") else "failed"
             res = sdata.get("result") or {}
             summary = res.get("summary") or res.get("answer") or summary
             artifacts = [Path(a).name for a in sdata.get("artifacts", [])]
@@ -137,8 +170,9 @@ def classify_message(
         task_id=task_id,
         files=json.dumps([Path(f).name for f in files]),
         artifacts=json.dumps(artifacts),
-        summary=summary[:1200],
+        summary=str(summary)[:1200],
         status=status,
+        live_snapshot=(live_snapshot or f"Workspace {task_id} status: {status}")[:2500],
         history_snippet=history_snippet,
         user_message=user_message,
     )
@@ -172,14 +206,23 @@ def handle_general_chat(
     history: List[Dict[str, str]],
     task_id: str,
     task_state: Optional[Any] = None,
+    live_snapshot: str = "",
 ) -> Dict[str, Any]:
     """Handles conceptual remote sensing questions and general chat directly."""
+    snapshot_block = (
+        f"\n\n[LIVE MULTI-CONTAINER STATUS (For reference ONLY if the user asks about tasks/containers)]:\n{live_snapshot[:3000]}"
+        if live_snapshot
+        else ""
+    )
     system_prompt = (
-        "You are GeoLLM, an autonomous AI geospatial assistant. "
+        "You are GeoLLM, an autonomous AI geospatial assistant supervising 3 concurrent analysis containers (task_1, task_2, task_3). "
+        f"The user is currently in Workspace {task_id}. "
         "Always respond directly to the user's LATEST message. "
-        "If the latest message is a casual greeting (e.g. 'hi', 'hello', 'hi bro', 'salam'), respond warmly and briefly without re-answering earlier delegated tasks from history. "
-        "You can explain remote sensing concepts, satellite sensors, spectral indices, and GeoLLM's workflow (uploading GeoTIFF/LAZ/PNG files, drawing an AOI on the 3D globe, or naming a region and dates for STAC satellite imagery). "
+        "If the latest message is a casual greeting (e.g. 'hi', 'hello', 'hi bro', 'salam'), respond warmly and briefly WITHOUT dumping task statuses. "
+        "If the user asks about any container or task progress, use the LIVE MULTI-CONTAINER STATUS below to give a specific, accurate update. "
+        "You can also explain remote sensing concepts, satellite sensors, spectral indices, and GeoLLM's workflow. "
         "Keep answers focused, concise, and in clean Markdown."
+        + snapshot_block
     )
     msgs = [{"role": "system", "content": system_prompt}]
     for h in history[-6:]:
@@ -205,8 +248,9 @@ def handle_contextual_inquiry(
     task_id: str,
     runs_dir: Optional[Path] = None,
     task_state: Optional[Any] = None,
+    live_snapshot: str = "",
 ) -> Dict[str, Any]:
-    """Answers questions about existing analysis results from disk metadata."""
+    """Answers questions about live sub-agent progress or existing analysis results across workspaces."""
     ws_dir = get_workspace_dir(task_id, runs_dir)
     status_file = ws_dir / "last_status.json"
     summary = "No previous results."
@@ -219,6 +263,16 @@ def handle_contextual_inquiry(
             res_data = sdata.get("result") or {}
             summary = res_data.get("summary") or res_data.get("answer") or summary
             artifacts = [Path(a).name for a in sdata.get("artifacts", [])]
+        except Exception:
+            pass
+
+    # Also load outputs/result.json if present for detailed statistics
+    result_json_file = ws_dir / "outputs" / "result.json"
+    result_json_snippet = ""
+    if result_json_file.exists():
+        try:
+            rj_text = result_json_file.read_text(encoding="utf-8")
+            result_json_snippet = f"\nDetailed outputs/result.json for {task_id}:\n{rj_text[:2500]}"
         except Exception:
             pass
 
@@ -236,14 +290,22 @@ def handle_contextual_inquiry(
             pass
 
     system_prompt = (
-        "You are GeoLLM, analyzing the results of the geospatial analysis completed in this workspace.\n"
-        f"Workspace ID: {task_id}\n"
-        f"Outputs: {json.dumps(artifacts)}\n"
-        f"Analysis Summary & Findings: {summary}\n"
+        "You are GeoLLM, a senior geospatial analyst supervising 3 concurrent analysis containers (Container #1 = task_1, Container #2 = task_2, Container #3 = task_3).\n"
+        f"Active Workspace ID: {task_id}\n"
+        f"Active Workspace Outputs: {json.dumps(artifacts)}\n"
+        f"Active Workspace Summary & Findings: {summary}\n"
+        f"{result_json_snippet}"
         f"{timeline_info}\n\n"
-        "Answer the user's question accurately using ONLY the verified facts from the analysis above. "
-        "Cite specific numbers, dates, and file names where relevant. "
-        "If the user asks about an aspect not covered in the data, state what is known and clarify what would require a new analysis."
+        "[LIVE MULTI-CONTAINER STATUS — All 3 Workspaces (task_1, task_2, task_3)]:\n"
+        f"{live_snapshot or 'No live snapshot provided.'}\n\n"
+        "CRITICAL INSTRUCTIONS:\n"
+        "1. If the user asks for updates, progress, or what the sub-agent / container is currently doing (e.g. 'any updates?', 'about task 3', 'any updates from container 3?'), report the EXACT live status from LIVE MULTI-CONTAINER STATUS above:\n"
+        "   - What task question it is working on\n"
+        "   - Current status (running, pending_approval, done, failed) and what step/action it is doing right now\n"
+        "   - How many code executions it has completed and elapsed time\n"
+        "   - What output files/deliverables and key findings have been produced.\n"
+        "2. If the user asks a specific question about metrics or findings, cite exact numbers, dates, and file names from the verified analysis above.\n"
+        "3. Never ask for clarification when the answer is already visible in LIVE MULTI-CONTAINER STATUS or the workspace results."
     )
 
     msgs = [{"role": "system", "content": system_prompt}]

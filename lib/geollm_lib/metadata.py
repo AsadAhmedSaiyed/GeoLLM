@@ -11,6 +11,7 @@ from .bands import detect_sensor, infer_roles, label_role
 
 RASTER_EXT = {".tif", ".tiff"}
 VECTOR_EXT = {".geojson", ".json", ".gpkg"}
+POINT_CLOUD_EXT = {".las", ".laz", ".xyz"}
 
 
 class GeoTiffError(Exception):
@@ -85,6 +86,30 @@ def inspect_vector(path):
             "bounds": [float(x) for x in gdf.total_bounds]}
 
 
+def inspect_point_cloud(path):
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext in (".las", ".laz"):
+        try:
+            import laspy
+            with laspy.open(path) as fh:
+                hdr = fh.header
+                mins = [float(x) for x in hdr.mins]
+                maxs = [float(x) for x in hdr.maxs]
+                crs = hdr.parse_crs()
+                return {
+                    "kind": "point_cloud",
+                    "format": ext.lstrip(".").upper(),
+                    "point_count": int(hdr.point_count),
+                    "bounds": [mins[0], mins[1], maxs[0], maxs[1]],
+                    "z_range": [round(mins[2], 2), round(maxs[2], 2)],
+                    "crs": str(crs) if crs else None,
+                }
+        except Exception as e:
+            return {"kind": "point_cloud", "format": ext.lstrip(".").upper(), "size_bytes": path.stat().st_size, "note": str(e)}
+    return {"kind": "point_cloud", "format": ext.lstrip(".").upper(), "size_bytes": path.stat().st_size}
+
+
 def _alignment(files):
     rasters = {n: f for n, f in files.items() if f.get("kind") == "raster"}
     dates = {n: f.get("date") for n, f in rasters.items()}
@@ -114,6 +139,8 @@ def inspect_dataset(paths):
                 files[p.name] = inspect_geotiff(p)
             elif ext in VECTOR_EXT:
                 files[p.name] = inspect_vector(p)
+            elif ext in POINT_CLOUD_EXT:
+                files[p.name] = inspect_point_cloud(p)
             else:
                 files[p.name] = {"error": f"Unsupported file type '{ext}'"}
         except Exception as e:

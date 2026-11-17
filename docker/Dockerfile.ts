@@ -13,7 +13,11 @@ RUN pip install --no-cache-dir \
     scikit-learn==1.5.2 \
     statsmodels==0.14.4 \
     ruptures==1.1.9 \
-    laspy[lazrs]
+    laspy[lazrs] \
+    xarray \
+    rioxarray \
+    dask[array] \
+    numba
 COPY lib/ /opt/geollm/
 ENV PYTHONPATH=/opt/geollm
 RUN useradd -m runner

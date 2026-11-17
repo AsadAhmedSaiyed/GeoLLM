@@ -43,14 +43,18 @@ class Config:
 
 def load_config() -> Config:
     keys = [k.strip() for k in os.environ.get("GEOLLM_REQUIRED_RESULT_KEYS", "").split(",") if k.strip()]
+    sandbox_timeout = _f("GEOLLM_SANDBOX_TIMEOUT_S", 600)
+    raw_idle = _f("GEOLLM_PI_IDLE_TIMEOUT_S", 690.0)
+    # Ensure idle_timeout_s is always larger than sandbox_timeout_s so PiRPC never kills Pi while Docker is running
+    idle_timeout = max(raw_idle, float(sandbox_timeout + 90))
     return Config(
         pi_command=os.environ.get("PI_COMMAND", "pi"),
         provider=os.environ.get("GEOLLM_PROVIDER"),
         model=os.environ.get("GEOLLM_MODEL"),
-        idle_timeout_s=_f("GEOLLM_PI_IDLE_TIMEOUT_S", 300.0),
-        total_timeout_s=_f("GEOLLM_PI_TOTAL_TIMEOUT_S", 1800.0),
+        idle_timeout_s=idle_timeout,
+        total_timeout_s=_f("GEOLLM_PI_TOTAL_TIMEOUT_S", 2400.0),
         max_tool_calls=_f("GEOLLM_MAX_TOOL_CALLS", 8),
-        sandbox_timeout_s=_f("GEOLLM_SANDBOX_TIMEOUT_S", 360),
+        sandbox_timeout_s=sandbox_timeout,
         sandbox_memory=os.environ.get("GEOLLM_SANDBOX_MEMORY", "8g"),
         sandbox_cpus=_f("GEOLLM_SANDBOX_CPUS", 4.0),
         runs_dir=Path(os.environ.get("GEOLLM_RUNS_DIR", ROOT / "runs")),

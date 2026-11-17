@@ -73,7 +73,7 @@ def _safe_inputs(requested, allowed_originals):
 def _call_executor(code, files, attempt_dir, cfg):
     params = inspect.signature(run_code).parameters
     task_id = os.environ.get("GEOLLM_TASK_ID", "")
-    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "terrain", "lidar", "sklearn", "statsmodels", "ruptures"))
+    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "terrain", "lidar", "raster", "dask", "xarray", "rioxarray", "sklearn", "statsmodels", "ruptures"))
     custom_image = os.environ.get("GEOLLM_IMAGE_TS", "geollm-runtime-ts") if needs_ts else os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
     wanted = {"timeout": cfg.sandbox_timeout_s, "memory": cfg.sandbox_memory, "cpus": cfg.sandbox_cpus, "task_id": task_id, "image": custom_image}
     return run_code(code, files, attempt_dir, **{k: v for k, v in wanted.items() if k in params and v is not None})
@@ -288,12 +288,22 @@ def main():
             sys.stdout.flush()
             return
 
-        if not (run_dir / "plan_approved.flag").exists():
-            if any(k in code_str for k in [".write(", "to_file(", "savefig", "np.save", "imwrite"]):
-                out["message"] = "Policy violation: Call propose_plan and wait for user approval before saving deliverable files."
-                sys.stdout.write(json.dumps(out, default=str) + "\n")
-                sys.stdout.flush()
-                return
+        plan_approved = (run_dir / "plan_approved.flag").exists()
+        _WRITE_PATTERNS = (
+            ".write(", "to_file(", "savefig", "np.save", "imwrite",
+            "write_raster(", "write_geojson(", "mask_to_geojson(",
+            "save_map(", "save_mask_map(", "save_class_map(", "save_shaded_relief(",
+            "save_result(", "make_timeline_json(", "make_animated_gif(",
+            "generate_downsampled_frame(", "generate_terrain_3d_payload(",
+            "generate_lidar_3d_payload(", "plot_series(", "plot_confusion_matrix(",
+            "plot_feature_importance(", "plot_misclassification_map(",
+            "write_text(", "write_bytes(",
+        )
+        if not plan_approved and any(k in code_str for k in _WRITE_PATTERNS):
+            out["message"] = "Policy violation: Call propose_plan and wait for user approval before saving deliverable files."
+            sys.stdout.write(json.dumps(out, default=str) + "\n")
+            sys.stdout.flush()
+            return
 
         files, err = _safe_inputs(payload.get("input_files") or [], allowed)
         preserve_last_status = False
@@ -334,8 +344,27 @@ def main():
             with contextlib.redirect_stdout(sys.stderr):      # keep our stdout clean
                 res = _call_executor(payload["code"], files, attempt_dir, cfg)
 
-            # Check if revision attempt was a pure inspection step vs output update
+            # Enforce hard post-execution Plan Gate: if plan is not yet approved,
+            # quarantine/remove any files written to /workspace/output so deliverables
+            # can never be promoted prior to human plan approval.
             dest_out = attempt_dir / "outputs"
+            if not plan_approved and dest_out.is_dir():
+                created_files = [p.name for p in dest_out.rglob("*") if p.is_file()]
+                if created_files:
+                    shutil.rmtree(dest_out, ignore_errors=True)
+                    dest_out.mkdir(parents=True, exist_ok=True)
+                    out["ok"] = False
+                    out["plan_gate_blocked"] = True
+                    out["message"] = (
+                        f"Policy violation: Pre-plan inspection scripts are read-only, "
+                        f"but the script wrote {created_files} to /workspace/output. "
+                        f"Call propose_plan and wait for user approval before saving outputs."
+                    )
+                    sys.stdout.write(json.dumps(out, default=str) + "\n")
+                    sys.stdout.flush()
+                    return
+
+            # Check if revision attempt was a pure inspection step vs output update
             if prev_outputs_dir is not None and dest_out.is_dir():
                 changed_files = []
                 for p in dest_out.rglob("*"):
@@ -400,7 +429,7 @@ def main():
     if run_dir is not None and not preserve_last_status:
         try:
             (run_dir / "last_status.json").write_text(json.dumps(out, default=str, indent=2), encoding="utf-8")
-            if out.get("ok") and dest_out.is_dir():
+            if out.get("ok") and plan_approved and dest_out.is_dir():
                 from harness.workspace import promote_outputs
                 promote_outputs(run_dir.name, dest_out, run_dir.parent)
         except Exception:

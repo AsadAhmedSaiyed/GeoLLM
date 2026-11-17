@@ -12,7 +12,7 @@ from requests.exceptions import ReadTimeout
 
 IMAGE = os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
 MAX_LOG = 8000
-OUTPUT_LIMIT_MB = int(os.environ.get("GEOLLM_OUTPUT_LIMIT_MB", "1024"))
+OUTPUT_LIMIT_MB = int(os.environ.get("GEOLLM_OUTPUT_LIMIT_MB", "8192"))
 
 
 def _tail(text, n=MAX_LOG):
@@ -40,15 +40,41 @@ def _size_mb(path):
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
 
+def _stage_input_file(src: Path, dest: Path) -> None:
+    """Link `src` to `dest` via zero-copy hardlink when on the same volume, falling back to copy."""
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy(src, dest)
+        try:
+            os.chmod(dest, 0o644)
+        except OSError:
+            pass
+
+
 def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env=None, prior=None, task_id="", image=None):
     """Run `code` once. prior={task_id: host_dir} mounts earlier task outputs read-only at /workspace/prior/<task_id>.
     Everything is saved under run_dir: code.py, stdout.txt, stderr.txt, outputs/."""
     client = docker.from_env()
-    work = Path(tempfile.mkdtemp(prefix=f"geollm_{task_id}_" if task_id else "geollm_"))
+    run_dir_path = Path(run_dir).resolve()
+    run_dir_path.mkdir(parents=True, exist_ok=True)
+    # Place temp work dir inside a hidden .sandbox_tmp folder on the same filesystem as run_dir
+    # so os.link() is guaranteed zero-copy and find_artifacts() ignores it.
+    try:
+        tmp_base = run_dir_path.parent / ".sandbox_tmp"
+        tmp_base.mkdir(parents=True, exist_ok=True)
+        work = Path(
+            tempfile.mkdtemp(
+                prefix=f"geollm_{task_id}_" if task_id else "geollm_",
+                dir=str(tmp_base),
+            )
+        )
+    except OSError:
+        work = Path(tempfile.mkdtemp(prefix=f"geollm_{task_id}_" if task_id else "geollm_"))
     in_dir, code_dir, out_dir = work / "input", work / "code", work / "output"
     for d in (in_dir, code_dir, out_dir):
         d.mkdir()
-    seed_out = Path(run_dir) / "outputs"
+    seed_out = run_dir_path / "outputs"
     if seed_out.is_dir():
         for item in seed_out.rglob("*"):
             if item.is_file():
@@ -57,18 +83,35 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
                 target_p.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(item, target_p)
                 os.chmod(target_p, 0o666)
-    for f in input_files:
-        dest = in_dir / Path(f).name
-        shutil.copy(f, dest)
-        os.chmod(dest, 0o644)
+
+    # Zero-copy optimization: if all input_files come from a single directory with no extra files,
+    # mount that directory directly as /workspace/input:ro; otherwise use hardlinks in in_dir.
+    resolved_inputs = [Path(f).resolve() for f in input_files]
+    parent_dirs = {p.parent for p in resolved_inputs}
+    direct_mount_in_dir = None
+    if len(parent_dirs) == 1:
+        sole_dir = next(iter(parent_dirs))
+        if sole_dir.is_dir():
+            dir_files = {p.resolve() for p in sole_dir.iterdir() if p.is_file()}
+            if dir_files == set(resolved_inputs):
+                direct_mount_in_dir = sole_dir
+
+    if direct_mount_in_dir is None:
+        for src_p in resolved_inputs:
+            dest = in_dir / src_p.name
+            _stage_input_file(src_p, dest)
+        mounted_in_dir = in_dir
+    else:
+        mounted_in_dir = direct_mount_in_dir
+
     input_manifest = [
         {
-         "host_path": str(Path(f).resolve()),
-         "sandbox_path": f"/workspace/input/{Path(f).name}",
-         "filename": Path(f).name,
+            "host_path": str(src_p),
+            "sandbox_path": f"/workspace/input/{src_p.name}",
+            "filename": src_p.name,
         }
-        for f in input_files
-    ]    
+        for src_p in resolved_inputs
+    ]
     (code_dir / "script.py").write_text(code)
     for d in (work, in_dir, code_dir):
         os.chmod(d, 0o755)
@@ -76,7 +119,7 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
 
     lib_dir = Path(__file__).resolve().parent.parent / "lib"
     volumes = {
-        str(in_dir): {"bind": "/workspace/input", "mode": "ro"},
+        str(mounted_in_dir): {"bind": "/workspace/input", "mode": "ro"},
         str(code_dir): {"bind": "/workspace/code", "mode": "ro"},
         str(out_dir): {"bind": "/workspace/output", "mode": "rw"},
     }
@@ -140,7 +183,10 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
     if oversize:
         dest_out.mkdir()
     else:
-        shutil.copytree(out_dir, dest_out)
+        try:
+            shutil.move(str(out_dir), str(dest_out))
+        except OSError:
+            shutil.copytree(out_dir, dest_out)
         artifacts = sorted(p.relative_to(dest_out).as_posix() for p in dest_out.rglob("*") if p.is_file())
     result = None
     rj = dest_out / "result.json"

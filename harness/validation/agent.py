@@ -495,12 +495,24 @@ def _session_to_verdict(session: InspectionSession, rel: str) -> Dict[str, Any]:
             f"Validation passed. {session.verified_area_pct():.0f}% of area verified."
         )
 
-    return {
+    from .feedback import format_structured_feedback
+    from .graph_check import validate_graph_deliverable
+
+    structured_fb = format_structured_feedback(session)
+    verdict_out: Dict[str, Any] = {
         "file": rel,
         "status": status,
         "issues": issues,
         "recommended_action": recommended,
+        "structured_feedback": structured_fb,
     }
+    if session.png_map_path and any(
+        w in rel.lower() for w in ("chart", "graph", "plot", "series", "histogram", "profile")
+    ):
+        graph_rep = validate_graph_deliverable(session.png_map_path, session.output_dir)
+        verdict_out["graph_check"] = graph_rep
+
+    return verdict_out
 
 
 # ---------------------------------------------------------------------------

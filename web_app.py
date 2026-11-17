@@ -58,14 +58,11 @@ app = FastAPI(title="GeoLLM Web Interface", lifespan=lifespan)
 DATA_DIR = Path("data")
 RUNS_DIR = Path("runs")
 STATIC_DIR = Path("static")
-TEMPLATES_DIR = Path("templates")
 DIST_DIR = STATIC_DIR / "dist"
 DIST_HTML = DIST_DIR / "index.html"
-LEGACY_HTML = TEMPLATES_DIR / "index.html"
 
 DATA_DIR.mkdir(exist_ok=True)
 RUNS_DIR.mkdir(exist_ok=True)
-TEMPLATES_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
 app.mount("/runs", StaticFiles(directory="runs"), name="runs")
@@ -119,39 +116,9 @@ def _parse_milestone(task_id, ev_text):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, ui: Optional[str] = None):
-    # Query parameter toggle ?ui=classic or ?legacy=1 serves the original interface
-    if ui in ("classic", "legacy") or request.query_params.get("legacy") == "1":
-        if LEGACY_HTML.exists():
-            return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
-        return HTMLResponse("<h1>Error: templates/index.html not found</h1>", status_code=404)
-
-    # Modern Vite + shadcn/ui interface
-    if DIST_HTML.exists():
-        return HTMLResponse(
-            DIST_HTML.read_text(encoding="utf-8"),
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
-
-    # Fallback to classic template if dist has not been built
-    if LEGACY_HTML.exists():
-        return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
-
-    return HTMLResponse("<h1>Error: No UI index.html found</h1>", status_code=404)
-
-
-@app.get("/classic", response_class=HTMLResponse)
-@app.get("/legacy", response_class=HTMLResponse)
-async def legacy_index():
-    """Direct route to access the classic pre-migration interface."""
-    if LEGACY_HTML.exists():
-        return HTMLResponse(LEGACY_HTML.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Error: templates/index.html not found</h1>", status_code=404)
-
-
 @app.get("/modern", response_class=HTMLResponse)
-async def modern_index():
-    """Direct route to access the modern Vite + shadcn/ui interface."""
+async def index():
+    """Serve the modern Vite + React interface."""
     if DIST_HTML.exists():
         return HTMLResponse(
             DIST_HTML.read_text(encoding="utf-8"),
@@ -162,17 +129,55 @@ async def modern_index():
 
 @app.get("/api/files")
 async def list_data_files():
-    valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5", ".laz", ".png", ".jpg", ".jpeg", ".csv", ".zip"}
-    files = [
-        {
+    valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5", ".laz", ".las", ".xyz", ".png", ".jpg", ".jpeg", ".csv", ".zip"}
+    files = []
+    for f in sorted(DATA_DIR.glob("*")):
+        if f.suffix.lower() not in valid_exts or not f.is_file():
+            continue
+        st = f.stat()
+        files.append({
             "name": f.name,
-            "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
-            "modified": time.strftime("%Y-%m-%d", time.localtime(f.stat().st_mtime))
-        }
-        for f in sorted(DATA_DIR.glob("*"))
-        if f.suffix.lower() in valid_exts
-    ]
+            "size_bytes": st.st_size,
+            "size_mb": round(st.st_size / (1024 * 1024), 2),
+            "modified": time.strftime("%Y-%m-%d", time.localtime(st.st_mtime)),
+        })
     return JSONResponse({"files": files})
+
+
+@app.post("/api/upload/stream")
+async def upload_file_stream(request: Request, filename: str, size: Optional[int] = None):
+    """Direct raw-stream file upload that bypasses Starlette MultiPartParser spooling.
+    Streams large multi-GB files directly to disk with atomic rename and zero temp double-copying.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(filename).name
+    if not safe_name:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+
+    dest = DATA_DIR / safe_name
+    # Fast path: if file already exists in data/ with identical byte size, attach immediately
+    if size is not None and dest.is_file() and dest.stat().st_size == size:
+        return JSONResponse({"uploaded": [safe_name], "already_present": True})
+
+    part_path = DATA_DIR / f".{safe_name}.{os.getpid()}.{int(time.time() * 1000)}.uploading"
+    bytes_written = 0
+    try:
+        with part_path.open("wb", buffering=8 * 1024 * 1024) as buffer:
+            async for chunk in request.stream():
+                if chunk:
+                    await asyncio.to_thread(buffer.write, chunk)
+                    bytes_written += len(chunk)
+        if size is not None and bytes_written != size:
+            part_path.unlink(missing_ok=True)
+            return JSONResponse(
+                {"error": f"Incomplete upload for {safe_name}: received {bytes_written} of {size} bytes"},
+                status_code=400,
+            )
+        os.replace(part_path, dest)
+        return JSONResponse({"uploaded": [safe_name], "bytes": bytes_written})
+    except Exception as exc:
+        part_path.unlink(missing_ok=True)
+        return JSONResponse({"error": f"Upload failed: {exc}"}, status_code=400)
 
 
 @app.post("/api/upload")
@@ -186,10 +191,15 @@ async def upload_file(files: List[UploadFile] = File(...)):
         if not safe_name:
             continue
         dest = DATA_DIR / safe_name
-        with dest.open("wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
-                buffer.write(chunk)
-        uploaded.append(safe_name)
+        part_path = DATA_DIR / f".{safe_name}.{os.getpid()}.{int(time.time() * 1000)}.uploading"
+        try:
+            with part_path.open("wb", buffering=4 * 1024 * 1024) as buffer:
+                while chunk := await file.read(4 * 1024 * 1024):
+                    await asyncio.to_thread(buffer.write, chunk)
+            os.replace(part_path, dest)
+            uploaded.append(safe_name)
+        finally:
+            part_path.unlink(missing_ok=True)
     return JSONResponse({"uploaded": uploaded})
 
 
@@ -259,8 +269,9 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
     # Persist user turn
     append_conversation_turn(task_id, "user", user_text, runs_dir=RUNS_DIR)
 
-    # 1. Classify incoming message
+    # 1. Classify incoming message with full live multi-container snapshot
     attached_files = [f.strip() for f in payload.files.split(",") if f.strip()]
+    live_snapshot = task_manager.multi_snapshot()
     classification = await asyncio.to_thread(
         router.classify_message,
         user_message=user_text,
@@ -269,6 +280,7 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
         runs_dir=RUNS_DIR,
         task_state=ts,
         attached_files=attached_files,
+        live_snapshot=live_snapshot,
     )
     category = classification.get("category", "general_chat")
 
@@ -292,11 +304,12 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
             history=payload.history,
             task_id=task_id,
             task_state=ts,
+            live_snapshot=live_snapshot,
         )
         append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
         return JSONResponse(res)
 
-    # 4. Category B: Questions on existing analysis results
+    # 4. Category B: Questions on live progress or existing analysis results
     if category == "contextual_inquiry":
         res = await asyncio.to_thread(
             router.handle_contextual_inquiry,
@@ -305,6 +318,7 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
             task_id=task_id,
             runs_dir=RUNS_DIR,
             task_state=ts,
+            live_snapshot=live_snapshot,
         )
         append_conversation_turn(task_id, "assistant", res["reply"], runs_dir=RUNS_DIR, extra={"type": "conversational_reply"})
         return JSONResponse(res)
@@ -663,7 +677,8 @@ async def get_terrain_3d(task_id: str):
             data = json.loads(cand_file.read_text(encoding="utf-8"))
             elev_range = float(data.get("elevation_range_m", 0) or 0)
             is_flat_zero = elev_range <= 0.0 and bool(output_tifs)
-            if not is_stale and not is_flat_zero:
+            is_old_version = str(data.get("version", "1.0")) < "2.0"
+            if not is_stale and not is_flat_zero and not is_old_version:
                 data["orthophoto_url"] = f"/api/runs/{task_id}/orthophoto.png"
                 return JSONResponse(data)
         except Exception:

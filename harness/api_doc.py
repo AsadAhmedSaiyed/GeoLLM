@@ -6,7 +6,7 @@ from pathlib import Path
 LIB = Path(__file__).resolve().parent.parent / "lib" / "geollm_lib"
 MODULES = (
     "io", "bands", "indices", "masks", "vector", "align", "change", "viz", "stats", "result",
-    "sar", "hyperspectral", "temporal", "series", "classify", "viz_ts",
+    "sar", "hyperspectral", "temporal", "series", "classify", "viz_ts", "terrain", "lidar", "raster",
 )
 
 

@@ -32,6 +32,11 @@ DOCKER_INSTALLED_PACKAGES = {
     "sklearn": {"version": "1.5.2", "context7_id": "/scikit-learn/scikit-learn"},
     "statsmodels": {"version": "0.14.4", "context7_id": "/statsmodels/statsmodels"},
     "ruptures": {"version": "1.1.9", "context7_id": "/deepcharles/ruptures"},
+    "laspy": {"version": "2.5.4", "context7_id": "/laspy/laspy"},
+    "xarray": {"version": "2026.9.0", "context7_id": "/pydata/xarray"},
+    "rioxarray": {"version": "0.24.0", "context7_id": "/corteva/rioxarray"},
+    "dask": {"version": "2026.8.0", "context7_id": "/dask/dask"},
+    "numba": {"version": "0.68.1", "context7_id": "/numba/numba"},
 }
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "runs" / ".context7_cache"

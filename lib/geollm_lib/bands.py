@@ -1,17 +1,20 @@
 """Infer semantic band roles from a raster's own labels. Never guesses."""
 import re
 
-OPTICAL_ROLES = ("blue", "green", "red", "nir", "swir1", "swir2")
+OPTICAL_ROLES = ("blue", "green", "red", "red_edge", "nir", "swir1", "swir2", "thermal")
 SAR_ROLES = ("vv", "vh", "hh", "hv")
 ROLES = OPTICAL_ROLES + SAR_ROLES
 NAME_TO_ROLE = {
-    "blue": "blue", "green": "green", "red": "red", "nir": "nir", "nir08": "nir",
+    "blue": "blue", "green": "green", "red": "red",
+    "red_edge": "red_edge", "rededge": "red_edge", "b05": "red_edge",
+    "nir": "nir", "nir08": "nir",
     "swir1": "swir1", "swir16": "swir1", "swir2": "swir2", "swir22": "swir2",
+    "thermal": "thermal", "lwir11": "thermal", "lwir": "thermal", "st_b10": "thermal",
     "vv": "vv", "vh": "vh", "hh": "hh", "hv": "hv",
 }
 SENSOR_CODES = {
-    "sentinel2": {"B2": "blue", "B3": "green", "B4": "red", "B8": "nir", "B11": "swir1", "B12": "swir2"},
-    "landsat": {"B2": "blue", "B3": "green", "B4": "red", "B5": "nir", "B6": "swir1", "B7": "swir2"},
+    "sentinel2": {"B2": "blue", "B3": "green", "B4": "red", "B5": "red_edge", "B8": "nir", "B11": "swir1", "B12": "swir2"},
+    "landsat": {"B2": "blue", "B3": "green", "B4": "red", "B5": "nir", "B6": "swir1", "B7": "swir2", "B10": "thermal"},
 }
 _POL = re.compile(r"(?:^|[^a-z])(vv|vh|hh|hv)(?:$|[^a-z])")
 

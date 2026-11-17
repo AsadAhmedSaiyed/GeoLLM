@@ -316,12 +316,6 @@ def chat(messages, fmt=None, show=True):
         return _openrouter(messages, show)
     if PROVIDER == "ollama":
         return _ollama(messages, fmt, show)
-    if PROVIDER == "pi":
-        from . import pi_runtime
-        text = pi_runtime.complete(messages)
-        if show:
-            print(text)
-        return text
     raise RuntimeError(f"Unknown LLM_PROVIDER '{PROVIDER}'")
 
 

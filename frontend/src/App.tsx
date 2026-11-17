@@ -135,9 +135,13 @@ export function App() {
           return {
             ...prev,
             [activeContainerId]: res.turns.map((t) => ({
+              id: t.id,
+              seq: t.seq,
               role: t.role === 'assistant' ? 'assistant' : 'user',
               content: t.content,
               timestamp: t.timestamp,
+              type: t.type,
+              question: t.question,
               thumb_url: t.thumb_url,
               fly_to_bbox: t.fly_to_bbox,
             })),
@@ -262,15 +266,35 @@ export function App() {
   };
 
   const handleUploadFiles = async (fileList: FileList) => {
-    toast.info(`Uploading ${fileList.length} file(s)...`);
+    const toastId = `upload_${Date.now()}`;
+    toast.loading(`Checking ${fileList.length} file(s)…`, { id: toastId });
     try {
-      const res = await api.uploadFiles(fileList);
+      const res = await api.uploadFiles(fileList, (info) => {
+        if (!info.instant) {
+          toast.loading(
+            `Uploading ${info.fileName} — ${info.percent}% (${info.loadedMb} / ${info.totalMb} MB)`,
+            { id: toastId }
+          );
+        }
+      });
       if (res.uploaded && res.uploaded.length > 0) {
         setSelectedFiles((prev) => Array.from(new Set([...prev, ...res.uploaded])));
-        toast.success(`Uploaded and attached ${res.uploaded.length} file(s).`);
+        if (res.instantCount && res.instantCount === res.uploaded.length) {
+          toast.success(
+            `Attached ${res.uploaded.length} existing dataset(s) instantly (already in data/).`,
+            { id: toastId }
+          );
+        } else {
+          toast.success(`Uploaded and attached ${res.uploaded.length} file(s).`, {
+            id: toastId,
+          });
+        }
+      } else {
+        toast.dismiss(toastId);
       }
     } catch (err) {
       toast.error('File upload failed', {
+        id: toastId,
         description: err instanceof Error ? err.message : String(err),
       });
     }
