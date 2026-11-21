@@ -63,12 +63,13 @@ CATEGORIES:
    - Examples: "show me a close-up of the port in the change map", "zoom into the high vegetation zone", "check if the stadium area has classification errors", "look at the northern border in the 2024 raster".
 
 4. "complex_task"
-   - Genuine geospatial computation, multi-temporal analysis, LiDAR extraction, landcover change, index calculation on new dates/areas, or STAC search/staging that requires running Python in the secure container sandbox.
-   - Examples: "compare vegetation changes in Gaza between May 2020 and 2026", "extract canopy height from this LAZ file", "map flooded areas in Valencia from Sentinel-1".
+   - Genuine geospatial computation, multi-temporal analysis, LiDAR extraction, landcover change, mineral/hyperspectral mapping, index calculation on new dates/areas, or STAC search/staging that requires running Python in the secure container sandbox.
+   - IMPORTANT: The sub-agent has built-in geocoding (`search_stac(location_name=...)`) that AUTOMATICALLY converts ANY named geographic place (city, valley, desert, park, river, state, region, country) into a bounding box and downloads satellite imagery. Do NOT ask for a bounding box or files when a named place is already mentioned in the message OR conversation history!
+   - Examples: "compare vegetation changes in Gaza between May 2020 and 2026", "map clay minerals and iron-rich soils around Death Valley, California in 2023-2024", "extract canopy height from this LAZ file", "use stac search for this" (when a place was named in history).
 
 5. "clarification_needed"
-   - An ambiguous request to start a NEW complex analysis that lacks critical context (e.g. Attached Files is [] AND no named geographic place, city, coordinates, or [AOI BBOX: ...] is given, AND it is NOT asking for updates/status on an existing or running task).
-   - Examples: "analyze the forest", "detect changes here" (when Attached Files is [] and no place/bbox is provided).
+   - ONLY when Attached Files is [] AND NO named geographic place, city, region, desert, park, coordinates, or [AOI BBOX: ...] appears anywhere in the user message OR recent conversation history (e.g. literally just "analyze the forest" or "detect changes here" with zero place name anywhere).
+   - NEVER choose "clarification_needed" just because a named region is broad (like "Death Valley, California" or "Rajasthan") or because no bounding box/files were attached — route those to "complex_task"!
 
 CURRENT WORKSPACE CONTEXT:
 Workspace ID: {task_id}
@@ -213,6 +214,30 @@ def classify_message(
             "clarification_needed",
         ):
             cat = "general_chat"
+
+        # Safeguard: if router asked for clarification even though the user explicitly asked for STAC
+        # or already named a concrete geographic place (e.g. "Death Valley, California") in the message/history,
+        # route directly to complex_task so the sub-agent can geocode and run search_stac autonomously.
+        if cat == "clarification_needed":
+            combined_user_text = " ".join(
+                [user_message]
+                + [str(h.get("content", "")) for h in history[-4:] if h.get("role") == "user"]
+            )
+            has_stac_intent = bool(re.search(r"\b(stac|satellite\s+data|sentinel|landsat|emit)\b", combined_user_text, re.I))
+            # Detect "City, State/Country" or named geographic feature ("Death Valley", "Mount ...", "Lake ...", etc.)
+            has_named_place = bool(
+                re.search(
+                    r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\s*,\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b"
+                    r"|\b(?:in|around|near|over|of)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b"
+                    r"|\[AOI BBOX:",
+                    combined_user_text,
+                )
+            )
+            if has_named_place or has_stac_intent:
+                cat = "complex_task"
+                data["reasoning"] = "Overrode clarification_needed: named geographic place or explicit STAC request present."
+                data["clarification_question"] = None
+
         data["category"] = cat
         return data
     except Exception as e:

@@ -573,8 +573,6 @@ export function useMultiTaskStreams(options?: {
 }) {
   const [tasks, setTasks] = useState<Record<string, TaskState>>({
     task_1: { ...DEFAULT_TASK_STATE },
-    task_2: { ...DEFAULT_TASK_STATE },
-    task_3: { ...DEFAULT_TASK_STATE },
   });
 
   const [feedItems, setFeedItems] = useState<SupervisorFeedItem[]>([

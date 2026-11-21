@@ -1,6 +1,7 @@
 """Multi-task orchestrator: runs dynamic concurrent Pi sub-agent jobs with resource-aware queueing."""
 import json
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -230,14 +231,19 @@ class TaskManager:
         self.auto_approve = auto_approve
         self.runs_dir = runs_dir if runs_dir is not None else Path("runs")
         self._pending_queue: list[tuple[str, str, list, dict, int, float, str]] = []
-        self.tasks: dict[str, TaskState] = {
-            tid: TaskState(task_id=tid) for tid in TASK_IDS
-        }
-        # Also discover any previously created dynamic task_4..task_N directories on disk
+        # Discover existing task_* directories on disk first so deleted workspaces stay deleted across restarts.
+        discovered = []
         if self.runs_dir.is_dir():
             for d in sorted(self.runs_dir.iterdir()):
-                if d.is_dir() and re.match(r"^task_(\d+)$", d.name) and d.name not in self.tasks:
-                    self.tasks[d.name] = TaskState(task_id=d.name)
+                if d.is_dir() and re.match(r"^task_(\d+)$", d.name):
+                    discovered.append(d.name)
+        if discovered:
+            initial_ids = sorted(set(["task_1", *discovered]), key=lambda t: int(_container_num(t)) if _container_num(t).isdigit() else 999)
+        else:
+            initial_ids = list(TASK_IDS)
+        self.tasks: dict[str, TaskState] = {
+            tid: TaskState(task_id=tid) for tid in initial_ids
+        }
         self._restore_from_disk()
 
     def _restore_from_disk(self):
@@ -450,7 +456,7 @@ class TaskManager:
             return ts
 
     def delete_task(self, task_id: str) -> bool:
-        """Stop any running job/warm container for `task_id` and remove its dynamic slot."""
+        """Stop any running job/warm container for `task_id` and remove its dynamic slot + folder."""
         if task_id == "task_1":
             return False
         self.cancel_task(task_id)
@@ -460,6 +466,20 @@ class TaskManager:
                 return False
             self._pending_queue = [item for item in self._pending_queue if item[0] != task_id]
             self.tasks.pop(task_id, None)
+        ws_dir = get_workspace_dir(task_id, self.runs_dir)
+        if ws_dir.exists():
+            lock_file = ws_dir / "task.lock"
+            for attempt in range(4):
+                try:
+                    if lock_file.exists():
+                        lock_file.unlink(missing_ok=True)
+                    shutil.rmtree(ws_dir)
+                    break
+                except OSError:
+                    if attempt < 3:
+                        time.sleep(0.1)
+                    else:
+                        shutil.rmtree(ws_dir, ignore_errors=True)
         return True
 
     def capacity(self) -> dict:
@@ -587,6 +607,7 @@ class TaskManager:
                         ts.step = f"Queued — waiting for free RAM ({profile.memory} needed; {used_gb:.0f}/{budget_gb:.0f} GB in use)"
                         ts.allocated_ram_gb = 0.0
                         ts.resource_tier = profile.tier
+                        print(f"[GeoLLM:{tid}] {ts.step}", flush=True)
                         self._pending_queue.append((tid, question, files, kw, current_run_id, profile.memory_gb, profile.tier))
                         self._on_step(tid, {"type": "status", "status": "queued", "step": ts.step}, current_run_id)
                     return tid

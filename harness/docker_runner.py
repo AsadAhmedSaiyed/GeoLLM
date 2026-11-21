@@ -75,7 +75,14 @@ def _call_executor(code, files, attempt_dir, cfg, question=""):
 
     params = inspect.signature(run_code).parameters
     task_id = os.environ.get("GEOLLM_TASK_ID", "")
-    needs_ts = any(mod in code for mod in ("series", "classify", "viz_ts", "terrain", "lidar", "raster", "dask", "xarray", "rioxarray", "sklearn", "statsmodels", "ruptures"))
+    needs_ts = any(
+        mod in code
+        for mod in (
+            "series", "classify", "viz_ts", "terrain", "lidar", "raster", "hyperspectral",
+            "dask", "xarray", "rioxarray", "sklearn", "statsmodels", "ruptures",
+            "netCDF4", "h5netcdf", "h5py", "spectral",
+        )
+    )
     custom_image = os.environ.get("GEOLLM_IMAGE_TS", "geollm-runtime-ts") if needs_ts else os.environ.get("GEOLLM_IMAGE", "geollm-runtime")
 
     q = question or os.environ.get("GEOLLM_QUESTION", "")
@@ -318,7 +325,12 @@ def main():
             "write_text(", "write_bytes(",
         )
         if not plan_approved and any(k in code_str for k in _WRITE_PATTERNS):
-            out["message"] = "Policy violation: Call propose_plan and wait for user approval before saving deliverable files."
+            out["ok"] = False
+            out["plan_gate_blocked"] = True
+            out["message"] = (
+                "Policy violation: Pre-plan scripts are read-only for file inspection. "
+                "Call propose_plan and wait for user approval before saving deliverable files."
+            )
             sys.stdout.write(json.dumps(out, default=str) + "\n")
             sys.stdout.flush()
             return

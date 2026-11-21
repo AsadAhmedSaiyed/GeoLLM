@@ -9,6 +9,11 @@ import {
   Globe,
   Loader2,
   Palette,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -41,6 +46,70 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [displayPngUrl, setDisplayPngUrl] = useState<string>('');
   const [isImageLoading, setIsImageLoading] = useState<boolean>(false);
   const userChangedCmapRef = useRef<boolean>(false);
+
+  // Interactive Zoom & Pan state for both PNG/image and raster previews
+  const [zoom, setZoom] = useState<number>(1);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number }>({
+    x: 0,
+    y: 0,
+    panX: 0,
+    panY: 0,
+  });
+
+  const resetZoomPan = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const handleZoomIn = () => setZoom((z) => Math.min(8, parseFloat((z * 1.35).toFixed(2))));
+  const handleZoomOut = () =>
+    setZoom((z) => {
+      const next = Math.max(0.5, parseFloat((z / 1.35).toFixed(2)));
+      if (next <= 1) setPan({ x: 0, y: 0 });
+      return next;
+    });
+
+  const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+    setZoom((z) => {
+      const next = Math.min(8, Math.max(0.5, parseFloat((z * factor).toFixed(2))));
+      if (next <= 1) setPan({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (zoom <= 1) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    setPan({ x: dragStartRef.current.panX + dx, y: dragStartRef.current.panY + dy });
+  };
+
+  const handleMouseUp = () => setIsDragging(false);
+
+  const handleDoubleClick = () => {
+    if (zoom > 1.05) {
+      resetZoomPan();
+    } else {
+      setZoom(2.5);
+    }
+  };
+
+  // Reset zoom/pan whenever switching files
+  useEffect(() => {
+    resetZoomPan();
+  }, [targetPath]);
 
   // Fetch metadata only when targetPath changes
   useEffect(() => {
@@ -97,15 +166,20 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   const isRaster = ['tif', 'tiff', 'img', 'jp2'].includes(ext);
   const isLidar = ['laz', 'las'].includes(ext);
-  const isImage = ['png', 'jpg', 'jpeg', 'webp'].includes(ext);
+  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
   const isVector = ['geojson', 'json', 'shp'].includes(ext);
 
   const targetPngUrl = useMemo(() => {
     if (!targetPath) return '';
     if (isRaster) return api.getRasterPngUrl(targetPath, { cmap: selectedCmap });
-    if (isImage) return `/api/raster/png?path=${encodeURIComponent(targetPath)}`;
+    if (isImage) {
+      if (target?.url && (target.url.startsWith('/') || target.url.startsWith('http'))) {
+        return target.url;
+      }
+      return `/api/raster/png?path=${encodeURIComponent(targetPath)}`;
+    }
     return '';
-  }, [targetPath, isRaster, isImage, selectedCmap]);
+  }, [targetPath, target?.url, isRaster, isImage, selectedCmap]);
 
   // Smooth image preload: keeps old image visible and swaps seamlessly without blinking
   useEffect(() => {
@@ -143,7 +217,11 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-card border border-border shadow-2xl rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col text-xs text-foreground animate-in fade-in zoom-in-95 duration-150">
+      <div
+        className={`bg-card border border-border shadow-2xl rounded-2xl w-full ${
+          isExpanded ? 'max-w-6xl max-h-[94vh]' : 'max-w-3xl max-h-[88vh]'
+        } overflow-hidden flex flex-col text-xs text-foreground animate-in fade-in zoom-in-95 duration-150 transition-all`}
+      >
         {/* Header */}
         <div className="p-4 border-b border-border flex items-center justify-between bg-muted/20">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -205,18 +283,69 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="h-64 w-full bg-black/40 rounded-xl overflow-hidden flex items-center justify-center border border-border relative">
+                  <div
+                    onWheel={handleWheelZoom}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onDoubleClick={handleDoubleClick}
+                    className={`${isExpanded ? 'h-[62vh]' : 'h-80'} w-full bg-black/40 rounded-xl overflow-hidden flex items-center justify-center border border-border relative select-none ${
+                      zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
+                    }`}
+                  >
                     {displayPngUrl ? (
                       <img
                         src={displayPngUrl}
                         alt={fileName}
-                        className={`max-h-full max-w-full object-contain transition-opacity duration-150 ${
-                          isImageLoading ? 'opacity-80' : 'opacity-100'
-                        }`}
+                        draggable={false}
+                        style={{
+                          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                          transformOrigin: 'center center',
+                        }}
+                        className={`max-h-full max-w-full object-contain ${
+                          isDragging ? '' : 'transition-transform duration-100'
+                        } ${isImageLoading ? 'opacity-80' : 'opacity-100'}`}
                       />
                     ) : (
                       <Loader2 className="h-5 w-5 animate-spin text-teal-400" />
                     )}
+                    {/* Floating Zoom Controls */}
+                    <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 bg-black/75 backdrop-blur-md border border-white/15 rounded-lg p-1 text-[10.5px] font-mono text-white shadow-lg">
+                      <button
+                        type="button"
+                        onClick={handleZoomOut}
+                        title="Zoom Out"
+                        className="p-1 rounded hover:bg-white/15 transition-colors cursor-pointer"
+                      >
+                        <ZoomOut className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="px-1.5 min-w-[44px] text-center">{Math.round(zoom * 100)}%</span>
+                      <button
+                        type="button"
+                        onClick={handleZoomIn}
+                        title="Zoom In"
+                        className="p-1 rounded hover:bg-white/15 transition-colors cursor-pointer"
+                      >
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetZoomPan}
+                        title="Reset Zoom (100%)"
+                        className="p-1 rounded hover:bg-white/15 transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsExpanded((v) => !v)}
+                        title={isExpanded ? 'Restore Size' : 'Expand Preview'}
+                        className="p-1 rounded hover:bg-white/15 transition-colors cursor-pointer border-l border-white/15 ml-0.5 pl-1.5"
+                      >
+                        {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
                     {isImageLoading && displayPngUrl && (
                       <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] text-teal-300 flex items-center gap-1 font-mono">
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -227,14 +356,75 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 </div>
               )}
 
-              {/* Standard Image Preview */}
+              {/* Standard Image Preview (PNG / JPG / SVG / GIF) with Zoom & Pan */}
               {isImage && (
-                <div className="h-64 w-full bg-black/30 rounded-xl overflow-hidden flex items-center justify-center border border-border">
-                  <img
-                    src={`/api/raster/png?path=${encodeURIComponent(targetPath)}`}
-                    alt={fileName}
-                    className="max-h-full max-w-full object-contain"
-                  />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                      Image Preview • Scroll or Double-Click to Zoom, Drag to Pan
+                    </span>
+                    <div className="flex items-center gap-1 font-mono text-[10.5px]">
+                      <button
+                        type="button"
+                        onClick={handleZoomOut}
+                        title="Zoom Out"
+                        className="p-1 rounded bg-muted hover:bg-muted/80 border border-border transition-colors cursor-pointer"
+                      >
+                        <ZoomOut className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="px-2 py-0.5 rounded bg-muted/60 border border-border min-w-[48px] text-center">
+                        {Math.round(zoom * 100)}%
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleZoomIn}
+                        title="Zoom In"
+                        className="p-1 rounded bg-muted hover:bg-muted/80 border border-border transition-colors cursor-pointer"
+                      >
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetZoomPan}
+                        title="Reset Zoom (100%)"
+                        className="p-1 rounded bg-muted hover:bg-muted/80 border border-border transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsExpanded((v) => !v)}
+                        title={isExpanded ? 'Restore Size' : 'Expand Preview'}
+                        className="p-1 rounded bg-muted hover:bg-muted/80 border border-border transition-colors cursor-pointer"
+                      >
+                        {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    onWheel={handleWheelZoom}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onDoubleClick={handleDoubleClick}
+                    className={`${isExpanded ? 'h-[68vh]' : 'h-96'} w-full bg-black/30 rounded-xl overflow-hidden flex items-center justify-center border border-border relative select-none ${
+                      zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
+                    }`}
+                  >
+                    <img
+                      src={targetPngUrl}
+                      alt={fileName}
+                      draggable={false}
+                      style={{
+                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                        transformOrigin: 'center center',
+                      }}
+                      className={`max-h-full max-w-full object-contain ${
+                        isDragging ? '' : 'transition-transform duration-100'
+                      }`}
+                    />
+                  </div>
                 </div>
               )}
 

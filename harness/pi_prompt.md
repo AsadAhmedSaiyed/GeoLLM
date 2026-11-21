@@ -65,6 +65,7 @@ If no local input files are supplied (`files` is `[]`), you must autonomously di
      - Optical vegetation / urban / land / water (`sentinel-2-l2a`): ALWAYS request the full scientific band suite `["B02", "B03", "B04", "B08", "B11", "B12", "SCL"]` (Blue, Green, Red, NIR, SWIR1, SWIR2, Scene Classification) so you can compute true-color RGB, soil-adjusted vegetation (`MSAVI2`/`EVI`), built-up vs. bare-soil indices (`IBI`, `BSI`, `UI`), open-water masks (`MNDWI`), and cloud/shadow masks (`SCL`).
      - Optical Landsat (`landsat-c2-l2`): ALWAYS request `["blue", "green", "red", "nir08", "swir16", "swir22", "qa_pixel"]`.
      - Radar / cloudy / flood / structural damage (`sentinel-1-rtc`): ALWAYS request `["vv", "vh"]`.
+     - Hyperspectral / mineral / soil chemistry / narrow-band spectroscopy (`emit-l2a-rfl`): request `["reflectance"]` (285 contiguous bands, 381–2493 nm, delivered as NetCDF4).
      - Terrain / elevation / slope (`cop-dem-glo-30`): `["data"]`.
      - Land cover classification baseline (`esa-worldcover`): `["map"]`.
 2. **Search & Verify Complete Spatial & Temporal Sufficiency (`search_stac`)**:
@@ -128,7 +129,7 @@ If no local input files are supplied (`files` is `[]`), you must autonomously di
 The container has the following standard libraries installed:
 * `rasterio` (1.4.x), `geopandas` (1.2.x), `shapely` (2.2.x), `pyproj` (3.7.x), `laspy[lazrs]`
 * `numpy` (2.x), `scipy` (1.17.x), `pandas` (3.x), `matplotlib` (3.11.x), `pillow`
-* `xarray`, `rioxarray`, `dask[array]`, `numba` (for out-of-core chunked processing when rasters are large)
+* `xarray`, `rioxarray`, `dask[array]`, `numba`, `netCDF4`, `h5netcdf`, `h5py`, `spectral` (for out-of-core chunked processing and hyperspectral NetCDF4/HDF5/ENVI cubes)
 * `geollm_lib` helper library (`io`, `bands`, `indices`, `masks`, `vector`, `align`, `change`, `viz`, `stats`, `result`, `sar`, `hyperspectral`, `temporal`, `series`, `classify`, `viz_ts`, `terrain`, `lidar`, `raster`)
 
 CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
@@ -171,9 +172,14 @@ CRITICAL ENVIRONMENT & PERFORMANCE DIRECTIVES (QUERY-AGNOSTIC):
     * `layers, labels = geollm_lib.lidar.classify_canopy_layers(chm)` (Strata: Ground, Shrubs, Understory, Tall Canopy)
     * `stats = geollm_lib.lidar.canopy_metrics_summary(chm, pixel_area_m2=...)` (Cover %, mean/max height, volume m³)
     * `dsm, dtm, tf = geollm_lib.lidar.points_to_dsm_dtm(x, y, z, cell_size=...)` (Fast CPU binning of 3D point clouds)
-* For multi-band or hyperspectral rasters, DO NOT read all bands into memory at once (`src.read()` on 100+ bands will cause Out-Of-Memory or Timeout). Always read only the specific band indexes needed for your calculation (e.g. `src.read(indexes=[b1, b2])`).
+* For multi-band or hyperspectral rasters, DO NOT read all bands into memory at once (`src.read()` on 100+ bands will cause Out-Of-Memory or Timeout).
+  - Always resolve bands by physical **center wavelength (nm)** from file metadata (never guess band numbers).
+  - For narrow-band ratios or absorption-depth queries, read ONLY the needed bands (e.g., `src.read(indexes=[...])` or `geollm_lib.hyperspectral.read_wavelength_subset(...)`).
+  - Before full-spectrum operations (continuum removal, Spectral Angle Mapper, linear unmixing, PCA/MNF), exclude atmospheric water-vapor absorption windows (~1340–1460 nm and ~1790–1960 nm) and sensor bad-band lists (`bbl`), and process large cubes in spatial tiles/windows.
+  - Optional standard helpers in `geollm_lib.hyperspectral` (`band_wavelengths`, `bad_band_mask`, `read_wavelength_subset`, `continuum_removal`, `absorption_feature_depth`, `spectral_unmix`, `spectral_angle`, `spectral_signature`) are available when useful, but never mandatory — write custom scientific Python (`xarray`, `netCDF4`, `h5py`, `spectral`, `scipy`, `sklearn`) whenever the task calls for it.
 * Always read rasters inside context managers (`with rasterio.open(...) as src:`) and extract NumPy arrays so they remain accessible in memory.
 * When writing tiled GeoTIFFs, ensure block dimensions are multiples of 16 (e.g. `blockxsize=256, blockysize=256`).
+* Whenever writing a categorical/classified GeoTIFF (e.g. land cover, mineral zones, change classes, masks), ALWAYS embed human-readable per-class tags directly in the GeoTIFF header (`dst.update_tags(class_1="...", class_2="...", ...)`) so the 3D globe legend displays real class names instead of generic numbers.
 * When uncertain about a library parameter or function signature, call `get_library_docs(package, query)` first to avoid guessing.
 
 Every `run_geospatial_code` call consumes one tool call.

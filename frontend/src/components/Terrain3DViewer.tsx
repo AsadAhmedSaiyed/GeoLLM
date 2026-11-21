@@ -629,8 +629,59 @@ export const Terrain3DViewer: React.FC<Terrain3DViewerProps> = ({
         if (!res.ok) throw new Error(`Failed to load 3D terrain payload (${res.status})`);
         return res.json();
       })
-      .then(async (data: Terrain3DPayload) => {
+      .then(async (raw: any) => {
         if (!isMounted) return;
+        let data: Terrain3DPayload = raw;
+        if (!Array.isArray(raw?.elevations)) {
+          const grid2d: unknown =
+            raw?.layers?.elevation ??
+            raw?.layers?.elevation_m ??
+            raw?.elevation ??
+            raw?.elevation_m ??
+            raw?.dem ??
+            raw?.height_m ??
+            raw?.z;
+          if (Array.isArray(grid2d) && grid2d.length > 0 && Array.isArray(grid2d[0])) {
+            const h = raw?.grid?.height ?? grid2d.length;
+            const w = raw?.grid?.width ?? (grid2d[0] as unknown[]).length;
+            const flat: number[] = new Array(w * h);
+            let minZ = Infinity;
+            let maxZ = -Infinity;
+            for (let r = 0; r < h; r++) {
+              const row = grid2d[r] as number[];
+              for (let c = 0; c < w; c++) {
+                const v = Number(row?.[c] ?? 0);
+                const val = Number.isFinite(v) ? v : 0;
+                flat[r * w + c] = val;
+                if (val < minZ) minZ = val;
+                if (val > maxZ) maxZ = val;
+              }
+            }
+            if (!Number.isFinite(minZ)) minZ = 0;
+            if (!Number.isFinite(maxZ)) maxZ = 1;
+            const hillshade: number[] = new Array(w * h).fill(185);
+            for (let r = 1; r < h - 1; r++) {
+              for (let c = 1; c < w - 1; c++) {
+                const dzdx = (flat[r * w + (c + 1)] - flat[r * w + (c - 1)]) * 0.5;
+                const dzdy = (flat[(r + 1) * w + c] - flat[(r - 1) * w + c]) * 0.5;
+                const shade = Math.max(40, Math.min(245, Math.round(180 - dzdx * 0.6 + dzdy * 0.6)));
+                hillshade[r * w + c] = shade;
+              }
+            }
+            data = {
+              ...raw,
+              width: w,
+              height: h,
+              elevations: flat,
+              hillshade,
+              min_elevation_m: Number(minZ.toFixed(2)),
+              max_elevation_m: Number(maxZ.toFixed(2)),
+              elevation_range_m: Number((maxZ - minZ).toFixed(2)),
+            };
+          } else {
+            throw new Error('This 3D JSON payload does not contain an elevation grid.');
+          }
+        }
         setMeta(data);
         rawElevationsRef.current = data.elevations;
         const isLidar = checkIsLidar(data);

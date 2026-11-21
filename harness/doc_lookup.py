@@ -37,6 +37,10 @@ DOCKER_INSTALLED_PACKAGES = {
     "rioxarray": {"version": "0.24.0", "context7_id": "/corteva/rioxarray"},
     "dask": {"version": "2026.8.0", "context7_id": "/dask/dask"},
     "numba": {"version": "0.68.1", "context7_id": "/numba/numba"},
+    "netcdf4": {"version": "1.7.2", "context7_id": "/unidata/netcdf4-python"},
+    "h5netcdf": {"version": "1.3.0", "context7_id": "/h5netcdf/h5netcdf"},
+    "h5py": {"version": "3.12.1", "context7_id": "/h5py/h5py"},
+    "spectral": {"version": "0.23.1", "context7_id": "/spectralpython/spectral"},
 }
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "runs" / ".context7_cache"

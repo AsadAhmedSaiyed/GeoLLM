@@ -174,7 +174,7 @@ export const QueryConsole: React.FC<QueryConsoleProps> = ({
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".tif,.tiff,.laz,.las,.geojson,.json,.zip,.shp,.gpkg,.csv,.png,.jpg,.jpeg"
+              accept=".tif,.tiff,.nc,.h5,.he5,.hdr,.img,.bsq,.bil,.bip,.laz,.las,.geojson,.json,.zip,.shp,.gpkg,.csv,.png,.jpg,.jpeg"
               className="hidden"
               onChange={handleFileChange}
             />

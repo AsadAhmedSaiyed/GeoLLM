@@ -20,12 +20,14 @@ interface ParsedSegment {
 
 // An OpenUI Lang program always defines `root = <Component>(...)`.
 const ROOT_STATEMENT = /^\s*root\s*=\s*[A-Z][A-Za-z]*\s*\(/m;
+const FIRST_ASSIGNMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[A-Z][A-Za-z]*\s*\(/m;
 
 /**
  * Split a reply into markdown and OpenUI Lang segments.
  * Supports, in order of preference:
- *  1. A whole reply that is an OpenUI Lang program (the official OpenUI chat contract).
- *  2. Fenced ```openui / ```openui-lang blocks embedded in markdown.
+ *  1. Fenced ```openui / ```openui-lang blocks embedded in markdown.
+ *  2. A whole reply (with optional short lead-in text) containing `root = Card(...)`,
+ *     even if helper statements (`hdr = ...`, `kpis = ...`) appear before `root = ...`.
  */
 function parseSegments(rawText?: string | null): ParsedSegment[] {
   if (!rawText) return [];
@@ -47,11 +49,13 @@ function parseSegments(rawText?: string | null): ParsedSegment[] {
     return segments;
   }
 
-  // Whole-reply program: the root statement may be preceded by a short lead-in line.
+  // Whole-reply program: keep all preceding `id = Comp(...)` statements together with `root = ...`
   const rootMatch = ROOT_STATEMENT.exec(text);
   if (rootMatch) {
-    const lead = text.slice(0, rootMatch.index).trim();
-    const program = text.slice(rootMatch.index).trim();
+    const firstMatch = FIRST_ASSIGNMENT.exec(text);
+    const startIdx = firstMatch && firstMatch.index < rootMatch.index ? firstMatch.index : rootMatch.index;
+    const lead = text.slice(0, startIdx).trim();
+    const program = text.slice(startIdx).trim();
     return [
       ...(lead ? [{ type: 'markdown' as const, text: lead }] : []),
       { type: 'openui' as const, text: program },
@@ -98,9 +102,12 @@ const OpenUIBlock: React.FC<{
           library={openuiChatLibrary}
           isStreaming={isStreaming}
           onAction={handleAction}
-          onError={(errs: Array<{ message: string; severity?: string }>) => {
-            const critical = errs?.find((e) => e.severity !== 'warning');
-            setError(critical ? critical.message : null);
+          onError={(errs: Array<{ code?: string; message: string; severity?: string }>) => {
+            // Ignore recoverable per-prop type-mismatch warnings so the rest of the Card/Chart/Table renders
+            const fatal = errs?.find(
+              (e) => e.severity !== 'warning' && e.code !== 'type-mismatch' && e.code !== 'unknown-component'
+            );
+            setError(fatal ? fatal.message : null);
           }}
         />
       </div>

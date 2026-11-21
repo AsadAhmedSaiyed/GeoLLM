@@ -203,22 +203,32 @@ def inspect_raster_quality(
             step = max(1, max(w, h) // config.sample_max_px)
             sample_shape = (max(1, h // step), max(1, w // step))
 
-            # Sample primary band for nodata and validity
-            arr_masked = src.read(1, out_shape=sample_shape, masked=True)
+            # Sample primary band for nodata and validity.
+            # On hyperspectral / multi-band cubes, Band 1 (~380 nm edge) is sometimes masked out
+            # (bbl=0) while interior bands are valid; if Band 1 is >95% nodata, probe interior bands.
             total_sample_px = sample_shape[0] * sample_shape[1]
 
-            # In rasterio masked reads, mask is True for nodata/invalid pixels
-            mask = arr_masked.mask
-            if isinstance(mask, np.ndarray):
-                nodata_px = int(mask.sum())
-            else:
-                nodata_px = int(total_sample_px if mask else 0)
+            def _sample_band_nodata(b_idx: int) -> int:
+                arr_m = src.read(b_idx, out_shape=sample_shape, masked=True)
+                m = arr_m.mask
+                nd = int(m.sum()) if isinstance(m, np.ndarray) else int(total_sample_px if m else 0)
+                raw_arr = arr_m.data
+                if raw_arr.dtype.kind == "f":
+                    nan_m = ~np.isfinite(raw_arr)
+                    nd = int(np.logical_or(m, nan_m).sum())
+                return nd
 
-            # Check for non-finite values (NaN / Inf) in floating arrays
-            raw = arr_masked.data
-            if raw.dtype.kind == "f":
-                nan_mask = ~np.isfinite(raw)
-                nodata_px = int(np.logical_or(mask, nan_mask).sum())
+            nodata_px = _sample_band_nodata(1)
+            if src.count > 1 and (nodata_px / max(1, total_sample_px)) > 0.95:
+                probe_bands = sorted(
+                    {b for b in (src.count // 4, src.count // 2, (3 * src.count) // 4, src.count) if 1 < b <= src.count}
+                )
+                for pb in probe_bands:
+                    cand_nd = _sample_band_nodata(pb)
+                    if cand_nd < nodata_px:
+                        nodata_px = cand_nd
+                        if (nodata_px / max(1, total_sample_px)) <= 0.50:
+                            break
 
             valid_px = max(0, total_sample_px - nodata_px)
             nodata_frac = round(float(nodata_px / max(1, total_sample_px)), 4)

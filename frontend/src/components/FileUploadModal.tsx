@@ -41,7 +41,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
 
   const getFileCategory = (fname: string): StagedFile['category'] => {
     const ext = fname.toLowerCase().split('.').pop() || '';
-    if (['tif', 'tiff', 'img', 'jp2', 'vrt'].includes(ext)) return 'raster';
+    if (['tif', 'tiff', 'nc', 'h5', 'he5', 'hdr', 'img', 'bsq', 'bil', 'bip', 'jp2', 'vrt'].includes(ext)) return 'raster';
     if (['laz', 'las'].includes(ext)) return 'lidar';
     if (['geojson', 'shp', 'kml', 'gpkg', 'csv'].includes(ext)) return 'vector';
     if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) return 'image';

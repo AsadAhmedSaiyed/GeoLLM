@@ -34,6 +34,31 @@ const COLORMAP_OPTIONS = [
   { id: 'grayscale', label: 'Grayscale (Raw)', gradient: 'from-black to-white' },
 ];
 
+const COLORMAP_STOPS: Record<string, [number, number, number][]> = {
+  viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
+  plasma: [[13, 8, 135], [126, 3, 168], [204, 71, 120], [248, 149, 64], [240, 249, 33]],
+  terrain: [[51, 51, 153], [0, 153, 102], [153, 204, 102], [255, 255, 153], [153, 102, 51], [255, 255, 255]],
+  greens: [[247, 252, 245], [199, 233, 192], [116, 196, 118], [35, 139, 69], [0, 68, 27]],
+  blues: [[247, 251, 255], [198, 219, 239], [107, 174, 214], [33, 113, 181], [8, 48, 107]],
+  inferno: [[0, 0, 4], [87, 16, 110], [187, 55, 84], [249, 142, 9], [252, 255, 164]],
+  spectral: [[158, 1, 66], [244, 109, 67], [255, 255, 191], [102, 194, 165], [94, 79, 162]],
+  grayscale: [[0, 0, 0], [128, 128, 128], [255, 255, 255]],
+};
+
+function sampleColormapHex(cmapId: string, value: number, vmin: number, vmax: number): string {
+  const stops = COLORMAP_STOPS[cmapId.toLowerCase()] || COLORMAP_STOPS.viridis;
+  const t = vmax > vmin ? Math.max(0, Math.min(1, (value - vmin) / (vmax - vmin))) : 0;
+  const scaled = t * (stops.length - 1);
+  const idx = Math.min(stops.length - 2, Math.floor(scaled));
+  const frac = scaled - idx;
+  const c0 = stops[idx];
+  const c1 = stops[idx + 1];
+  const r = Math.round(c0[0] + (c1[0] - c0[0]) * frac);
+  const g = Math.round(c0[1] + (c1[1] - c0[1]) * frac);
+  const b = Math.round(c0[2] + (c1[2] - c0[2]) * frac);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
 const RASTER_LEGEND_CACHE: Record<string, RasterStatsResponse> = {};
 
 export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
@@ -51,11 +76,13 @@ export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
   const [loading, setLoading] = useState<boolean>(!RASTER_LEGEND_CACHE[rasterPath]);
   const [showControls, setShowControls] = useState<boolean>(true);
   const [currentCmap, setCurrentCmap] = useState<string>(activeCmap);
+  const [customPaletteActive, setCustomPaletteActive] = useState<boolean>(false);
 
   // Sync external colormap changes
   useEffect(() => {
     if (activeCmap && activeCmap !== currentCmap) {
       setCurrentCmap(activeCmap);
+      setCustomPaletteActive(true);
     }
   }, [activeCmap]);
 
@@ -104,6 +131,7 @@ export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
 
   const handleCmapSelect = (cmapId: string) => {
     setCurrentCmap(cmapId);
+    setCustomPaletteActive(true);
     onColormapChange?.(cmapId);
   };
 
@@ -167,7 +195,11 @@ export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
                 )}
               </div>
               <div className="grid grid-cols-1 gap-1 max-h-24 overflow-y-auto pr-0.5">
-                {statsData.classes.map((cls) => (
+                {statsData.classes.map((cls) => {
+                  const swatchColor = customPaletteActive
+                    ? sampleColormapHex(currentCmap, cls.value, minVal, maxVal)
+                    : cls.color;
+                  return (
                   <div
                     key={cls.value}
                     className="flex items-center justify-between gap-1.5 px-1.5 py-0.5 rounded bg-muted/40 border border-border/40 text-[10px]"
@@ -175,7 +207,7 @@ export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
                     <div className="flex items-center gap-1.5 truncate">
                       <span
                         className="w-2.5 h-2.5 rounded-sm shrink-0 border border-black/30"
-                        style={{ backgroundColor: cls.color }}
+                        style={{ backgroundColor: swatchColor }}
                       />
                       <span className="truncate text-foreground font-medium">{cls.label}</span>
                     </div>
@@ -183,7 +215,8 @@ export const RasterLegendWidget: React.FC<RasterLegendWidgetProps> = ({
                       [{cls.value}]
                     </span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ) : (

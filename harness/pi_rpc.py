@@ -27,7 +27,7 @@ def _short(x, n=120):
 class PiRPC:
     DIALOGS = {"select", "confirm", "input", "editor"}
     HEARTBEAT_S = 20        # progress line interval while running
-    POST_END_IDLE_S = 90    # how long to wait for agent_settled after agent_end
+    POST_END_IDLE_S = 5     # how long to wait for agent_settled after agent_end
 
     def __init__(self, args, cwd, env, stderr_path):
         self._stderr = open(stderr_path, "w", encoding="utf-8")
@@ -203,7 +203,7 @@ class PiRPC:
     # ---------- main API ----------
 
     def run_prompt(self, message, idle_s, total_s, max_tool_calls,
-                   on_event=None, images=None):
+                   on_event=None, images=None, stop_on_tools=None):
         """Send a prompt; return stats only when Pi has settled. Raises on failure."""
         req = uuid.uuid4().hex
         deadline = time.time() + total_s
@@ -240,6 +240,18 @@ class PiRPC:
                     if (ev.get("data") or {}).get("disposition") == "handled":
                         return self._finish(stats)   # no run started, nothing to wait for
 
+                if (stop_on_tools
+                        and t == "tool_execution_end"
+                        and (ev.get("toolName") or ev.get("name")) in stop_on_tools
+                        and not ev.get("isError")
+                        and not stats.get("_stop_sent")):
+                    details = ((ev.get("result") or {}).get("details") or {})
+                    if details.get("ok", True):
+                        tool_name = ev.get("toolName") or ev.get("name")
+                        self._say(f"pausing after {tool_name} for user approval", stats)
+                        self.send({"type": "abort"})
+                        stats["_stop_sent"] = True
+
                 if (t == "tool_execution_start"
                         and stats["tool_calls"] >= max_tool_calls
                         and not stats["aborted"]):
@@ -264,7 +276,7 @@ class PiRPC:
         except queue.Empty:
             pass
 
-    def last_assistant_text(self, timeout_s=30):
+    def last_assistant_text(self, timeout_s=8):
         try:
             req = uuid.uuid4().hex
             self.send({"id": req, "type": "get_last_assistant_text"})

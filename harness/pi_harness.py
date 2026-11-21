@@ -307,7 +307,11 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                     errors.append("Download cancelled by user")
                     break
                 band_index += 1
-                custom_name = f"{reg_slug}{col}_{dt_str}_{asset_key}.tif"
+                import re as _re_asset
+                safe_asset_slug = _re_asset.sub(r"[^a-zA-Z0-9_.-]+", "_", str(asset_key)).strip("_") or "asset"
+                if len(safe_asset_slug) > 48:
+                    safe_asset_slug = safe_asset_slug[-48:]
+                custom_name = f"{reg_slug}{col}_{dt_str}_{safe_asset_slug}.tif"
                 step({
                     "type": "status",
                     "status": "running",
@@ -372,9 +376,10 @@ def _stage_approved_stac_scenes(stac_data: dict, step, run_dir: Optional[Path] =
                 dl_dur = round(time.time() - t_dl0, 2)
                 if res.get("ok") and res.get("path"):
                     staged_files.append(str(res["path"]))
+                    actual_fname = res.get("filename") or Path(res["path"]).name
                     step({
                         "type": "stac_download_done",
-                        "filename": custom_name,
+                        "filename": actual_fname,
                         "collection": col,
                         "asset_key": asset_key,
                         "date": dt_str,
@@ -827,15 +832,85 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                             cfg.total_timeout_s,
                             cfg.max_tool_calls,
                             on_event,
+                            stop_on_tools={"propose_plan"},
                         )
                         answer = pi.last_assistant_text()
+                    else:
+                        err_msg = "; ".join(stage_errors) if stage_errors else "No satellite data could be retrieved."
+                        stop_msg = f"Can't find or download data ({err_msg}). Stopped the task."
+                        step({"type": "status", "status": "failed", "step": stop_msg})
+                        if task_state:
+                            task_state.error = stop_msg
+                            task_state.status = "failed"
+                        return _result("failed", stop_msg, run_dir, warnings=[stop_msg])
             else:
-                stats = pi.run_prompt(prompt, cfg.idle_timeout_s, cfg.total_timeout_s,
-                                      cfg.max_tool_calls, on_event)
+                # Give Phase 0 STAC discovery extra tool headroom so search_stac queries
+                # do not exhaust the budget right before propose_stac_scenes / propose_plan.
+                phase0_budget = max(cfg.max_tool_calls, 12) if not files else cfg.max_tool_calls
+                stats = pi.run_prompt(
+                    prompt,
+                    cfg.idle_timeout_s,
+                    cfg.total_timeout_s,
+                    phase0_budget,
+                    on_event,
+                    stop_on_tools=None if is_plan_approved else {"propose_plan", "propose_stac_scenes"},
+                )
                 answer = pi.last_assistant_text()
 
-                # ---- Phase 0: STAC Preview & Approval Gate ----
+                # Retry Phase 0 / Phase 1 up to cfg.max_tool_calls if the agent ended its turn
+                # (or hit the tool-call cap during search_stac) without proposing scenes or a plan.
                 stac_preview_file = run_dir / "stac_preview.json"
+                plan_file_chk = run_dir / "plan.json"
+                if not is_plan_approved:
+                    plan_retries = 0
+                    max_plan_retries = max(1, cfg.max_tool_calls)
+                    while (
+                        plan_retries < max_plan_retries
+                        and not stac_preview_file.exists()
+                        and not plan_file_chk.exists()
+                    ):
+                        if task_state and task_state.error == "Cancelled by user":
+                            break
+                        if (run_dir / "cancelled.flag").exists():
+                            break
+                        plan_retries += 1
+                        if not files:
+                            nudge = (
+                                f"Retry {plan_retries}/{max_plan_retries}: You stopped before calling "
+                                "`propose_stac_scenes` or `propose_plan`. Using the best STAC scenes you "
+                                "already found (or one targeted `search_stac` call if needed), immediately "
+                                "call `propose_stac_scenes(...)` now so the user can approve the imagery."
+                            )
+                        else:
+                            nudge = (
+                                f"Retry {plan_retries}/{max_plan_retries}: You stopped before calling "
+                                "`propose_plan`. Immediately call `propose_plan(plan=..., expected_outputs=[...])` now."
+                            )
+                        step({
+                            "type": "status",
+                            "status": "running",
+                            "step": f"Retrying proposal ({plan_retries}/{max_plan_retries})...",
+                        })
+                        pi.drain()
+                        stats = pi.run_prompt(
+                            nudge,
+                            cfg.idle_timeout_s,
+                            cfg.total_timeout_s,
+                            cfg.max_tool_calls,
+                            on_event,
+                            stop_on_tools={"propose_plan", "propose_stac_scenes"},
+                        )
+                        answer = pi.last_assistant_text()
+
+                    if not files and not stac_preview_file.exists() and not plan_file_chk.exists():
+                        stop_msg = "Can't find data for the requested region/time. Stopped the task."
+                        step({"type": "status", "status": "failed", "step": stop_msg})
+                        if task_state:
+                            task_state.error = stop_msg
+                            task_state.status = "failed"
+                        return _result("failed", stop_msg, run_dir, warnings=[stop_msg])
+
+                # ---- Phase 0: STAC Preview & Approval Gate ----
                 stac_revisions = 0
                 while stac_revisions <= 5 and stac_preview_file.exists():
                     try:
@@ -918,18 +993,13 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                     staged_files, stage_errors = _stage_approved_stac_scenes(stac_data, step, run_dir=run_dir)
 
                     if not staged_files or stage_errors:
-                        stac_revisions += 1
                         err_msg = "; ".join(stage_errors) if stage_errors else "No files were staged."
-                        pi.drain()
-                        stats = pi.run_prompt(
-                            f"Staging the selected STAC scenes encountered an issue:\n{err_msg}\n\n"
-                            "Please adjust the bounding box or select alternative scenes/collections with `search_stac` "
-                            "and call `propose_stac_scenes` again.",
-                            cfg.idle_timeout_s, cfg.total_timeout_s,
-                            cfg.max_tool_calls, on_event,
-                        )
-                        answer = pi.last_assistant_text()
-                        continue
+                        stop_msg = f"Can't find or download data ({err_msg}). Stopped the task."
+                        step({"type": "status", "status": "failed", "step": stop_msg})
+                        if task_state:
+                            task_state.error = stop_msg
+                            task_state.status = "failed"
+                        return _result("failed", stop_msg, run_dir, warnings=[stop_msg])
 
                     files = list(staged_files)
                     if task_state:
@@ -974,8 +1044,30 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                         "Now proceed to Phase 1: formulate your scientific methodology and call `propose_plan(plan=..., expected_outputs=[...])`.",
                         cfg.idle_timeout_s, cfg.total_timeout_s,
                         cfg.max_tool_calls, on_event,
+                        stop_on_tools={"propose_plan"},
                     )
                     answer = pi.last_assistant_text()
+                    # Retry Phase 1 plan proposal up to cfg.max_tool_calls if agent didn't emit plan.json
+                    plan_retries_p1 = 0
+                    max_p1_retries = max(1, cfg.max_tool_calls)
+                    while plan_retries_p1 < max_p1_retries and not (run_dir / "plan.json").exists():
+                        if (task_state and task_state.error == "Cancelled by user") or (run_dir / "cancelled.flag").exists():
+                            break
+                        plan_retries_p1 += 1
+                        step({
+                            "type": "status",
+                            "status": "running",
+                            "step": f"Retrying plan proposal ({plan_retries_p1}/{max_p1_retries})...",
+                        })
+                        pi.drain()
+                        stats = pi.run_prompt(
+                            f"Retry {plan_retries_p1}/{max_p1_retries}: You have not called `propose_plan` yet. "
+                            "Call `propose_plan(plan=..., expected_outputs=[...])` now.",
+                            cfg.idle_timeout_s, cfg.total_timeout_s,
+                            cfg.max_tool_calls, on_event,
+                            stop_on_tools={"propose_plan"},
+                        )
+                        answer = pi.last_assistant_text()
                     break
 
             # ---- Plan Approval Gate ----
@@ -1047,7 +1139,8 @@ def solve(question, files, overrides=None, max_turns=None, explain=True, on_step
                             f"The user reviewed your plan and requested changes:\n{fb}\n\n"
                             "Revise your approach and call `propose_plan` again.",
                             cfg.idle_timeout_s, cfg.total_timeout_s,
-                            cfg.max_tool_calls, on_event
+                            cfg.max_tool_calls, on_event,
+                            stop_on_tools={"propose_plan"},
                         )
                         answer = pi.last_assistant_text()
                         continue

@@ -213,8 +213,9 @@ export default function (pi: ExtensionAPI) {
     description:
       "Query live Context7 documentation for installed geospatial and scientific libraries. " +
       "Only packages installed in the Docker execution environment are allowed: " +
-      "rasterio, geopandas, shapely, pyproj, scipy, numpy, matplotlib, pandas, pillow, affine. " +
-      "Uninstalled packages (such as scikit-learn, torch, cv2) will be blocked. " +
+      "rasterio, geopandas, shapely, pyproj, scipy, numpy, matplotlib, pandas, pillow, affine, " +
+      "scikit-learn, statsmodels, ruptures, laspy, xarray, rioxarray, dask, numba, netCDF4, h5netcdf, h5py, spectral. " +
+      "Uninstalled packages (such as torch, cv2) will be blocked. " +
       "Use this to check method signatures, parameters, or functions before writing complex code.",
     parameters: Type.Object({
       package: Type.String({

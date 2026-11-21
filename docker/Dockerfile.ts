@@ -17,7 +17,11 @@ RUN pip install --no-cache-dir \
     xarray \
     rioxarray \
     dask[array] \
-    numba
+    numba \
+    netCDF4 \
+    h5netcdf \
+    h5py \
+    spectral
 COPY lib/ /opt/geollm/
 ENV PYTHONPATH=/opt/geollm
 RUN useradd -m runner

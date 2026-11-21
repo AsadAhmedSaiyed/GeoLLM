@@ -215,25 +215,25 @@ export function App() {
 
   // Handlers for Workspaces
   const handleCreateWorkspace = async (name: string) => {
-    const usedIds = workspaces.map((w) => w.containerId);
-    let freeId: string | undefined = (['task_1', 'task_2', 'task_3'] as const).find(
-      (cid) => !usedIds.includes(cid)
-    );
-
-    if (!freeId) {
-      try {
-        const created = await api.createTask();
-        freeId = created.task_id;
-        if (created.capacity) setContainerCapacity(created.capacity);
-      } catch (err) {
-        toast.warning('Cannot allocate new container', {
-          description: err instanceof Error ? err.message : 'Maximum dynamic limit reached.',
-        });
-        return;
-      }
+    // Always ask the backend to allocate the container slot and create runs/task_N/
+    let freeId: string | undefined;
+    try {
+      const created = await api.createTask();
+      freeId = created.task_id;
+      if (created.capacity) setContainerCapacity(created.capacity);
+    } catch (err) {
+      toast.warning('Cannot allocate new container', {
+        description: err instanceof Error ? err.message : 'Maximum dynamic limit reached.',
+      });
+      return;
     }
 
     if (!freeId) return;
+
+    setTasks((prev) => ({
+      ...prev,
+      [freeId!]: { ...DEFAULT_TASK_STATE },
+    }));
 
     const newWs: Workspace = {
       id: `ws_${Date.now()}`,
@@ -264,11 +264,18 @@ export function App() {
         delete next[ws.containerId];
         return next;
       });
-      const isDynamicExtra = !['task_1', 'task_2', 'task_3'].includes(ws.containerId);
+      const canDeleteBackendSlot = ws.containerId !== 'task_1';
       await Promise.allSettled([
         api.clearWorkspaceConversation(ws.containerId),
-        isDynamicExtra ? api.deleteTask(ws.containerId) : api.resetTask(ws.containerId),
+        canDeleteBackendSlot ? api.deleteTask(ws.containerId) : api.resetTask(ws.containerId),
       ]);
+      if (canDeleteBackendSlot) {
+        setTasks((prev) => {
+          const next = { ...prev };
+          delete next[ws.containerId];
+          return next;
+        });
+      }
     } catch {
       // ignore
     }

@@ -46,6 +46,10 @@ def align_to(ref, other_path, out_path=None, resampling="bilinear"):
             for i, d in enumerate(src.descriptions, start=1):
                 if d:
                     dst.set_band_description(i, d)
+            for i in range(1, src.count + 1):
+                b_tags = src.tags(i)
+                if b_tags:
+                    dst.update_tags(i, **b_tags)
             dst.update_tags(**src.tags())
     return str(out)
 

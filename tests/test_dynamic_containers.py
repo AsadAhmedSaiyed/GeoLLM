@@ -15,13 +15,14 @@ def test_resource_sizer_tiers(tmp_path):
     assert prof_small.memory == "4g"
 
     prof_heavy_q = estimate_job_resources("3D terrain flow accumulation and watershed", [str(small_file)])
-    assert prof_heavy_q.tier in ("medium", "large")
-    assert prof_heavy_q.memory_gb >= 8.0
+    assert prof_heavy_q.tier == "small"
+    assert prof_heavy_q.memory_gb == 4.0
 
     lidar_file = tmp_path / "scan.laz"
     lidar_file.write_bytes(b"0" * 2048)
     prof_lidar = estimate_job_resources("Canopy height model", [str(lidar_file)])
-    assert prof_lidar.tier == "large"
+    assert prof_lidar.tier == "small"
+    assert prof_lidar.memory_gb == 4.0
 
     nxt = next_memory_tier("4g")
     if get_host_budget_gb() >= 8.0:
@@ -45,6 +46,7 @@ def test_task_manager_dynamic_slots(tmp_path):
 
     assert tm.delete_task("task_4") is True
     assert "task_4" not in tm.tasks
+    assert not (tmp_path / "task_4").exists()
     assert tm.delete_task("task_1") is False
 
 
@@ -66,3 +68,6 @@ async def test_api_dynamic_tasks_lifecycle():
         r_del = await client.delete(f"/api/tasks/{new_id}")
         assert r_del.status_code == 200
         assert r_del.json()["deleted"] == new_id
+
+        r_reset = await client.post("/api/tasks/task_1/reset")
+        assert r_reset.status_code == 200

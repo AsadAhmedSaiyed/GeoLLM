@@ -54,11 +54,14 @@ IMPORTANT SCIENTIFIC GUIDANCE
   Speckle and other SAR-specific characteristics may require preprocessing.
 
 - Hyperspectral:
-  Use wavelengths from metadata rather than assuming fixed band numbers.
-  Useful operations can include reading specific wavelengths, spectral ratios,
-  normalized differences, spectral signatures, band selection, dimensional
-  reduction, classification, anomaly detection, or custom spectral analysis.
-  These are examples only. Design other spectral computations when required.
+  Use physical wavelengths (nm) from metadata rather than assuming fixed band numbers.
+  Exclude atmospheric water-vapor absorption windows (~1340-1460 nm and ~1790-1960 nm)
+  and sensor bad-band lists (bbl) before full-spectrum statistics, PCA, matching, or unmixing.
+  Useful standard methods include selective narrow-band reading, continuum removal
+  (Clark & Roush upper convex hull), absorption feature depth, linear spectral unmixing
+  (FCLS/NNLS), spectral angle mapping (SAM), dimensional reduction, classification,
+  or custom spectroscopic analysis. Use `geollm_lib.hyperspectral` helpers only when
+  appropriate; never force a fixed pipeline. Stream spatial blocks for large 3D cubes.
 
 - Temporal analysis:
   Change analysis normally requires appropriate observations from multiple
@@ -149,9 +152,9 @@ IMPORTANT SCIENTIFIC GUIDANCE
 - Final Answer UI (OpenUI Lang):
   * In your FINAL summary response (after all code executions and deliverables are complete — never inside `propose_plan`), include a fenced ```openui code block containing a valid `openui-lang` program visualizing your computed findings (never invent numbers; every value must come from your computed outputs).
   * Positional OpenUI Lang rules:
-    - First line: `root = Card([hdr, kpis, chart, tbl])` (every defined variable must be referenced by `root`).
+    - Put `root = Card([hdr, kpis, chart, tbl])` on the FIRST line; every defined variable must be referenced by `root`.
     - Positional args only (NO `key: value` colons):
-      `CardHeader(title, subtitle?)`, `TextContent(text)`, `Callout(variant, title, description)`, `OverviewCardBlock([OverviewCardItem(id, IconText(Icon(name, cat), "neutral", "m", title, sub, false, "vertical"), MetricIndicatorInline(val, sub))], "grid", true)`, `BarChart(labels, [Series(cat, values)], "grouped", xLabel, yLabel)`, `LineChart(labels, [Series(cat, values)], "linear", xLabel, yLabel)`, `PieChart(labels, values, "donut")`, `Table([Col(label, dataArray, "string"|"number")])`.
+      `CardHeader(title, subtitle?)`, `TextContent(text)`, `Callout(variant, title, description)`, `OverviewCardBlock([OverviewCardItem(id, IconText(Icon(name, cat), "neutral"|"info"|"success"|"warning"|"danger", "m", title, sub, false, "vertical"), MetricIndicatorInline(valStr, subStr))], "grid", true)` (note: `valStr` in `MetricIndicatorInline` MUST be a quoted string like `"-31%"`, and `iconVariant` is `"danger"` not `"error"`), `BarChart(labels, [Series(cat, values)], "grouped", xLabel, yLabel)`, `LineChart(labels, [Series(cat, values)], "linear", xLabel, yLabel)`, `PieChart(labels, values, "donut")`, `Table([Col(label, dataArray, "string"|"number")])`.
 """
 
 

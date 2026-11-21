@@ -307,6 +307,10 @@ def chat_vision_multi(messages, images, model=None, show=False):
         last["content"] = content
     prepared[-1] = last
 
+    if os.environ.get("GEOLLM_VISION_PROVIDER", "").strip().lower() in ("google", "gemini"):
+        from harness import gemini_client
+        return gemini_client.chat_completion(prepared, model=model or VISION_MODEL)
+
     return _openrouter(prepared, show, model=model or VISION_MODEL, stream=False)
 
 
@@ -320,10 +324,14 @@ def chat(messages, fmt=None, show=True):
 
 
 def vision_available():
-    return bool(VISION_MODEL) and (
+    v_model = os.environ.get("GEOLLM_VISION_MODEL", VISION_MODEL)
+    v_prov = os.environ.get("GEOLLM_VISION_PROVIDER", "").strip().lower()
+    if v_prov in ("google", "gemini"):
+        return bool(v_model) and bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    return bool(v_model) and (
         PROVIDER == "openrouter"
         or bool(os.environ.get("OPENROUTER_API_KEY"))
-        or "/" in VISION_MODEL
+        or "/" in v_model
         or PROVIDER == "ollama"
     )
 
@@ -333,6 +341,13 @@ def chat_vision(prompt, image_paths):
     if not vision_available():
         raise RuntimeError("No vision model configured (set GEOLLM_VISION_MODEL).")
     b64 = [base64.b64encode(open(p, "rb").read()).decode() for p in image_paths]
+
+    if os.environ.get("GEOLLM_VISION_PROVIDER", "").strip().lower() in ("google", "gemini"):
+        from harness import gemini_client
+        content = [{"type": "text", "text": prompt}] + [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in b64
+        ]
+        return gemini_client.chat_completion([{"role": "user", "content": content}], model=VISION_MODEL)
 
     # Route to OpenRouter if an API key is present or model contains '/' (e.g. google/gemini-2.5-flash)
     use_openrouter = (

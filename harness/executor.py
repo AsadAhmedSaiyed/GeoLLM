@@ -151,6 +151,33 @@ def _open_perms(path: str | Path) -> None:
     os.chmod(path, 0o755)
 
 
+def _reset_out_dir(out_dir: Path, seed_dir: Path) -> None:
+    """Empty `out_dir` and copy in the contents of `seed_dir` (if any)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for child in out_dir.iterdir():
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink()
+        except OSError:
+            pass
+    if seed_dir.is_dir():
+        for item in seed_dir.rglob("*"):
+            if item.is_file():
+                target = out_dir / item.relative_to(seed_dir)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+                try:
+                    os.chmod(target, 0o666)
+                except OSError:
+                    pass
+    try:
+        os.chmod(out_dir, 0o777)
+    except OSError:
+        pass
+
+
 def _size_mb(path: Path) -> float:
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
@@ -453,6 +480,10 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
 
     with entry.lock:
         entry.last_used = time.time()
+        # Warm containers are reused across attempts. Wipe /workspace/output and re-seed it only
+        # from the host-side outputs of this run, so files from failed or quarantined attempts
+        # never leak into later attempts.
+        _reset_out_dir(entry.out_dir, run_dir_path / "outputs")
         (entry.code_dir / "script.py").write_text(code, encoding="utf-8")
         out_log = "/tmp/run_stdout.txt"
         err_log = "/tmp/run_stderr.txt"
@@ -518,15 +549,21 @@ def run_code(code, input_files, run_dir, timeout=120, memory="2g", cpus=2.0, env
 
         # Copy outputs back to run_dir/outputs (preserving warm container's out_dir for next step!)
         dest_out = run_dir_path / "outputs"
-        oversize = _size_mb(entry.out_dir) > OUTPUT_LIMIT_MB
-        if dest_out.exists():
-            shutil.rmtree(dest_out)
         artifacts = []
-        if oversize:
-            dest_out.mkdir()
+        oversize = False
+        if entry.out_dir.is_dir():
+            oversize = _size_mb(entry.out_dir) > OUTPUT_LIMIT_MB
+            if dest_out.exists():
+                shutil.rmtree(dest_out)
+            if oversize:
+                dest_out.mkdir()
+            else:
+                shutil.copytree(entry.out_dir, dest_out)
+                artifacts = sorted(p.relative_to(dest_out).as_posix() for p in dest_out.rglob("*") if p.is_file())
         else:
-            shutil.copytree(entry.out_dir, dest_out)
-            artifacts = sorted(p.relative_to(dest_out).as_posix() for p in dest_out.rglob("*") if p.is_file())
+            # Container work dir was destroyed (e.g. timeout or crash): keep whatever outputs
+            # the host already has and report the failure cleanly instead of crashing.
+            dest_out.mkdir(parents=True, exist_ok=True)
 
     (run_dir_path / "code.py").write_text(code, encoding="utf-8")
     (run_dir_path / "stdout.txt").write_text(stdout, encoding="utf-8")

@@ -264,11 +264,7 @@ export const SupervisorDrawer: React.FC<SupervisorDrawerProps> = ({
             ) : (
               dynamicFeedItems.slice(-60).map((item, idx) => {
                 const taskTag = item.taskId
-                  ? item.taskId === 'task_1'
-                    ? '#1'
-                    : item.taskId === 'task_2'
-                    ? '#2'
-                    : '#3'
+                  ? `#${item.taskId.replace(/^task_/, '')}`
                   : 'SYS';
                 const isErr =
                   item.ok === false ||

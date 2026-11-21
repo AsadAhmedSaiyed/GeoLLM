@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends gdal-bin \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir numpy scipy pandas rasterio geopandas shapely pyogrio matplotlib laspy[lazrs] xarray rioxarray dask[array] numba
+RUN pip install --no-cache-dir numpy scipy pandas rasterio geopandas shapely pyogrio matplotlib laspy[lazrs] xarray rioxarray dask[array] numba netCDF4 h5netcdf h5py spectral
 COPY lib/ /opt/geollm/
 ENV PYTHONPATH=/opt/geollm
 RUN useradd -m runner

@@ -55,7 +55,7 @@ def get_host_ram_gb() -> float:
 
 
 def get_host_budget_gb() -> float:
-    """Safe total RAM budget across all concurrent containers (~75% of host RAM)."""
+    """Safe total RAM budget across all concurrent containers (~75% of host RAM, min 12 GB)."""
     env_override = os.environ.get("GEOLLM_TOTAL_RAM_BUDGET_GB")
     if env_override:
         try:
@@ -63,7 +63,7 @@ def get_host_budget_gb() -> float:
         except ValueError:
             pass
     host_gb = get_host_ram_gb()
-    return max(8.0, round(host_gb * 0.75, 1))
+    return float(max(12, int(round(host_gb * 0.75))))
 
 
 def parse_memory_gb(mem: str) -> float:
@@ -151,23 +151,22 @@ def estimate_job_resources(
     q_low = (question or "").lower()
     is_heavy_query = any(kw in q_low for kw in _HEAVY_KEYWORDS)
 
-    # Tier classification
-    if has_lidar or disk_mb > 500.0 or uncomp_mb > 1500.0:
+    # Tier classification based on real data footprint so multiple light/medium tabs run concurrently
+    if disk_mb > 400.0 or uncomp_mb > 1200.0:
         tier = "large"
-        target_gb = min(16.0, budget_gb)
+        target_gb = min(16.0, max(8.0, budget_gb * 0.67))
         target_cpus = min(max(4.0, default_cpus), max(2.0, host_cpus - 1.0), 8.0)
-        reason = f"large workload ({disk_mb:.0f} MB on disk, ~{uncomp_mb:.0f} MB unpacked" + (", LiDAR)" if has_lidar else ")")
-    elif disk_mb < 100.0 and uncomp_mb < 250.0 and n_files <= 4 and not is_heavy_query:
+        reason = f"large data ({disk_mb:.0f} MB on disk, ~{uncomp_mb:.0f} MB unpacked" + (", LiDAR)" if has_lidar else ")")
+    elif disk_mb < 100.0 and uncomp_mb < 350.0:
         tier = "small"
         target_gb = min(4.0, budget_gb)
         target_cpus = min(2.0, host_cpus)
-        reason = f"lightweight workload ({n_files} file(s), {disk_mb:.1f} MB)"
+        reason = f"lightweight data ({n_files} file(s), {disk_mb:.1f} MB)"
     else:
         tier = "medium"
-        base_gb = parse_memory_gb(default_memory)
-        target_gb = min(max(8.0, base_gb), budget_gb)
-        target_cpus = min(max(4.0, default_cpus), host_cpus)
-        reason = f"standard workload ({n_files} file(s), {disk_mb:.1f} MB" + (", multi-step/heavy op)" if is_heavy_query else ")")
+        target_gb = min(6.0, budget_gb)
+        target_cpus = min(max(3.0, default_cpus), host_cpus)
+        reason = f"standard data ({n_files} file(s), {disk_mb:.1f} MB" + (", multi-step/heavy op)" if is_heavy_query else ")")
 
     mem_int = max(2, int(round(target_gb)))
     return ResourceProfile(

@@ -36,16 +36,35 @@ def sample_raster_at_points(
     import rasterio
 
     pts = list(points_xy)
-    records = {f"band_{i+1}": [] for i in range(len(raster_paths))}
-    records["x"] = [p[0] for p in pts]
-    records["y"] = [p[1] for p in pts]
+    records: dict[str, list[float]] = {
+        "x": [float(p[0]) for p in pts],
+        "y": [float(p[1]) for p in pts],
+    }
 
+    col_counter = 1
     for p_idx, path in enumerate(raster_paths):
-        col_name = f"band_{p_idx+1}"
         with rasterio.open(path) as src:
-            sample_gen = src.sample(pts, indexes=band_indices or 1)
-            vals = [float(v[0]) if len(v) > 0 else np.nan for v in sample_gen]
-            records[col_name] = vals
+            if band_indices is not None:
+                idxs = list(band_indices)
+            elif len(raster_paths) == 1 and src.count > 1:
+                idxs = list(range(1, src.count + 1))
+            else:
+                idxs = [1]
+            sample_rows = list(src.sample(pts, indexes=idxs))
+            for b_pos, b_num in enumerate(idxs):
+                if len(raster_paths) == 1:
+                    col_name = f"band_{b_num}"
+                elif len(idxs) == 1:
+                    col_name = f"band_{p_idx + 1}"
+                else:
+                    col_name = f"raster_{p_idx + 1}_band_{b_num}"
+                if col_name in records:
+                    col_name = f"band_{col_counter}"
+                col_counter += 1
+                records[col_name] = [
+                    float(row[b_pos]) if len(row) > b_pos and np.isfinite(row[b_pos]) else np.nan
+                    for row in sample_rows
+                ]
 
     return pd.DataFrame(records)
 
@@ -61,6 +80,8 @@ def sample_raster_at_polygons(
     import geopandas as gpd
     import rasterio
     import rasterio.mask
+    from rasterio.enums import Resampling
+    from rasterio.vrt import WarpedVRT
 
     gdf = gpd.read_file(vector_path)
     if label_column not in gdf.columns:
@@ -68,35 +89,77 @@ def sample_raster_at_polygons(
 
     X_list = []
     y_list = []
+    feature_names: list[str] = []
 
     with rasterio.open(raster_paths[0]) as ref_src:
-        if gdf.crs != ref_src.crs and gdf.crs is not None:
-            gdf = gdf.to_crs(ref_src.crs)
+        ref_crs = ref_src.crs
+        ref_transform = ref_src.transform
+        ref_width = ref_src.width
+        ref_height = ref_src.height
+        if gdf.crs != ref_crs and gdf.crs is not None and ref_crs is not None:
+            gdf = gdf.to_crs(ref_crs)
 
     for _, row in gdf.iterrows():
         geom = [row.geometry]
         label = row[label_column]
-        pixel_vals_per_band = []
+        band_2d_slices = []
+        valid_masks = []
+        cur_names = []
 
-        for p in raster_paths:
-            with rasterio.open(p) as src:
-                out_image, _ = rasterio.mask.mask(src, geom, crop=True, filled=False)
-                # out_image is (bands, H, W)
-                arr = out_image[0]
-                valid = ~arr.mask if hasattr(arr, "mask") else np.isfinite(arr)
-                pixel_vals_per_band.append(arr[valid].compressed() if hasattr(arr, "compressed") else arr[valid])
+        for p_idx, p in enumerate(raster_paths):
+            with rasterio.open(p) as raw_src:
+                need_warp = (
+                    raw_src.crs != ref_crs
+                    or raw_src.width != ref_width
+                    or raw_src.height != ref_height
+                    or raw_src.transform != ref_transform
+                )
+                ctx = (
+                    WarpedVRT(
+                        raw_src,
+                        crs=ref_crs,
+                        transform=ref_transform,
+                        width=ref_width,
+                        height=ref_height,
+                        resampling=Resampling.bilinear,
+                    )
+                    if need_warp
+                    else raw_src
+                )
+                with ctx as src:
+                    if band_indices is not None:
+                        idxs = list(band_indices)
+                    elif len(raster_paths) == 1 and src.count > 1:
+                        idxs = list(range(1, src.count + 1))
+                    else:
+                        idxs = [1]
+                    out_image, _ = rasterio.mask.mask(src, geom, indexes=idxs, crop=True, filled=False)
+                    for b_pos, b_num in enumerate(idxs):
+                        arr = out_image[b_pos]
+                        data_2d = np.asarray(arr.data if hasattr(arr, "data") else arr, dtype=np.float32)
+                        v_mask = (~arr.mask if hasattr(arr, "mask") else np.ones_like(data_2d, dtype=bool)) & np.isfinite(data_2d)
+                        if src.nodata is not None and not np.isnan(src.nodata):
+                            v_mask &= data_2d != src.nodata
+                        band_2d_slices.append(data_2d)
+                        valid_masks.append(v_mask)
+                        cur_names.append(f"band_{b_num}" if len(raster_paths) == 1 else f"band_{p_idx + 1}")
 
-        if len(pixel_vals_per_band) > 0 and len(pixel_vals_per_band[0]) > 0:
-            stacked_poly_pixels = np.column_stack(pixel_vals_per_band)
-            X_list.append(stacked_poly_pixels)
-            y_list.extend([label] * len(stacked_poly_pixels))
+        if not feature_names and cur_names:
+            feature_names = cur_names
 
+        if band_2d_slices:
+            joint_valid = np.logical_and.reduce(valid_masks)
+            if np.any(joint_valid):
+                stacked_poly_pixels = np.column_stack([sl[joint_valid] for sl in band_2d_slices])
+                X_list.append(stacked_poly_pixels)
+                y_list.extend([label] * stacked_poly_pixels.shape[0])
+
+    n_cols = len(feature_names) or len(raster_paths)
     if not X_list:
-        return np.empty((0, len(raster_paths))), np.array([]), [Path(p).name for p in raster_paths]
+        return np.empty((0, n_cols)), np.array([]), feature_names or [Path(p).name for p in raster_paths]
 
     X = np.vstack(X_list)
     y = np.array(y_list)
-    feature_names = [f"band_{i+1}" for i in range(len(raster_paths))]
     return X, y, feature_names
 
 

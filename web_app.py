@@ -3,6 +3,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import shutil
 import sys
 import time
 
@@ -135,7 +136,11 @@ async def index():
 
 @app.get("/api/files")
 async def list_data_files():
-    valid_exts = {".tif", ".tiff", ".geojson", ".gpkg", ".json", ".nc", ".h5", ".laz", ".las", ".xyz", ".png", ".jpg", ".jpeg", ".csv", ".zip"}
+    valid_exts = {
+        ".tif", ".tiff", ".geojson", ".gpkg", ".json",
+        ".nc", ".h5", ".he5", ".hdr", ".img", ".bsq", ".bil", ".bip",
+        ".laz", ".las", ".xyz", ".png", ".jpg", ".jpeg", ".csv", ".zip",
+    }
     files = []
     for f in sorted(DATA_DIR.glob("*")):
         if f.suffix.lower() not in valid_exts or not f.is_file():
@@ -403,23 +408,38 @@ async def handle_workspace_message(task_id: str, payload: WorkspaceMessagePayloa
             if role in ROLES and num.isdigit():
                 overrides[role] = int(num)
 
-    # Dispatch to sub-agent
-    started_tid = task_manager.submit_task(user_text, file_args, task_id=task_id, overrides=overrides)
+    # Dispatch to sub-agent (preserve prior user prompt context when the current message
+    # is a short follow-up confirmation such as "use stac search for this" or "yes proceed").
+    effective_question = user_text
+    if len(user_text) <= 90 or any(
+        kw in user_text.lower()
+        for kw in ("use stac", "search stac", "proceed", "go ahead", "run it", "yes", "do that")
+    ):
+        prior_user_msgs = [
+            str(h.get("content", "")).strip()
+            for h in history[:-1]
+            if h.get("role") == "user" and len(str(h.get("content", "")).strip()) > 25
+        ]
+        if prior_user_msgs and prior_user_msgs[-1].lower() not in user_text.lower():
+            effective_question = f"{prior_user_msgs[-1]}\n\nFollow-up instruction: {user_text}"
+
+    started_tid = task_manager.submit_task(effective_question, file_args, task_id=task_id, overrides=overrides)
     if started_tid is None:
         return JSONResponse({"error": "Failed to allocate container slot."}, status_code=500)
 
     delegated_turn = append_conversation_turn(
         task_id,
         "assistant",
-        f"Delegated complex geospatial task to specialized container sub-agent: *{user_text}*",
+        f"Delegated complex geospatial task to specialized container sub-agent: *{effective_question}*",
         runs_dir=RUNS_DIR,
-        extra={"type": "task_delegated", "question": user_text},
+        extra={"type": "task_delegated", "question": effective_question},
     )
     return JSONResponse({
         "type": "task_delegated",
         "task_id": started_tid,
         "status": ts.status,
         "step": ts.step,
+        "current_step": ts.step,
         "seq": delegated_turn.get("seq"),
         "timestamp": delegated_turn.get("timestamp"),
     })
@@ -556,10 +576,18 @@ async def reset_task(task_id: str):
             ts.stac_preview = None
             ts.events = []
             ts.event_log = []
+            ts.artifacts = []
             ts.started = None
             ts.ended = None
             ts.state = {}
             ts.result = None
+
+        # Release warm container so its cached /workspace/output is discarded
+        try:
+            from harness.executor import release_container
+            release_container(task_id)
+        except Exception:
+            pass
 
         # Clean workspace on disk and delete checkpoint (preserve conversation.jsonl unless explicitly cleared/deleted)
         from harness.workspace import clean_workspace
@@ -567,6 +595,9 @@ async def reset_task(task_id: str):
         clean_workspace(task_id, RUNS_DIR)
         delete_checkpoint(task_id, RUNS_DIR)
         ws_path = RUNS_DIR / task_id
+        sandbox_tmp = ws_path / ".sandbox_tmp"
+        if sandbox_tmp.exists():
+            shutil.rmtree(sandbox_tmp, ignore_errors=True)
         events_file = ws_path / "events.jsonl"
         if events_file.exists():
             try:
@@ -1176,8 +1207,14 @@ def geotiff_to_png_bytes(
         else:
             eff_band = min(max(1, band_idx), src.count)
             is_int = np.issubdtype(src.dtypes[eff_band - 1], np.integer)
-            b = src.read(eff_band, out_shape=out_shape, resampling=Resampling.nearest if is_int else Resampling.bilinear)
-            mask = np.ones(out_shape, dtype=bool)
+            # Read nearest first when no explicit continuous cmap is requested so discrete
+            # integer-valued float masks (e.g. 0.0 / 1.0) are not blurred by bilinear interpolation.
+            b = src.read(
+                eff_band,
+                out_shape=out_shape,
+                resampling=Resampling.nearest if (is_int or not cmap_name) else Resampling.bilinear,
+            )
+            mask = np.isfinite(b)
             if nodata is not None:
                 mask &= (b != nodata)
 
@@ -1200,10 +1237,14 @@ def geotiff_to_png_bytes(
                 img = Image.fromarray(rgba, "RGBA")
             else:
                 valid_b = b[mask] if np.any(mask) else np.array([])
-                unique_vals = np.unique(valid_b) if len(valid_b) > 0 else np.array([])
+                is_integer_values = is_int or (
+                    len(valid_b) > 0 and bool(np.all(np.floor(valid_b) == valid_b))
+                )
+                unique_vals = np.unique(valid_b) if (is_integer_values and len(valid_b) > 0) else np.array([])
 
-                # If discrete integer classification and no explicit continuous cmap requested
-                if is_int and len(unique_vals) <= 25 and not cmap_name:
+                # If discrete integer classification (int dtype OR float storing integer class IDs)
+                # and no explicit continuous cmap requested — matches /api/raster/stats legend palette
+                if is_integer_values and 0 < len(unique_vals) <= 30 and not cmap_name:
                     palette = [
                         [46, 204, 113, 230],   # Emerald green
                         [52, 152, 219, 230],   # Blue
@@ -1225,6 +1266,12 @@ def geotiff_to_png_bytes(
                         rgba[val_mask] = col
                     img = Image.fromarray(rgba, "RGBA")
                 else:
+                    if not is_int and not cmap_name:
+                        # Continuous float raster: re-read with bilinear resampling for smooth gradients
+                        b = src.read(eff_band, out_shape=out_shape, resampling=Resampling.bilinear)
+                        mask = np.isfinite(b)
+                        if nodata is not None:
+                            mask &= (b != nodata)
                     b_float = b.astype(np.float32)
                     valid_pixels = b_float[mask] if np.any(mask) else b_float.flatten()
                     if vmin_override is not None and vmax_override is not None and vmax_override > vmin_override:
@@ -1272,6 +1319,8 @@ def geotiff_to_png_bytes(
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         result = buf.getvalue()
+        while len(_RASTER_PNG_CACHE) >= 128:
+            _RASTER_PNG_CACHE.pop(next(iter(_RASTER_PNG_CACHE)), None)
         _RASTER_PNG_CACHE[cache_key] = result
         return result
 
@@ -1446,7 +1495,7 @@ async def get_raster_stats(path: str, band: int = 1):
             arr = src.read(
                 eff_band,
                 out_shape=(sample_h, sample_w),
-                resampling=rasterio.enums.Resampling.nearest if is_int else rasterio.enums.Resampling.bilinear,
+                resampling=rasterio.enums.Resampling.nearest,
             )
 
             mask = np.isfinite(arr)
@@ -1454,26 +1503,139 @@ async def get_raster_stats(path: str, band: int = 1):
                 mask &= (arr != src.nodata)
             valid = arr[mask]
 
-            # Detect classified categorical data
+            # Detect classified categorical data (int dtype OR float raster storing discrete integer class IDs)
             is_classified = False
             unique_classes = []
-            if is_int and len(valid) > 0:
+            is_integer_values = is_int or (len(valid) > 0 and bool(np.all(np.floor(valid) == valid)))
+            if is_integer_values and len(valid) > 0:
                 uniques = np.unique(valid)
                 if len(uniques) <= 30:
                     is_classified = True
                     # Dynamically parse class names from tags/descriptions if present
-                    # e.g., "1=top 1% D8 accumulation, 0=other valid"
-                    desc_text = str(band_desc or art_desc or tags.get("units") or "")
+                    # 1. Explicit key-value tags: class_0="dry both", CLASS_1="water lost", label_2=..., or JSON class_map
+                    # 2. Text descriptions: "1=water, 2=greenery", "Class raster: 1 water, 2 green", "(1 water, 0 non-water)"
+                    import re as _re
+                    band_tags = src.tags(eff_band) if hasattr(src, "tags") else {}
                     class_map = {}
-                    if "=" in desc_text:
-                        parts = desc_text.split(",")
-                        for part in parts:
-                            if "=" in part:
-                                k, v = part.split("=", 1)
+
+                    for tag_dict in (band_tags, tags):
+                        if not isinstance(tag_dict, dict):
+                            continue
+                        # 1a. Individual per-class tags (e.g. class_0, CLASS_1, label_2, category_3, value_1)
+                        for tk, tv in tag_dict.items():
+                            if not tv or not str(tv).strip():
+                                continue
+                            mk = _re.match(r"^(?:class|label|category|cat|val|value|code)[_-]?(-?\d+)$", str(tk).strip(), _re.I)
+                            if mk:
+                                cid = int(mk.group(1))
+                                lbl = str(tv).strip()
+                                if cid not in class_map and lbl:
+                                    class_map[cid] = lbl[0].upper() + lbl[1:]
+                        # 1b. JSON mapping tags (e.g. classes='{"0": "Dry", "1": "Water"}')
+                        for jk in ("classes", "CLASSES", "class_map", "CLASS_MAP", "class_names", "CLASS_NAMES", "labels", "LABELS", "legend", "LEGEND"):
+                            raw_j = tag_dict.get(jk)
+                            if raw_j and str(raw_j).strip().startswith("{"):
                                 try:
-                                    class_map[int(k.strip())] = v.strip()
-                                except ValueError:
+                                    parsed_j = json.loads(str(raw_j))
+                                    if isinstance(parsed_j, dict):
+                                        for pk, pv in parsed_j.items():
+                                            try:
+                                                cid = int(pk)
+                                                lbl = str(pv).strip()
+                                                if cid not in class_map and lbl:
+                                                    class_map[cid] = lbl[0].upper() + lbl[1:]
+                                            except (ValueError, TypeError):
+                                                pass
+                                except Exception:
                                     pass
+
+                    desc_candidates = [
+                        tags.get("description"),
+                        tags.get("DESCRIPTION"),
+                        band_tags.get("description"),
+                        band_desc,
+                        art_desc,
+                        tags.get("units"),
+                        tags.get("UNITS"),
+                        tags.get("classes"),
+                        tags.get("legend"),
+                    ]
+                    desc_text = " ; ".join(str(x).strip() for x in desc_candidates if x and str(x).strip())
+                    for cand in desc_candidates:
+                        if not cand:
+                            continue
+                        for m in _re.finditer(
+                            r"(?:^|[;,(\n:]\s*)(-?\d+)\s*(?:=|:|\s-\s|\s+)\s*([A-Za-z][^;,()\n.]*)",
+                            str(cand),
+                        ):
+                            lbl = m.group(2).strip()
+                            if lbl and int(m.group(1)) not in class_map:
+                                class_map[int(m.group(1))] = lbl[0].upper() + lbl[1:]
+
+                    # 3. Fallback: extract class ID -> name mapping from sibling result.json
+                    # Handles any standard schema: list of dicts (e.g. [{"class_id": 1, "zone": "..."}])
+                    # or dict maps (e.g. {"1": "Water", "2": "Forest"}), choosing the candidate whose
+                    # integer keys best match this raster's actual unique class values.
+                    unique_int_set = {int(u) for u in uniques}
+                    if rjson and not unique_int_set.issubset(class_map.keys()):
+                        _ID_KEYS = ("class_id", "value", "code", "class", "label_id", "pixel_value", "id", "zone_id")
+                        _NAME_KEYS = ("zone", "class_name", "name", "label", "category", "material", "interpretation", "title", "description")
+                        _candidates_from_rjson = []
+
+                        def _collect_rjson_class_maps(obj, key_hint=""):
+                            if isinstance(obj, list) and 1 <= len(obj) <= 40 and all(isinstance(x, dict) for x in obj):
+                                extracted = {}
+                                for item in obj:
+                                    cid_val = None
+                                    for ik in _ID_KEYS:
+                                        if ik in item and item[ik] is not None:
+                                            try:
+                                                cid_val = int(item[ik])
+                                                break
+                                            except (ValueError, TypeError):
+                                                pass
+                                    if cid_val is None:
+                                        continue
+                                    lbl_val = None
+                                    for nk in _NAME_KEYS:
+                                        v = item.get(nk)
+                                        if isinstance(v, str) and v.strip():
+                                            lbl_val = v.strip()
+                                            break
+                                    if lbl_val and cid_val not in extracted:
+                                        extracted[cid_val] = lbl_val[0].upper() + lbl_val[1:]
+                                if extracted:
+                                    overlap = len(unique_int_set & extracted.keys())
+                                    if overlap > 0:
+                                        # Prefer exact key-set match and explicit class_id over cluster_id
+                                        exact_bonus = 10 if set(extracted.keys()) == unique_int_set else 0
+                                        hint_bonus = 2 if any(w in key_hint.lower() for w in ("class", "zone", "legend", "categor", "label", "land")) else 0
+                                        _candidates_from_rjson.append((overlap + exact_bonus + hint_bonus, extracted))
+                            elif isinstance(obj, dict):
+                                # Check if this dict itself is a { "1": "Water", "2": "Forest" } map
+                                int_str_map = {}
+                                for k, v in obj.items():
+                                    if isinstance(v, str) and v.strip() and not v.strip().startswith(("/", "http")):
+                                        mk = _re.match(r"^(?:class[_-]?|label[_-]?|val[_-]?)?(-?\d+)$", str(k).strip(), _re.I)
+                                        if mk:
+                                            int_str_map[int(mk.group(1))] = v.strip()[0].upper() + v.strip()[1:]
+                                if len(int_str_map) >= 2:
+                                    overlap = len(unique_int_set & int_str_map.keys())
+                                    if overlap > 0:
+                                        exact_bonus = 10 if set(int_str_map.keys()) == unique_int_set else 0
+                                        hint_bonus = 2 if any(w in key_hint.lower() for w in ("class", "zone", "legend", "categor", "label", "map")) else 0
+                                        _candidates_from_rjson.append((overlap + exact_bonus + hint_bonus, int_str_map))
+                                for k, v in obj.items():
+                                    if isinstance(v, (dict, list)):
+                                        _collect_rjson_class_maps(v, str(k))
+
+                        _collect_rjson_class_maps(rjson)
+                        if _candidates_from_rjson:
+                            _candidates_from_rjson.sort(key=lambda pair: pair[0], reverse=True)
+                            best_map = _candidates_from_rjson[0][1]
+                            for cid, lbl in best_map.items():
+                                if cid not in class_map:
+                                    class_map[cid] = lbl
 
                     palette = [
                         "#2ECC71", "#3498DB", "#F1C40F", "#E74C3C", "#9B59B6",
@@ -1720,4 +1882,11 @@ async def send_chat_message(payload: ChatMessage):
 if __name__ == "__main__":
     import uvicorn
     print("Starting GeoLLM Web UI on http://127.0.0.1:8000")
-    uvicorn.run("web_app:app", host="127.0.0.1", port=8000, reload=True, timeout_graceful_shutdown=1)
+    uvicorn.run(
+        "web_app:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+        reload_dirs=[str(APP_DIR / "harness")],
+        timeout_graceful_shutdown=1,
+    )
